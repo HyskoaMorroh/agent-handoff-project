@@ -237,6 +237,45 @@ def test_repo_inferred_from_prompt_text_posix(tmp_path: Path):
     assert any(Path(r).name == "fromtext" for r in row.repos)
 
 
+@pytest.mark.parametrize(
+    "line,want",
+    [
+        (r'{"cwd": "C:\\Users\\me\\proj"}', True),
+        ('{"cwd": "C:/Users/me/proj"}', True),
+        ('{"text": "/home/me/proj/x.py"}', True),
+        # 早先的预筛是一张目录白名单，下面这些前缀全漏。漏掉的后果是那一行的
+        # 路径永远不被提取、仓库推断静默失败——真 Linux 上跑测试才暴露。
+        ('{"text": "/tmp/build/x.py"}', True),
+        ('{"text": "/workspace/app/main.go"}', True),
+        ('{"text": "/data/repos/thing"}', True),
+        ('{"text": "/media/disk/proj"}', True),
+        ('{"text": "/nix/store/abc/pkg"}', True),
+        # 没有连续两段路径的行不值得付正则代价。
+        ('{"type": "user"}', False),
+        ('{"text": "just words here"}', False),
+        ('{"text": "a/b"}', False),
+        ("", False),
+    ],
+)
+def test_looks_pathy_is_structural_not_a_whitelist(line: str, want: bool):
+    from agent_handoff.core.vitals import _looks_pathy
+
+    assert _looks_pathy(line) is want, line
+
+
+def test_repo_inferred_from_unusual_posix_root(tmp_path: Path):
+    """项目在 /tmp、/workspace 这类不在任何白名单里的位置也要能推断出来。"""
+    proj = tmp_path / "oddplace"
+    (proj / ".git").mkdir(parents=True)
+    fp = tmp_path / "u.jsonl"
+    _write_jsonl(fp, [
+        {"type": "user", "sessionId": "s",
+         "message": {"content": f"fix the bug in {proj.as_posix()}/main.py"}},
+    ])
+    row = scan_one("Claude Code", fp)
+    assert any(Path(r).name == "oddplace" for r in row.repos), row.repos
+
+
 def test_home_root_ranked_last(tmp_path: Path, monkeypatch):
     """裸的用户主目录从来不是被操作的对象，即使它恰好是个 git 仓库。"""
     home = tmp_path / "home"

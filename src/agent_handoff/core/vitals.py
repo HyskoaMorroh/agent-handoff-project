@@ -47,7 +47,27 @@ SKIP_PROMPT = re.compile(r"<recommended_plugins>|<user_instructions>|^<[a-z_]+>$
 
 # 单遍扫描时用的廉价预筛：先做子串判断，命中了才付正则的代价。
 _ERR_MARKS = ('"is_error":true', '"isError":true')
-_PATHY = (":\\", ":/", "/home/", "/Users/", "/mnt/", "/root/", "/opt/", "/srv/", "/var/")
+
+
+def _looks_pathy(raw: str) -> bool:
+    """这一行有没有可能含绝对路径？只用来省掉正则，判错方向必须偏保守。
+
+    早先这里是一张目录白名单（/home/、/mnt/、/opt/…）。那是错的：枚举永远
+    不全——/tmp、/workspace、/data、/srv/git 各种都漏，而漏掉的后果是那一行
+    的路径永远不被提取，仓库推断静默失败。真 Linux 上跑测试才暴露。
+
+    改成结构判断：盘符形态看 `:\\` 或 `:/`，POSIX 形态看有没有连续两段
+    `/x/y`。宁可多进几次正则，不可漏。
+    """
+    if ":\\" in raw or ":/" in raw:
+        return True
+    first = raw.find("/")
+    if first < 0:
+        return False
+    # `/a/b` 至少要有第二个斜杠，且两个斜杠之间非空——排除 "//" 和 "http://"
+    # 之后紧跟的空段这类噪声（它们已被上面的 `:/` 命中，不影响正确性）。
+    second = raw.find("/", first + 1)
+    return second > first + 1
 
 # 身份与仓库信息只出现在开头。原版对 Claude 扫 400 行、对路径扫 260 行；
 # 这里统一取两者上界，一遍走完就够。
@@ -172,7 +192,7 @@ class _Extractor:
 
         # 廉价预筛：这一行既不含路径样式、也不可能是我们要的结构时，
         # 仍然需要解析（身份字段可能在任意早期行），所以只对路径捞取做预筛。
-        pathy = lineno <= PATH_LINE_BUDGET and any(mark in raw for mark in _PATHY)
+        pathy = lineno <= PATH_LINE_BUDGET and _looks_pathy(raw)
         need_ident = not (
             self.ident["first_prompt"]
             and self.ident["cwd"]

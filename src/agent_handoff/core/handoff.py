@@ -358,9 +358,13 @@ def run_handoff(
         return res
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # newline="" 保留字符串里的换行原样；内容自己用 \n，不让 Windows 转成 \r\n，
-    # 这样交接文件在两个平台上的字节完全一致。
-    out_path.write_text(body, encoding="utf-8", newline="")
+    # 交接文件在两个平台上的字节必须完全一致：内容自己用 \n，不让 Windows 的
+    # 文本模式把它转成 \r\n。
+    #
+    # 不用 `write_text(..., newline="")`：那个参数是 Python 3.10 才加的，而
+    # 本项目声明支持 3.9。在 3.9 上它会抛 TypeError——只有真的在 3.9 上跑过
+    # 才会发现，Windows 上装的 3.14 一路都是绿的。直接写字节，绕开文本层。
+    out_path.write_bytes(body.encode("utf-8"))
     say(f"      {out_path}")
 
     if not opts.no_commit:
