@@ -1,6 +1,5 @@
 {
   "meta.lang": "繁體中文",
-
   "band.critical": "立即交接",
   "band.high": "盡快交接",
   "band.watch": "留意",
@@ -9,7 +8,6 @@
   "band.advice.high": "盡快交接。該區間約三成工作階段出現過致命錯誤。",
   "band.advice.watch": "可以繼續，但要留意；該區間約一成七出現過致命錯誤。",
   "band.advice.ok": "尺寸健康。",
-
   "cli.desc": "把儲存庫目前狀態固化成可無損接續的交接現場（提交快照 + 回填計畫 + 產生交接檔案）。",
   "cli.arg.repo": "儲存庫路徑，預設目前目錄",
   "cli.arg.plan": "計畫文件路徑；省略則自動探測最新的含核取方塊任務文件",
@@ -30,24 +28,20 @@
   "cli.arg.no_browser": "啟動網頁介面但不自動開啟瀏覽器",
   "cli.arg.jobs": "並行度；0 表示依 CPU 核心數自動決定",
   "cli.arg.json": "以 JSON 輸出結果，供腳本取用",
-
   "cli.step.meta": "[1/6] 讀取儲存庫中介資料 — {repo}",
   "cli.step.plan": "[2/6] 定位並解析計畫文件",
   "cli.step.score": "[3/6] 依檔案與符號證據評估完成度",
   "cli.step.commit": "[4/6] 提交快照",
   "cli.step.tests": "[5/6] 執行測試取證",
   "cli.step.write": "[6/6] 產生交接檔案",
-
   "cli.plan.found": "      {path} — {tasks} 個任務，{steps} 步，{protected} 個受保護檔案",
   "cli.plan.intent": "      原始意圖段落：{sections}",
   "cli.plan.no_intent": "      [注意] 計畫文件裡沒找到 Goal / Constraints 之類的意圖段落；新工作階段可能不知道整體目標，建議手動補一句。",
   "cli.plan.missing": "      未找到計畫文件（略過回填；交接檔案仍會產生）",
   "cli.plan.backfilled": "      計畫回填 +{added} 步，共 {done}/{total} 已勾選",
-
   "cli.err.not_dir": "錯誤：{path} 不是目錄",
   "cli.err.not_repo": "錯誤：{path} 不是 git 儲存庫。交接依賴 git 中介資料。",
   "cli.err.no_git": "錯誤：找不到可執行的 git。本工具的全部證據來自 git，請先安裝 git 並確保它在 PATH 裡。",
-
   "cli.conc.detected": "      偵測到可能有另一個工作階段正在寫這個儲存庫：",
   "cli.conc.readonly": "      本次不寫 git，繼續（僅分析）。",
   "cli.conc.stopped": "      已停止，未做任何變更。同時寫同一個工作樹會遺失工作：",
@@ -57,7 +51,6 @@
   "cli.conc.howto2": "      確認無衝突要強行繼續：加 --force",
   "cli.conc.howto3": "      只想產生交接檔案不動 git：加 --no-commit",
   "cli.conc.forced": "      [--force] 忽略並行訊號：",
-
   "cli.commit.skipped": "已略過（--no-commit）",
   "cli.commit.msg": "chore: 工作階段交接快照 {stamp}",
   "cli.commit.docs_msg": "docs: 回填計畫完成狀態並記錄交接現場",
@@ -67,7 +60,6 @@
   "cli.commit.nothing_staged": "暫存區為空（變更可能全部屬於受保護檔案），未提交。",
   "cli.commit.failed": "git commit 失敗：{detail}",
   "cli.commit.done": "已提交。",
-
   "cli.tests.skipped": "      已略過（--skip-tests）",
   "cli.tests.none": "      未識別出測試命令（沒有 pyproject.toml / package.json，或沒有可用的測試腳本）",
   "cli.tests.running": "      {name}: {cmd}",
@@ -75,7 +67,6 @@
   "cli.tests.no_output": "<無輸出>",
   "cli.tests.timeout": "<逾時 {sec} 秒後中止>",
   "cli.tests.not_found": "<找不到該命令>",
-
   "cli.vitals.worst": "      工作階段體徵：最緊迫 {agent} {file} {mb} MB fatal={fatal} -> {band}",
   "cli.vitals.none": "未找到任何工作階段記錄（~/.claude/projects 與 ~/.codex/sessions 都不存在）。",
   "cli.vitals.scanned": "掃描了 {total} 個最新記錄，其中 {risky} 個需要處理。",
@@ -88,7 +79,6 @@
   "cli.vitals.no_risk": "沒有高風險工作階段。",
   "cli.vitals.rest": "其餘 {count} 個記錄（體積由大到小，無需處理）：",
   "cli.vitals.no_cwd": "<未記錄工作目錄>",
-
   "cli.find.none": "沒有工作階段符合「{needle}」。",
   "cli.find.hint": "可以試：工作階段 ID 的前 8 位、專案目錄名的一部分、或開場提問裡的一個詞。",
   "cli.find.header": "符合「{needle}」的工作階段 {count} 個，最近活動優先",
@@ -97,7 +87,6 @@
   "cli.find.solidify": "固化現場：agent-handoff \"{repo}\"",
   "cli.find.multi_repo": "涉及多個儲存庫，逐個交接（每個儲存庫跑一次）：",
   "cli.find.no_repo": "沒能從記錄裡推斷出 git 儲存庫，請手動指定：agent-handoff <專案路徑>",
-
   "cli.card.session_id": "      工作階段 ID {value}",
   "cli.card.unknown": "<未知>",
   "cli.card.thread_id": "      來源執行緒 ID {value}（本工作階段由它衍生 / 續接）",
@@ -109,13 +98,11 @@
   "cli.card.repos_more": "（另有 {count} 個）",
   "cli.card.file": "      記錄檔案  {value}",
   "cli.card.summary": "  {index}{agent}   {label}   {mb} MB   致命 {fatal}   工具錯誤 {errors}",
-
   "cli.dry.write": "DRY-RUN：將寫入 {path}（{bytes} 位元組），內容預覽：",
   "cli.prompt.banner": "新工作階段開場提示詞（複製下面整段）",
   "cli.race.warn": "      [警告] 執行期間 HEAD 被別的提交推進了：",
   "cli.race.explain1": "      表示另一個工作階段同時在寫。上面提示詞裡的 HEAD 可能已經過期，",
   "cli.race.explain2": "      建議等那個工作階段停止後重跑一次。",
-
   "conc.staged": "暫存區已有 {count} 個檔案（不是本次操作放進去的）。很可能另一個工作階段 git add 了但還沒提交。",
   "conc.lock": "發現 {lock} —— {what}。",
   "conc.lock.index": "git 正在寫索引",
@@ -124,14 +111,12 @@
   "conc.lock.cherry": "cherry-pick 進行中",
   "conc.recent": "兩分鐘內被變更的檔案：{files}",
   "conc.recent_more": " 等 {count} 個",
-
   "env.venv_broken": "`{name}/` 不是可用的虛擬環境（無可執行 Python，僅含 {detail}）。不要刪除或修復它，改用其他解譯器。",
   "env.venv_empty": "<空>",
   "env.venv_ok": "可用解譯器：`{path}`",
   "env.no_test_script": "`{pkg}` 沒有 `test` 腳本；實際名稱是 {names}。直接跑 `npm test` 會報 Missing script。",
   "env.foreign_registry": "`{lock}` 混入了非官方來源 {mirrors}，可能破壞跨環境可重現性。",
   "env.git_dirty_submodule": "`{path}` 是子模組且有未提交變更；父儲存庫的提交不會帶上它，接續工作階段可能看到不一致的樹。",
-
   "doc.title": "# {repo} 交接記錄（{date}）",
   "doc.generated": "> 本檔案由 agent-handoff 自動產生。所有結論來自命令輸出、檔案存在性或符號檢索，",
   "doc.generated2": "> 未經驗證的項目標註為「未驗證」。",
@@ -169,7 +154,6 @@
   "doc.prompt.howto": "直接把下面整段貼進新工作階段的輸入框送出。**不要**把本檔案內容一起貼上——",
   "doc.prompt.howto2": "它已在儲存庫裡，讓智慧代理自己讀，以免重演上下文超限。",
   "doc.plan_missing": "未找到計畫文件，略過完成度回填。",
-
   "prompt.resume": "接續 {repo_name}。儲存庫 {repo}，分支 {branch}，HEAD {head}。",
   "prompt.read_plan_intent": "第一件事：完整讀 {plan}。",
   "prompt.intent_sections": "不要只看勾選狀態——{sections} 這幾段是本專案的原始要求與紅線，",
@@ -187,7 +171,6 @@
   "prompt.env": "環境與紅線：",
   "prompt.protected": "  - {path} 是使用者私有檔案，不得變更、移動、刪除或打包",
   "prompt.expiry": "（本提示詞產生於 {now}，對應 HEAD {head}。若儲存庫此後又有提交，請重跑 agent-handoff 產生新的提示詞，不要重複使用舊的。）",
-
   "gui.title": "工作階段交接工具",
   "gui.subtitle": "工作階段卡死時，把進度從對話裡搬進儲存庫",
   "gui.nav.vitals": "健檢",
@@ -197,6 +180,12 @@
   "gui.theme.light": "淺色",
   "gui.theme.dark": "深色",
   "gui.theme.auto": "跟隨系統",
+  "gui.ago.now": "剛剛",
+  "gui.ago.m": "{n} 分鐘前",
+  "gui.ago.h": "{n} 小時前",
+  "gui.ago.d": "{n} 天前",
+  "gui.ago.w": "{n} 週前",
+  "gui.ago.mo": "{n} 個月前",
   "gui.vitals.title": "工作階段健檢",
   "gui.vitals.lead": "掃描本機所有 Claude Code 與 Codex 工作階段記錄，判斷哪個該交接。只讀：不寫檔案、不改設定。",
   "gui.vitals.scan": "開始掃描",
@@ -259,7 +248,6 @@
   "gui.label.errors": "工具錯誤",
   "gui.stop.title": "已停止：可能有另一個工作階段在寫這個儲存庫",
   "gui.stop.hint": "先確認那個工作階段已停止並提交，然後重試；或勾選「忽略並行寫入警告」。",
-
   "menu.title": "工作階段交接工具",
   "menu.1": "健檢      看哪個工作階段該交接了（只讀，隨便點）",
   "menu.2": "交接      完整流程：提交 + 回填 + 跑測試 + 產生",

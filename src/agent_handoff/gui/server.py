@@ -27,7 +27,7 @@ from urllib.parse import parse_qs, urlparse
 from .. import __version__
 from ..core.gitops import git_available, is_repo
 from ..core.handoff import EXIT_CONCURRENT, Options, run_handoff
-from ..core.vitals import find_sessions, scan_session_vitals
+from ..core.vitals import find_sessions, group_by_agent, scan_session_vitals
 from ..i18n import LANG_NAMES, Translator, available, normalize
 from ..platform import open_in_browser
 
@@ -245,7 +245,17 @@ class Handler(BaseHTTPRequestHandler):
                 limit = 12
             deep = (params.get("deep") or ["1"])[0] not in ("0", "false", "no")
             rows = scan_session_vitals(limit=max(1, min(limit, 200)), deep=deep)
-            self._json({"rows": [r.to_dict() for r in rows]})
+            # 按 APP 分组、组内最近活动在前。分组顺序在 core 里定，前端只按
+            # agent 字段切段，两个前端的排序规则不可能漂移。
+            grouped = group_by_agent(rows)
+            self._json(
+                {
+                    "rows": [r.to_dict() for _agent, group in grouped for r in group],
+                    "groups": [
+                        {"agent": agent, "count": len(group)} for agent, group in grouped
+                    ],
+                }
+            )
             return
 
         if path == "/api/find":

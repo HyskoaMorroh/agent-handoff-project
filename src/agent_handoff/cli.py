@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import __version__
 from .core.handoff import EXIT_BAD_INPUT, EXIT_OK, Options, run_handoff
-from .core.vitals import SessionRow, find_sessions, scan_session_vitals
+from .core.vitals import SessionRow, find_sessions, group_by_agent, scan_session_vitals
 from .i18n import Translator, available, detect
 from .platform import force_utf8_io
 
@@ -102,19 +102,26 @@ def cmd_vitals(args: argparse.Namespace, tr: Translator) -> int:
     risky = [r for r in rows if r.band in ("critical", "high")]
     print(tr.t("cli.vitals.scanned", total=len(rows), risky=len(risky)) + "\n")
 
-    if risky:
-        print(tr.t("cli.vitals.need") + "\n")
-        for i, r in enumerate(risky, 1):
+    # 按 APP 分组、组内最近活动在前。人认会话是先认 APP、再认时间；
+    # 混在一起时"上一个会话"只能靠一行行看客户端字段找。
+    for agent, group in group_by_agent(rows):
+        risky_n = sum(1 for r in group if r.band in ("critical", "high"))
+        tail = f"   {tr.t('gui.vitals.risky')} {risky_n}" if risky_n else ""
+        print(f"  {agent}   ({len(group)}){tail}")
+        print(f"  {'─' * 64}\n")
+        for i, r in enumerate(group, 1):
             print_session_card(r, tr, i)
             print()
 
+    if risky:
         by_repo: dict[str, list[SessionRow]] = {}
         for r in risky:
             key = r.repo or r.cwd or tr.t("cli.vitals.no_cwd")
             by_repo.setdefault(key, []).append(r)
         print("─" * 66)
         print(tr.t("cli.vitals.by_repo") + "\n")
-        for cwd, group in sorted(by_repo.items(), key=lambda kv: -max(g.mb for g in kv[1])):
+        # 仓库分组按"最近被碰过"排，与上面的会话顺序一致。
+        for cwd, group in sorted(by_repo.items(), key=lambda kv: -max(g.mtime.timestamp() for g in kv[1])):
             ids = ", ".join(g.session_id[:8] for g in group)
             print(f"  {cwd}")
             print(tr.t("cli.vitals.group", count=len(group), ids=ids))
@@ -128,16 +135,6 @@ def cmd_vitals(args: argparse.Namespace, tr: Translator) -> int:
         print(tr.t("cli.vitals.once"))
     else:
         print(tr.t("cli.vitals.no_risk"))
-
-    healthy = [r for r in rows if r.band not in ("critical", "high")]
-    if healthy:
-        print("─" * 66)
-        print(tr.t("cli.vitals.rest", count=len(healthy)) + "\n")
-        for r in healthy[:10]:
-            label = tr.t(f"band.{r.band}")
-            sid = r.session_id[:8]
-            tail = f"  {r.cwd}" if r.cwd else ""
-            print(f"  {label}  {r.mb:>5.1f} MB  {r.agent:<12} {sid}{tail}")
     return 0
 
 

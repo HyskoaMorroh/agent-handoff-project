@@ -117,13 +117,29 @@
   }
 
   /* ── 会话卡片 ──────────────────────────────────────────── */
+  /* 相对时间：「3 小时前」比「2026-08-18 13:57:34」更快让人认出是哪次对话。
+   * 绝对时间仍在下面的键值区里，需要精确对照时看那一行。 */
+  function ago(iso) {
+    const then = Date.parse(iso);
+    if (isNaN(then)) return "";
+    const sec = Math.max(0, (Date.now() - then) / 1000);
+    const units = [
+      [86400 * 30, "mo"], [86400 * 7, "w"], [86400, "d"], [3600, "h"], [60, "m"]
+    ];
+    for (const u of units) {
+      if (sec >= u[0]) return t("gui.ago." + u[1], { n: Math.floor(sec / u[0]) });
+    }
+    return t("gui.ago.now");
+  }
+
   function sessionCard(r, opts) {
     const card = el("div.srow", { "data-band": r.band });
-    const top = el("div.srow-top",
-      null,
-      el("span.agent", { text: r.agent }),
-      el("span.badge", { text: t("band." + r.band), "data-band": r.band })
-    );
+    const top = el("div.srow-top");
+    // 组内不重复 APP 名（组标题已经说了）；找会话视图里没有分组，要显示。
+    if (opts && opts.showAgent) top.appendChild(el("span.agent", { text: r.agent }));
+    top.appendChild(el("span.badge", { text: t("band." + r.band), "data-band": r.band }));
+    top.appendChild(el("span.when", { text: ago(r.mtime), title: r.mtime_text }));
+
     const m = el("div.metrics");
     m.appendChild(el("span", null, el("b", { text: r.mb.toFixed(1) }), " MB"));
     m.appendChild(el("span", { class: r.fatal ? "hot" : "" }, t("gui.label.fatal") + " ", el("b", { text: String(r.fatal) })));
@@ -132,17 +148,18 @@
     card.appendChild(top);
 
     const kv = el("dl.kv");
-    const row = (k, v, prose) => {
+    const row = (k, v, cls) => {
       if (!v) return;
       kv.appendChild(el("dt", { text: k }));
-      kv.appendChild(el("dd", { text: v, class: prose ? "prose" : "" }));
+      // 长文本夹两行 + title 悬停看全文：一屏能扫过更多会话卡片。
+      kv.appendChild(el("dd", { text: v, class: cls || "", title: cls && cls.indexOf("clamp") >= 0 ? v : null }));
     };
     row(t("gui.label.session"), r.session_id || "—");
     row(t("gui.label.thread"), r.thread_id);
     row(t("gui.label.mtime"), r.mtime_text);
     row(t("gui.label.cwd"), r.cwd);
     row(t("gui.label.client"), [r.version, r.origin].filter(Boolean).join(" "));
-    row(t("gui.label.first_prompt"), r.first_prompt, true);
+    row(t("gui.label.first_prompt"), r.first_prompt, "prose clamp");
     if (r.repos && r.repos.length) {
       const extra = r.repos.length > 1 ? t("cli.card.repos_more", { count: r.repos.length - 1 }) : "";
       row(t("gui.label.repos"), r.repos[0] + extra);
@@ -200,15 +217,29 @@
     $("#st-risky").textContent = String(risky.length);
     $("#st-size").textContent = Math.max.apply(null, rows.map((r) => r.mb)).toFixed(1) + " MB";
 
-    if (risky.length) {
-      out.appendChild(el("div.group-h", null, t("gui.vitals.risky"), el("span.n", { text: String(risky.length) })));
-      risky.forEach((r) => out.appendChild(sessionCard(r)));
-    }
-    const healthy = rows.filter((r) => r.band !== "critical" && r.band !== "high");
-    if (healthy.length) {
-      out.appendChild(el("div.group-h", null, t("gui.vitals.healthy"), el("span.n", { text: String(healthy.length) })));
-      healthy.forEach((r) => out.appendChild(sessionCard(r)));
-    }
+    /* 按 APP 分组，组内最近活动在前。后端已经排好序（group_by_agent），
+     * 这里只按 agent 切段，不重新排 —— 排序规则只留一处。 */
+    let current = null;
+    let group = null;
+    rows.forEach((r) => {
+      if (r.agent !== current) {
+        current = r.agent;
+        const n = rows.filter((x) => x.agent === current).length;
+        const riskyN = rows.filter((x) => x.agent === current && (x.band === "critical" || x.band === "high")).length;
+        const head = el("div.group-h", null,
+          el("span.group-app", { text: r.agent }),
+          el("span.n", { text: String(n) }));
+        if (riskyN) {
+          head.appendChild(el("span.badge", {
+            text: t("gui.vitals.risky") + " " + riskyN, "data-band": "critical"
+          }));
+        }
+        out.appendChild(head);
+        group = el("div.group");
+        out.appendChild(group);
+      }
+      group.appendChild(sessionCard(r));
+    });
   }
 
   /* ── 找会话 ────────────────────────────────────────────── */
@@ -235,7 +266,7 @@
       out.appendChild(el("div.card", null, el("p.empty", { text: t("cli.find.hint") })));
       return;
     }
-    rows.forEach((r) => out.appendChild(sessionCard(r)));
+    rows.forEach((r) => out.appendChild(sessionCard(r, { showAgent: true })));
   }
 
   /* ── 交接 ──────────────────────────────────────────────── */

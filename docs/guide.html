@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="zh-Hans" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>会话交接工具 · 图文说明</title>
+<script id="guide-i18n" type="application/json">{"zh-Hans":{"lang":"zh-Hans","dir_note":"简体中文","title":"会话交接工具 · 图文说明","tagline":"会话卡死时，把进度从对话里搬进仓库","nav":"目录","s1.h":"会话死了，什么跟着死","s1.p1":"代码不会死。代码在磁盘上，git 里也有。死掉的是<strong>只存在于那段对话里的东西<\/strong>：","s1.li1":"目标 —— 你到底要做成什么样","s1.li2":"已经排除的方案 —— 试过、不行、别再试","s1.li3":"红线 —— 哪个文件绝对不能碰","s1.li4":"下一步 —— 上一个会话正打算做什么","s1.p2":"新会话拿不到这些，于是它重做已完成的工作，或者改掉你明确说过不能碰的文件。这个工具把这四样东西固化成仓库里的文件，让新会话自己读。","s2.h":"什么时候该跑它","s2.p1":"三个触发点，任何一个出现就跑：","s2.li1":"对话开始变慢、工具调用频繁失败、上游返回 400 或熔断提示","s2.li2":"你已经在想「要不要重开一个会话」","s2.li3":"体检结果显示某个会话进了「立刻交接」区间","s2.h2":"54 + 54 个会话实际怎么结束的","s2.p2":"分档不是拍脑袋，是本机 54 个 Claude 转录 + 54 个 Codex 转录的实测分布：","s2.t.size":"转录体积","s2.t.verdict":"判定","s2.t.measured":"实测","s2.r1":"该区间 100% 出现过致命错误","s2.r2":"约三成出现过","s2.r3":"约一成七出现过","s2.r4":"250 KB 以下无一出现过","s2.p3":"「致命错误」指真的杀死过会话的签名：content-blocked、供应商熔断、无可用渠道、图片尺寸超限。只让人烦躁的错误不算。","s3.h":"怎么用","s3.p1":"三种入口，功能等价，选顺手的：","s3.gui.h":"网页界面","s3.gui.p":"最好看，支持简体／繁體／English 随时切换，浅色深色跟随系统。服务只绑定本机回环地址，每个请求都要一次性令牌 —— 它能对任意路径跑 git commit，所以这不是可选项。","s3.menu.h":"交互菜单","s3.menu.p":"不用记参数。Windows 双击 <code>双击运行.cmd<\/code>，Linux／macOS 跑 <code>./scripts/run.sh<\/code>。把项目文件夹拖进窗口就能填路径。","s3.cli.h":"命令行","s3.cli.p":"适合写进脚本。加 <code>--json<\/code> 可以让输出被程序消费。","s4.h":"三步做了什么","s4.step1.h":"第 1 步 · 提交快照","s4.step1.p":"把工作区的一切提交，但<strong>排除计划文档声明为「用户私有」的文件<\/strong>。识别方式：计划文档里写了「`docs/LOGO.jpg` 是用户私有文件，不得提交」这类句子，路径会被自动加进排除列表。","s4.step1.note":"排除用的是 git 的 <code>:(exclude,literal)<\/code> 长写法而不是 <code>:!path<\/code> 简写：后者在旧版 git 上不支持，且路径含 <code>[<\/code> 或 <code>*<\/code> 时会被当通配符，排除会静默失效 —— 私有文件就被提交上去了。","s4.step2.h":"第 2 步 · 回填计划","s4.step2.p":"按<strong>客观证据<\/strong>勾选复选框，不看任何人的自我报告。一个任务的全部文件都存在、全部符号都真的被 <code>def<\/code>／<code>class<\/code>／<code>function<\/code> 定义了，它的每一步才会被勾上。","s4.step3.h":"第 3 步 · 生成交接","s4.step3.p":"写出一份交接 Markdown（现场、完成度、缺口、测试结果、环境陷阱）和一段可直接粘贴的开场提示词。","s5.h":"它凭什么判断「做完了」","s5.p1":"两类证据，都能被独立复核：","s5.e1.h":"文件存在性","s5.e1.p":"计划文档的 <code>**Files:**<\/code> 段列出每个任务应产出哪些文件，直接查磁盘。","s5.e2.h":"符号定义","s5.e2.p":"<code>**Interfaces:**<\/code> 段列出应产出哪些符号，用一条合成正则一次扫完全库 —— 不是「文件里出现过这个词」，而是「这个词真的跟在 def／class／function／const 后面」。","s5.p2":"文件在但符号没定义 = 部分完成，不勾。这一条挡住了最常见的假完成：文件被创建了但里面是空的，或者只有一句 <code>pass<\/code>。","s5.diagram.title":"判定流程","s6.h":"它会自己拦住并发写入","s6.p1":"两个会话同时写一个工作树是<strong>唯一真能丢工作<\/strong>的失败模式：我们的 <code>git add<\/code> 盖掉对方暂存的内容，或者对方的 <code>commit --amend<\/code> 重写我们刚做的提交。","s6.block.h":"阻断信号 —— 默认停止，退出码 3","s6.block.p":"这些只可能由另一个进程造成：","s6.block.li1":"暂存区已有文件，而不是本次操作放进去的","s6.block.li2":"<code>index.lock<\/code> 存在 —— git 正在写索引","s6.block.li3":"<code>MERGE_HEAD<\/code> / <code>rebase-merge<\/code> / <code>CHERRY_PICK_HEAD<\/code> 存在","s6.warn.h":"提示信号 —— 继续，但记录进交接文件","s6.warn.p":"两分钟内有 git 跟踪的文件被改动。最常见的成因是<strong>你自己<\/strong>刚改完就来跑交接。","s6.why.h":"为什么要分级","s6.why.p":"把「刚改完」当阻断，会逼你每次都加 <code>--force<\/code>；而 <code>--force<\/code> 会连真正的阻断信号一起放过，反而更危险。分级之后 <code>--force<\/code> 变成真正的例外手段。","s6.after.h":"跑完还会再查一次","s6.after.p":"运行期间如果 HEAD 被<strong>别人的<\/strong>提交推进了，说明第二个会话在跟你赛跑，提示词里那个 HEAD 已经过期。工具会明确警告并建议重跑。我们自己的两个提交是预期的，不会误报 —— 三种语言的提交主题都被认得，切过语言也不会误判。","s6.diagram.title":"并发保护流程","s7.h":"提示词里有什么，为什么","s7.p1":"五块内容，缺任何一块都会让接续会话走错路：","s7.b1.h":"现场坐标","s7.b1.p":"仓库路径、分支、HEAD。缺了它不知道自己在哪。","s7.b2.h":"先读计划文档，并点名意图段落","s7.b2.p":"不只说「去看计划」，而是点名 Goal／Constraints／Architecture 这几段。缺了它把计划当待办清单，漏掉红线。","s7.b3.h":"已完成任务的名字","s7.b3.p":"「不要重做 Task 1 / Task 3」。只给一个数字（「已完成 12 步」）没用 —— 它不知道哪 12 步。","s7.b4.h":"具体缺口","s7.b4.p":"缺哪个文件、缺哪个符号。缺了它要从头找。","s7.b5.h":"过期声明","s7.b5.p":"生成时间 + 对应 HEAD。缺了它旧提示词会被复用，指向一个已经不存在的状态。","s7.diagram.title":"提示词五块结构","s8.h":"提示词会过期，别复用旧的","s8.p1":"提示词末尾带生成时间和 HEAD。仓库此后又有提交时，那段提示词描述的现场已经不对了 —— 它说的「优先级」和「缺口」可能已经被解决，它引用的 HEAD 可能已经被 rebase 掉。","s8.p2":"重跑一次，几秒钟的事。复用旧提示词的代价是新会话按过时的地图行动。","s9.h":"计划文档长什么样","s9.p1":"自动探测：深度 5 以内、含任务标题且至少 3 个复选框的最新 markdown。也可以用 <code>--plan<\/code> 明确指定。","s9.p2":"Task 1 的两个文件都存在、两个符号都真被定义，两个 Step 才会被勾上。","s10.h":"参数表","s10.t.flag":"参数","s10.t.what":"作用","s10.exit.h":"退出码","s10.exit.0":"成功","s10.exit.1":"没有会话匹配 <code>--find<\/code> 的关键词","s10.exit.2":"参数或环境错误（路径不存在、不是 git 仓库、找不到 git）","s10.exit.3":"检测到并发写入而停止，未做任何改动","s11.h":"三条设计约束","s11.c1.h":"不硬编码","s11.c1.p":"项目名、路径、任务名、测试命令一律从仓库自身推断。换一个项目不用改一行代码。","s11.c2.h":"失败不中断","s11.c2.p":"某个环节失败（没有 ripgrep、测试超时、子模块读不到）就降级，把已经拿到的信息写出来，不让整次交接空手而归。","s11.c3.h":"提示词要短","s11.c3.p":"提示词是要粘进新会话的，它自己就在消耗上下文。长的东西写进交接文件，让智能体自己去读。","s12.h":"一个做不到的情况","s12.p":"项目里没有计划文档时，<strong>原始意图无法传递<\/strong>。文件存在性和符号定义能说明「做到哪一步」，但说不出「本来要做什么」。这时工具会明确提醒你手工补一句目标。这不是 bug，是信息本身不存在。","s13.h":"文件夹里都有什么","s13.t.path":"路径","s13.t.what":"是什么"},"zh-Hant":{"lang":"zh-Hant","dir_note":"繁體中文","title":"工作階段交接工具 · 圖文說明","tagline":"工作階段卡死時，把進度從對話裡搬進儲存庫","nav":"目錄","s1.h":"工作階段死了，什麼跟著死","s1.p1":"程式碼不會死。程式碼在磁碟上，git 裡也有。死掉的是<strong>只存在於那段對話裡的東西<\/strong>：","s1.li1":"目標 —— 你到底要做成什麼樣","s1.li2":"已經排除的方案 —— 試過、不行、別再試","s1.li3":"紅線 —— 哪個檔案絕對不能動","s1.li4":"下一步 —— 上一個工作階段正打算做什麼","s1.p2":"新工作階段拿不到這些，於是它重做已完成的工作，或者改掉你明確說過不能動的檔案。這個工具把這四樣東西固化成儲存庫裡的檔案，讓新工作階段自己讀。","s2.h":"什麼時候該跑它","s2.p1":"三個觸發點，任何一個出現就跑：","s2.li1":"對話開始變慢、工具呼叫頻繁失敗、上游回傳 400 或熔斷提示","s2.li2":"你已經在想「要不要重開一個工作階段」","s2.li3":"健檢結果顯示某個工作階段進了「立即交接」區間","s2.h2":"54 + 54 個工作階段實際怎麼結束的","s2.p2":"分檔不是拍腦袋，是本機 54 個 Claude 記錄 + 54 個 Codex 記錄的實測分佈：","s2.t.size":"記錄體積","s2.t.verdict":"判定","s2.t.measured":"實測","s2.r1":"該區間 100% 出現過致命錯誤","s2.r2":"約三成出現過","s2.r3":"約一成七出現過","s2.r4":"250 KB 以下無一出現過","s2.p3":"「致命錯誤」指真的殺死過工作階段的簽章：content-blocked、供應商熔斷、無可用管道、圖片尺寸超限。只讓人煩躁的錯誤不算。","s3.h":"怎麼用","s3.p1":"三種入口，功能等同，選順手的：","s3.gui.h":"網頁介面","s3.gui.p":"最好看，支援简体／繁體／English 隨時切換，淺色深色跟隨系統。服務只繫結本機回環位址，每個請求都要一次性權杖 —— 它能對任意路徑跑 git commit，所以這不是可選項。","s3.menu.h":"互動選單","s3.menu.p":"不用記參數。Windows 雙擊 <code>雙擊執行.cmd<\/code>，Linux／macOS 跑 <code>./scripts/run.sh<\/code>。把專案資料夾拖進視窗就能填路徑。","s3.cli.h":"命令列","s3.cli.p":"適合寫進腳本。加 <code>--json<\/code> 可以讓輸出被程式取用。","s4.h":"三步做了什麼","s4.step1.h":"第 1 步 · 提交快照","s4.step1.p":"把工作區的一切提交，但<strong>排除計畫文件宣告為「使用者私有」的檔案<\/strong>。識別方式：計畫文件裡寫了「`docs/LOGO.jpg` 是使用者私有檔案，不得提交」這類句子，路徑會被自動加進排除清單。","s4.step1.note":"排除用的是 git 的 <code>:(exclude,literal)<\/code> 長寫法而不是 <code>:!path<\/code> 簡寫：後者在舊版 git 上不支援，且路徑含 <code>[<\/code> 或 <code>*<\/code> 時會被當通用字元，排除會靜默失效 —— 私有檔案就被提交上去了。","s4.step2.h":"第 2 步 · 回填計畫","s4.step2.p":"依<strong>客觀證據<\/strong>勾選核取方塊，不看任何人的自我報告。一個任務的全部檔案都存在、全部符號都真的被 <code>def<\/code>／<code>class<\/code>／<code>function<\/code> 定義了，它的每一步才會被勾上。","s4.step3.h":"第 3 步 · 產生交接","s4.step3.p":"寫出一份交接 Markdown（現場、完成度、缺口、測試結果、環境陷阱）和一段可直接貼上的開場提示詞。","s5.h":"它憑什麼判斷「做完了」","s5.p1":"兩類證據，都能被獨立複核：","s5.e1.h":"檔案存在性","s5.e1.p":"計畫文件的 <code>**Files:**<\/code> 段列出每個任務應產出哪些檔案，直接查磁碟。","s5.e2.h":"符號定義","s5.e2.p":"<code>**Interfaces:**<\/code> 段列出應產出哪些符號，用一條合成正規表示式一次掃完全庫 —— 不是「檔案裡出現過這個詞」，而是「這個詞真的跟在 def／class／function／const 後面」。","s5.p2":"檔案在但符號沒定義 = 部分完成，不勾。這一條擋住了最常見的假完成：檔案被建立了但裡面是空的，或者只有一句 <code>pass<\/code>。","s5.diagram.title":"判定流程","s6.h":"它會自己攔住並行寫入","s6.p1":"兩個工作階段同時寫一個工作樹是<strong>唯一真能遺失工作<\/strong>的失敗模式：我們的 <code>git add<\/code> 覆蓋對方暫存的內容，或者對方的 <code>commit --amend<\/code> 重寫我們剛做的提交。","s6.block.h":"阻斷訊號 —— 預設停止，結束碼 3","s6.block.p":"這些只可能由另一個行程造成：","s6.block.li1":"暫存區已有檔案，而不是本次操作放進去的","s6.block.li2":"<code>index.lock<\/code> 存在 —— git 正在寫索引","s6.block.li3":"<code>MERGE_HEAD<\/code> / <code>rebase-merge<\/code> / <code>CHERRY_PICK_HEAD<\/code> 存在","s6.warn.h":"提示訊號 —— 繼續，但記錄進交接檔案","s6.warn.p":"兩分鐘內有 git 追蹤的檔案被變更。最常見的成因是<strong>你自己<\/strong>剛改完就來跑交接。","s6.why.h":"為什麼要分級","s6.why.p":"把「剛改完」當阻斷，會逼你每次都加 <code>--force<\/code>；而 <code>--force<\/code> 會連真正的阻斷訊號一起放過，反而更危險。分級之後 <code>--force<\/code> 變成真正的例外手段。","s6.after.h":"跑完還會再查一次","s6.after.p":"執行期間如果 HEAD 被<strong>別人的<\/strong>提交推進了，說明第二個工作階段在跟你賽跑，提示詞裡那個 HEAD 已經過期。工具會明確警告並建議重跑。我們自己的兩個提交是預期的，不會誤報 —— 三種語言的提交主題都被認得，切過語言也不會誤判。","s6.diagram.title":"並行保護流程","s7.h":"提示詞裡有什麼，為什麼","s7.p1":"五塊內容，缺任何一塊都會讓接續工作階段走錯路：","s7.b1.h":"現場座標","s7.b1.p":"儲存庫路徑、分支、HEAD。缺了它不知道自己在哪。","s7.b2.h":"先讀計畫文件，並點名意圖段落","s7.b2.p":"不只說「去看計畫」，而是點名 Goal／Constraints／Architecture 這幾段。缺了它把計畫當待辦清單，漏掉紅線。","s7.b3.h":"已完成任務的名字","s7.b3.p":"「不要重做 Task 1 / Task 3」。只給一個數字（「已完成 12 步」）沒用 —— 它不知道哪 12 步。","s7.b4.h":"具體缺口","s7.b4.p":"缺哪個檔案、缺哪個符號。缺了它要從頭找。","s7.b5.h":"過期宣告","s7.b5.p":"產生時間 + 對應 HEAD。缺了它舊提示詞會被重複使用，指向一個已經不存在的狀態。","s7.diagram.title":"提示詞五塊結構","s8.h":"提示詞會過期，別重複使用舊的","s8.p1":"提示詞末尾帶產生時間和 HEAD。儲存庫此後又有提交時，那段提示詞描述的現場已經不對了 —— 它說的「優先順序」和「缺口」可能已經被解決，它引用的 HEAD 可能已經被 rebase 掉。","s8.p2":"重跑一次，幾秒鐘的事。重複使用舊提示詞的代價是新工作階段依過時的地圖行動。","s9.h":"計畫文件長什麼樣","s9.p1":"自動探測：深度 5 以內、含任務標題且至少 3 個核取方塊的最新 markdown。也可以用 <code>--plan<\/code> 明確指定。","s9.p2":"Task 1 的兩個檔案都存在、兩個符號都真被定義，兩個 Step 才會被勾上。","s10.h":"參數表","s10.t.flag":"參數","s10.t.what":"作用","s10.exit.h":"結束碼","s10.exit.0":"成功","s10.exit.1":"沒有工作階段符合 <code>--find<\/code> 的關鍵字","s10.exit.2":"參數或環境錯誤（路徑不存在、不是 git 儲存庫、找不到 git）","s10.exit.3":"偵測到並行寫入而停止，未做任何變更","s11.h":"三條設計約束","s11.c1.h":"不硬編碼","s11.c1.p":"專案名、路徑、任務名、測試命令一律從儲存庫自身推斷。換一個專案不用改一行程式碼。","s11.c2.h":"失敗不中斷","s11.c2.p":"某個環節失敗（沒有 ripgrep、測試逾時、子模組讀不到）就降級，把已經拿到的資訊寫出來，不讓整次交接空手而歸。","s11.c3.h":"提示詞要短","s11.c3.p":"提示詞是要貼進新工作階段的，它自己就在消耗上下文。長的東西寫進交接檔案，讓智慧代理自己去讀。","s12.h":"一個做不到的情況","s12.p":"專案裡沒有計畫文件時，<strong>原始意圖無法傳遞<\/strong>。檔案存在性和符號定義能說明「做到哪一步」，但說不出「本來要做什麼」。這時工具會明確提醒你手動補一句目標。這不是 bug，是資訊本身不存在。","s13.h":"資料夾裡都有什麼","s13.t.path":"路徑","s13.t.what":"是什麼"},"en":{"lang":"en","dir_note":"English","title":"Session Salvage · Illustrated guide","tagline":"When a session dies, move the progress out of the chat and into the repository","nav":"Contents","s1.h":"When a session dies, what dies with it","s1.p1":"The code does not die. The code is on disk, and in git. What dies is <strong>everything that only existed inside that conversation<\/strong>:","s1.li1":"The goal — what you were actually trying to build","s1.li2":"The ruled-out approaches — tried it, does not work, do not try again","s1.li3":"The hard limits — which file must never be touched","s1.li4":"The next step — what the last session was about to do","s1.p2":"A fresh session gets none of it, so it redoes finished work, or edits the very file you said never to touch. This tool freezes those four things into files in the repository and lets the new session read them itself.","s2.h":"When to run it","s2.p1":"Three triggers — run it if any one appears:","s2.li1":"The conversation slows down, tool calls start failing, upstream returns 400 or a provider cutoff notice","s2.li2":"You are already wondering whether to start a new session","s2.li3":"The vitals check puts a session in the \"hand off now\" band","s2.h2":"How 54 + 54 sessions actually ended","s2.p2":"The bands are not guesses. They come from the measured distribution of 54 Claude transcripts and 54 Codex transcripts on one machine:","s2.t.size":"Transcript size","s2.t.verdict":"Verdict","s2.t.measured":"Measured","s2.r1":"100% of this band hit a fatal error","s2.r2":"About a third did","s2.r3":"About 17% did","s2.r4":"Nothing under 250 KB did","s2.p3":"\"Fatal error\" means a signature that actually killed a session: content-blocked, provider cutoff, no available channel, image dimension exceeded. Errors that were merely annoying do not count.","s3.h":"How to run it","s3.p1":"Three entry points, equivalent features. Pick whichever fits your hands:","s3.gui.h":"Web interface","s3.gui.p":"The best looking one. Switch between simplified Chinese, traditional Chinese, and English at any time; light and dark follow the system. The server binds the loopback address only and every request needs a one-shot token — it can run git commit against an arbitrary path, so that is not optional.","s3.menu.h":"Interactive menu","s3.menu.p":"No flags to remember. Double-click <code>双击运行.cmd<\/code> on Windows, run <code>./scripts/run.sh<\/code> on Linux and macOS. Drag the project folder into the window to fill the path.","s3.cli.h":"Command line","s3.cli.p":"Best for scripts. Add <code>--json<\/code> to make the output machine-consumable.","s4.h":"What the three steps do","s4.step1.h":"Step 1 · Commit snapshot","s4.step1.p":"Commits everything in the worktree, <strong>except files the plan document declares user-owned<\/strong>. How it recognizes them: the plan says something like \"`docs/LOGO.jpg` is a user-owned file and must not be committed\", and that path is added to the exclusion list automatically.","s4.step1.note":"The exclusion uses git's long <code>:(exclude,literal)<\/code> form rather than the <code>:!path<\/code> shorthand. The shorthand is unsupported on older git, and when the path contains <code>[<\/code> or <code>*<\/code> it is treated as a glob, so the exclusion silently fails — and the private file gets committed.","s4.step2.h":"Step 2 · Backfill the plan","s4.step2.p":"Ticks checkboxes from <strong>objective evidence<\/strong>, never from anyone's self-report. Only when every file of a task exists and every symbol is genuinely defined by a <code>def<\/code> / <code>class<\/code> / <code>function<\/code> does it tick that task's steps.","s4.step3.h":"Step 3 · Write the handoff","s4.step3.p":"Produces a handoff Markdown (state, completion, gaps, test results, environment traps) and an opening prompt you can paste straight in.","s5.h":"How it decides something is done","s5.p1":"Two kinds of evidence, both independently checkable:","s5.e1.h":"File existence","s5.e1.p":"The plan's <code>**Files:**<\/code> block lists which files each task should produce; it checks the disk directly.","s5.e2.h":"Symbol definition","s5.e2.p":"The <code>**Interfaces:**<\/code> block lists which symbols should exist, and one composed regex sweeps the whole repository in a single pass — not \"the word appears in a file\" but \"the word actually follows def / class / function / const\".","s5.p2":"File present but symbol undefined means partial — no tick. That single rule catches the most common false completion: the file was created but it is empty, or it holds one <code>pass<\/code>.","s5.diagram.title":"Verdict flow","s6.h":"It stops concurrent writes by itself","s6.p1":"Two sessions writing one worktree is the <strong>single failure mode that genuinely loses work<\/strong>: our <code>git add<\/code> buries what they staged, or their <code>commit --amend<\/code> rewrites the commit we just made.","s6.block.h":"Blocking signals — stop by default, exit code 3","s6.block.p":"Only another process can cause these:","s6.block.li1":"Files already staged that this run did not stage","s6.block.li2":"<code>index.lock<\/code> present — git is writing the index","s6.block.li3":"<code>MERGE_HEAD<\/code> / <code>rebase-merge<\/code> / <code>CHERRY_PICK_HEAD<\/code> present","s6.warn.h":"Advisory signals — continue, but record them in the handoff","s6.warn.p":"A git-tracked file modified within the last two minutes. The most common cause is <strong>you<\/strong>, having just finished editing and come straight here.","s6.why.h":"Why the split matters","s6.why.p":"Treating \"just edited\" as blocking would force <code>--force<\/code> on every run, and <code>--force<\/code> waves through the real blocking signals too. That is worse. With the split, <code>--force<\/code> stays a genuine exception.","s6.after.h":"It checks again afterwards","s6.after.p":"If <strong>someone else's<\/strong> commit moved HEAD while it ran, a second session is racing you and the HEAD in the prompt is already stale. The tool warns explicitly and suggests rerunning. Our own two commits are expected and never trigger it — the commit subjects are recognized in all three languages, so switching language does not cause a false alarm.","s6.diagram.title":"Concurrency protection flow","s7.h":"What is in the prompt, and why","s7.p1":"Five blocks. Missing any one of them sends the next session down the wrong path:","s7.b1.h":"Coordinates","s7.b1.p":"Repository path, branch, HEAD. Without it the agent does not know where it is.","s7.b2.h":"Read the plan first, with the intent sections named","s7.b2.p":"Not just \"go look at the plan\" but naming the Goal / Constraints / Architecture sections. Without it the plan reads as a to-do list and the hard limits get missed.","s7.b3.h":"The names of finished tasks","s7.b3.p":"\"Do not redo Task 1 / Task 3\". A bare number (\"12 steps done\") is useless — the agent does not know which 12.","s7.b4.h":"Concrete gaps","s7.b4.p":"Which file is missing, which symbol is missing. Without it the agent starts the search from scratch.","s7.b5.h":"Expiry statement","s7.b5.p":"Generation time plus the matching HEAD. Without it an old prompt gets reused, pointing at a state that no longer exists.","s7.diagram.title":"The prompt's five blocks","s8.h":"Prompts expire — do not reuse an old one","s8.p1":"The prompt ends with its generation time and HEAD. Once the repository takes new commits, the state it describes is wrong: the \"priority\" and \"gaps\" it names may already be resolved, and the HEAD it cites may have been rebased away.","s8.p2":"Rerunning takes seconds. The cost of reusing an old prompt is a new session acting on an out-of-date map.","s9.h":"What a plan document looks like","s9.p1":"Auto-detected: the newest markdown within depth 5 that has task headings and at least three checkboxes. You can also name one with <code>--plan<\/code>.","s9.p2":"Both of Task 1's files must exist and both symbols must genuinely be defined before the two steps get ticked.","s10.h":"Flags","s10.t.flag":"Flag","s10.t.what":"What it does","s10.exit.h":"Exit codes","s10.exit.0":"Success","s10.exit.1":"No session matched the <code>--find<\/code> keyword","s10.exit.2":"Bad argument or environment (path missing, not a git repository, git not found)","s10.exit.3":"Stopped because a concurrent write was detected; nothing was changed","s11.h":"Three design constraints","s11.c1.h":"Hardcode nothing","s11.c1.p":"Project name, paths, task names, and test commands are all inferred from the repository. Point it at another project and not one line changes.","s11.c2.h":"Failure never aborts","s11.c2.p":"When a step fails — no ripgrep, a test timeout, an unreadable submodule — it degrades and writes out what it did get, rather than leaving the whole handoff empty-handed.","s11.c3.h":"The prompt stays short","s11.c3.p":"The prompt is pasted into the new session, so it consumes context by existing. Long material goes into the handoff file for the agent to read itself.","s12.h":"One thing it cannot do","s12.p":"With no plan document in the project, <strong>the original intent cannot be transmitted<\/strong>. File existence and symbol definitions can say how far the work got, but not what it was for. The tool tells you plainly to add a goal by hand. That is not a bug; the information simply is not there.","s13.h":"What is in the folder","s13.t.path":"Path","s13.t.what":"What it is"}}</script>
+<script id="cli-i18n" type="application/json">{"zh-Hans":{"cli.arg.repo":"仓库路径，默认当前目录","cli.arg.plan":"计划文档路径；省略则自动探测最新的含复选框任务文档","cli.arg.out":"交接文件输出路径；默认与计划文档同目录","cli.arg.message":"提交信息；省略则自动生成","cli.arg.no_commit":"不提交，只分析并生成交接文件","cli.arg.skip_tests":"不跑测试（快速模式）","cli.arg.test_timeout":"单条测试命令超时秒数，默认 900","cli.arg.vitals":"只体检本机会话转录并退出，不碰仓库","cli.arg.no_vitals":"跳过会话体检（交接文件里不含体征表）","cli.arg.find":"按会话 ID 片段 / 目录片段 / 开场提问关键词定位会话","cli.arg.limit":"每个智能体最多扫描多少个最新转录，默认 12","cli.arg.force":"忽略并发写入警告强行继续（确认没有其他会话在跑时才用）","cli.arg.dry_run":"全程只打印将要做什么，不写任何文件","cli.arg.lang":"界面与产出语言：zh-Hans / zh-Hant / en；省略则按系统区域设置","cli.arg.gui":"启动本地网页界面（浏览器操作，等价于全部命令行功能）","cli.arg.port":"网页界面端口；0 表示自动挑一个空闲端口","cli.arg.no_browser":"启动网页界面但不自动打开浏览器","cli.arg.jobs":"并行度；0 表示按 CPU 核数自动决定","cli.arg.json":"以 JSON 输出结果，供脚本消费"},"zh-Hant":{"cli.arg.repo":"儲存庫路徑，預設目前目錄","cli.arg.plan":"計畫文件路徑；省略則自動探測最新的含核取方塊任務文件","cli.arg.out":"交接檔案輸出路徑；預設與計畫文件同目錄","cli.arg.message":"提交訊息；省略則自動產生","cli.arg.no_commit":"不提交，只分析並產生交接檔案","cli.arg.skip_tests":"不跑測試（快速模式）","cli.arg.test_timeout":"單條測試命令逾時秒數，預設 900","cli.arg.vitals":"只健檢本機工作階段記錄並結束，不動儲存庫","cli.arg.no_vitals":"略過工作階段健檢（交接檔案裡不含體徵表）","cli.arg.find":"依工作階段 ID 片段 / 目錄片段 / 開場提問關鍵字定位工作階段","cli.arg.limit":"每個智慧代理最多掃描多少個最新記錄，預設 12","cli.arg.force":"忽略並行寫入警告強行繼續（確認沒有其他工作階段在跑時才用）","cli.arg.dry_run":"全程只印出將要做什麼，不寫任何檔案","cli.arg.lang":"介面與產出語言：zh-Hans / zh-Hant / en；省略則依系統地區設定","cli.arg.gui":"啟動本機網頁介面（瀏覽器操作，等同於全部命令列功能）","cli.arg.port":"網頁介面通訊埠；0 表示自動挑一個空閒通訊埠","cli.arg.no_browser":"啟動網頁介面但不自動開啟瀏覽器","cli.arg.jobs":"並行度；0 表示依 CPU 核心數自動決定","cli.arg.json":"以 JSON 輸出結果，供腳本取用"},"en":{"cli.arg.repo":"Repository path; defaults to the current directory","cli.arg.plan":"Path to the plan document; omit to auto-detect the newest checkbox-bearing task document","cli.arg.out":"Output path for the handoff file; defaults to the plan document's directory","cli.arg.message":"Commit message; omit to generate one","cli.arg.no_commit":"Do not commit; analyze and write the handoff file only","cli.arg.skip_tests":"Do not run tests (fast mode)","cli.arg.test_timeout":"Timeout in seconds per test command; default 900","cli.arg.vitals":"Only check local session transcripts and exit; never touches the repository","cli.arg.no_vitals":"Skip the session check (no vitals table in the handoff file)","cli.arg.find":"Locate a session by id fragment, directory fragment, or opening-prompt keyword","cli.arg.limit":"Maximum transcripts to scan per agent; default 12","cli.arg.force":"Ignore concurrent-write warnings and continue (only when you know no other session is running)","cli.arg.dry_run":"Print what would happen without writing any file","cli.arg.lang":"Interface and output language: zh-Hans / zh-Hant / en; omit to follow the system locale","cli.arg.gui":"Launch the local web interface (browser-driven, equivalent to every CLI feature)","cli.arg.port":"Web interface port; 0 picks a free port automatically","cli.arg.no_browser":"Start the web interface without opening a browser","cli.arg.jobs":"Parallelism; 0 decides from the CPU count","cli.arg.json":"Emit results as JSON for scripts to consume"}}</script>
+<style>
+/* 与网页界面同一套 token，浅色为默认。单文件、零外链，双击即可打开。 */
+:root{
+  --bg:#EFF3F3;--surface:#FFFFFF;--surface-2:#F7FAFA;--line:#DDE5E4;--line-soft:#E7EEEC;
+  --ink:#0F1719;--ink-2:#3B4A4D;--ink-3:#6A7A7D;
+  --accent:#24664A;--accent-ink:#FFFFFF;--accent-sub:#DCEBE3;
+  --danger:#96352D;--danger-bg:#F6DFDC;--warn:#A9660F;--warn-bg:#F8EBD4;
+  --info:#3A5877;--info-bg:#E0E8F1;--good:#24664A;--good-bg:#DCEBE3;
+  --shadow-1:0 1px 2px rgba(15,23,25,.06),0 1px 3px rgba(15,23,25,.04);
+  --shadow-2:0 2px 4px rgba(15,23,25,.06),0 8px 24px rgba(15,23,25,.07);
+  --r-sm:6px;--r-md:10px;--r-lg:14px;
+  --mono:ui-monospace,SFMono-Regular,"Cascadia Mono","JetBrains Mono",Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI","PingFang SC","Microsoft YaHei UI","Noto Sans CJK SC",Roboto,Helvetica,Arial,sans-serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0A1013;--surface:#121B1E;--surface-2:#1A2528;--line:#243135;--line-soft:#1F2B2E;
+  --ink:#E7EEEC;--ink-2:#AFBDBC;--ink-3:#7B8B8D;
+  --accent:#6BC095;--accent-ink:#06120C;--accent-sub:#14301F;
+  --danger:#E0857B;--danger-bg:#341A17;--warn:#E4A85A;--warn-bg:#33260F;
+  --info:#93B9DB;--info-bg:#17222F;--good:#6BC095;--good-bg:#14301F;
+  --shadow-1:0 1px 2px rgba(0,0,0,.5);--shadow-2:0 2px 6px rgba(0,0,0,.5),0 10px 30px rgba(0,0,0,.45);
+}}
+:root[data-theme="dark"]{
+  --bg:#0A1013;--surface:#121B1E;--surface-2:#1A2528;--line:#243135;--line-soft:#1F2B2E;
+  --ink:#E7EEEC;--ink-2:#AFBDBC;--ink-3:#7B8B8D;
+  --accent:#6BC095;--accent-ink:#06120C;--accent-sub:#14301F;
+  --danger:#E0857B;--danger-bg:#341A17;--warn:#E4A85A;--warn-bg:#33260F;
+  --info:#93B9DB;--info-bg:#17222F;--good:#6BC095;--good-bg:#14301F;
+  --shadow-1:0 1px 2px rgba(0,0,0,.5);--shadow-2:0 2px 6px rgba(0,0,0,.5),0 10px 30px rgba(0,0,0,.45);
+}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 15px/1.72 var(--sans);-webkit-font-smoothing:antialiased}
+h1,h2,h3,h4{margin:0;font-weight:600;letter-spacing:-.012em}
+p{margin:0}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:.88em;background:var(--surface-2);padding:1px 5px;border-radius:4px;border:1px solid var(--line-soft)}
+pre{margin:0;padding:15px 17px;background:var(--surface-2);border:1px solid var(--line-soft);border-radius:var(--r-sm);overflow-x:auto;font-family:var(--mono);font-size:12.8px;line-height:1.65}
+pre code{background:none;border:0;padding:0;font-size:inherit}
+svg text{font-family:var(--sans)}
+
+.top{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:14px;padding:11px 26px;background:var(--surface);border-bottom:1px solid var(--line)}
+.top .mark{width:27px;height:27px;flex:none}
+.top .mark rect{fill:var(--accent)}
+.top .mark path{fill:var(--accent-ink)}
+.top .name{font-size:14px;font-weight:600}
+.top .spacer{margin-left:auto}
+.seg{display:flex;gap:2px;padding:2px;background:var(--surface-2);border:1px solid var(--line-soft);border-radius:var(--r-sm)}
+.seg button{border:0;border-radius:4px;background:transparent;color:var(--ink-3);font:inherit;font-size:12.5px;padding:5px 11px;cursor:pointer}
+.seg button:hover{color:var(--ink)}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:var(--shadow-1);font-weight:600}
+
+.wrap{display:grid;grid-template-columns:minmax(0,1fr) 226px;gap:44px;max-width:1180px;margin:0 auto;padding:38px 26px 90px}
+.hero{margin-bottom:40px}
+.hero h1{font-size:31px;line-height:1.25}
+.hero p{margin-top:10px;font-size:16.5px;color:var(--ink-3);max-width:56ch}
+
+section{margin:0 0 44px}
+section>h2{font-size:22px;padding-bottom:9px;border-bottom:2px solid var(--accent-sub);margin-bottom:16px}
+section h3{font-size:16px;margin:22px 0 8px}
+section p+p{margin-top:11px}
+section p,section li{color:var(--ink-2)}
+section strong{color:var(--ink);font-weight:600}
+ul,ol{margin:11px 0;padding-left:22px}
+li{margin:5px 0}
+
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:19px 21px;box-shadow:var(--shadow-1);margin:15px 0}
+.card>h3:first-child,.card>h4:first-child{margin-top:0}
+.note{border-left:3px solid var(--info);background:var(--info-bg);border-radius:0 var(--r-sm) var(--r-sm) 0;padding:13px 16px;margin:15px 0;font-size:13.8px}
+.note.warn{border-left-color:var(--warn);background:var(--warn-bg)}
+.note.stop{border-left-color:var(--danger);background:var(--danger-bg)}
+.note p{color:inherit}
+
+.steps{display:grid;gap:13px;margin:17px 0}
+.step{display:grid;grid-template-columns:34px minmax(0,1fr);gap:15px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);padding:16px 18px}
+.step .n{display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:50%;background:var(--accent);color:var(--accent-ink);font:600 15px/1 var(--mono)}
+.step h4{font-size:14.5px;margin-bottom:5px}
+.step p{font-size:13.8px}
+
+.trio{display:grid;grid-template-columns:repeat(auto-fit,minmax(228px,1fr));gap:13px;margin:17px 0}
+
+table{width:100%;border-collapse:collapse;font-size:13.8px;margin:15px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line-soft);vertical-align:top}
+th{font-size:11.8px;font-weight:600;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;border-bottom:1px solid var(--line)}
+td code{white-space:nowrap}
+tr:last-child td{border-bottom:0}
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.pill{display:inline-block;padding:1.5px 8px;border-radius:100px;font-size:11.8px;font-weight:600;white-space:nowrap}
+.pill.critical{background:var(--danger-bg);color:var(--danger)}
+.pill.high{background:var(--warn-bg);color:var(--warn)}
+.pill.watch{background:var(--info-bg);color:var(--info)}
+.pill.ok{background:var(--good-bg);color:var(--good)}
+
+figure{margin:19px 0}
+figure svg{display:block;width:100%;height:auto;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md)}
+figcaption{margin-top:7px;font-size:12.5px;color:var(--ink-3);text-align:center}
+
+.toc{position:sticky;top:76px;align-self:start;font-size:13px;max-height:calc(100vh - 110px);overflow-y:auto}
+.toc h2{font-size:11.8px;color:var(--ink-3);letter-spacing:.06em;text-transform:uppercase;margin-bottom:9px}
+.toc a{display:block;padding:4px 0 4px 10px;color:var(--ink-3);text-decoration:none;border-left:2px solid var(--line);line-height:1.4}
+.toc a:hover{color:var(--ink);border-left-color:var(--ink-3)}
+.toc a.on{color:var(--accent);border-left-color:var(--accent);font-weight:550}
+
+@media (max-width:940px){
+  .wrap{grid-template-columns:minmax(0,1fr);gap:0;padding:26px 18px 70px}
+  .toc{display:none}
+  .hero h1{font-size:25px}
+  .top{padding:10px 16px}
+}
+@media print{.top,.toc{display:none}.wrap{display:block;max-width:none}}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9"/><path d="M8.5 21.5l5.2-9.4 4.1 6.2 2.1-3.2 3.6 6.4z"/></svg>
+  <span class="name" data-g="title"></span>
+  <span class="spacer"></span>
+  <div class="seg" id="lang-seg" role="group" aria-label="Language"></div>
+  <div class="seg" id="theme-seg" role="group" aria-label="Theme">
+    <button data-theme-set="light">☀</button>
+    <button data-theme-set="auto">◐</button>
+    <button data-theme-set="dark">☾</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <main>
+    <div class="hero">
+      <h1 data-g="title"></h1>
+      <p data-g="tagline"></p>
+    </div>
+    <div id="body"></div>
+  </main>
+  <nav class="toc" id="toc"><h2 data-g="nav"></h2></nav>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  const T = JSON.parse(document.getElementById("guide-i18n").textContent);
+  // 参数说明直接取程序自己的 i18n 表，文档与 --help 不可能漂移。
+  window.__CLI_STRINGS__ = JSON.parse(document.getElementById("cli-i18n").textContent);
+  const ORDER = ["zh-Hans", "zh-Hant", "en"];
+  const SHORT = { "zh-Hans": "简", "zh-Hant": "繁", en: "EN" };
+  let lang = pickLang();
+
+  function pickLang() {
+    let saved = null;
+    try { saved = localStorage.getItem("ah.guide.lang"); } catch (e) {}
+    if (saved && T[saved]) return saved;
+    const nav = (navigator.language || "zh-Hans").toLowerCase();
+    if (nav.startsWith("en")) return "en";
+    if (/hant|-tw|-hk|-mo/.test(nav)) return "zh-Hant";
+    return "zh-Hans";
+  }
+  const g = (k) => (T[lang] && T[lang][k]) !== undefined ? T[lang][k] : (T["zh-Hans"][k] || "??" + k + "??");
+
+  /* h(tag, attrs, ...kids) —— attrs.html 明确表示这段是模板自带的富文本，
+     它来自本仓库的 JSON，不是用户输入。其余一律 textContent。 */
+  function h(spec, attrs) {
+    const p = String(spec).split("."), n = document.createElement(p[0] || "div");
+    for (let i = 1; i < p.length; i++) n.classList.add(p[i]);
+    if (attrs) for (const k in attrs) {
+      if (attrs[k] == null || attrs[k] === false) continue;
+      if (k === "html") n.innerHTML = attrs[k];
+      else if (k === "text") n.textContent = String(attrs[k]);
+      else n.setAttribute(k, String(attrs[k]));
+    }
+    for (let i = 2; i < arguments.length; i++) {
+      const c = arguments[i];
+      if (c == null || c === false) continue;
+      n.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+    }
+    return n;
+  }
+  const rich = (tag, key) => h(tag, { html: g(key) });
+  const svg = (markup) => { const d = h("div"); d.innerHTML = markup; return d.firstElementChild; };
+  const fig = (markup, capKey) => h("figure", null, svg(markup), h("figcaption", { text: g(capKey) }));
+
+  /* ── 三张图。用 currentColor 与 CSS 变量，深浅两套主题下都可读。 ── */
+  const D_VERDICT = `
+<svg viewBox="0 0 720 232" role="img" aria-label="verdict flow">
+  <g fill="none" stroke="var(--line)" stroke-width="1.5">
+    <rect x="14" y="86" width="126" height="58" rx="8" fill="var(--surface-2)"/>
+    <rect x="196" y="20" width="140" height="52" rx="8" fill="var(--surface-2)"/>
+    <rect x="196" y="94" width="140" height="52" rx="8" fill="var(--surface-2)"/>
+    <rect x="196" y="168" width="140" height="52" rx="8" fill="var(--surface-2)"/>
+    <rect x="410" y="20" width="126" height="52" rx="8" fill="var(--good-bg)" stroke="var(--good)"/>
+    <rect x="410" y="94" width="126" height="52" rx="8" fill="var(--warn-bg)" stroke="var(--warn)"/>
+    <rect x="410" y="168" width="126" height="52" rx="8" fill="var(--danger-bg)" stroke="var(--danger)"/>
+  </g>
+  <g stroke="var(--ink-3)" stroke-width="1.4" fill="none" marker-end="url(#ah)">
+    <path d="M140 106 L 196 50"/><path d="M140 115 L 196 120"/><path d="M140 124 L 196 190"/>
+    <path d="M336 46 L 410 46"/><path d="M336 120 L 410 120"/><path d="M336 194 L 410 194"/>
+  </g>
+  <defs><marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0 0 L8 4 L0 8 z" fill="var(--ink-3)" stroke="none"/></marker></defs>
+  <g font-size="12.5" fill="var(--ink-2)" text-anchor="middle">
+    <text x="77" y="110">Task N</text><text x="77" y="128">files + symbols</text>
+    <text x="266" y="42">files 3/3</text><text x="266" y="58">symbols 4/4</text>
+    <text x="266" y="116">files 3/3</text><text x="266" y="132">symbols 2/4</text>
+    <text x="266" y="190">files 0/3</text><text x="266" y="206">symbols 0/4</text>
+  </g>
+  <g font-size="13" font-weight="600" text-anchor="middle">
+    <text x="473" y="51" fill="var(--good)">✓ tick all steps</text>
+    <text x="473" y="125" fill="var(--warn)">partial · no tick</text>
+    <text x="473" y="199" fill="var(--danger)">not started</text>
+  </g>
+  <g font-size="11.5" fill="var(--ink-3)">
+    <text x="556" y="46">complete = true</text>
+    <text x="556" y="120">complete = false</text>
+    <text x="556" y="194">complete = false</text>
+  </g>
+</svg>`;
+
+  const D_CONC = `
+<svg viewBox="0 0 720 300" role="img" aria-label="concurrency protection flow">
+  <defs><marker id="ah2" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0 0 L8 4 L0 8 z" fill="var(--ink-3)" stroke="none"/></marker></defs>
+  <g fill="var(--surface-2)" stroke="var(--line)" stroke-width="1.5">
+    <rect x="270" y="14" width="180" height="46" rx="8"/>
+    <rect x="270" y="90" width="180" height="46" rx="8"/>
+  </g>
+  <rect x="30" y="166" width="200" height="112" rx="8" fill="var(--danger-bg)" stroke="var(--danger)" stroke-width="1.5"/>
+  <rect x="262" y="166" width="196" height="112" rx="8" fill="var(--warn-bg)" stroke="var(--warn)" stroke-width="1.5"/>
+  <rect x="490" y="166" width="200" height="112" rx="8" fill="var(--good-bg)" stroke="var(--good)" stroke-width="1.5"/>
+  <g stroke="var(--ink-3)" stroke-width="1.4" fill="none" marker-end="url(#ah2)">
+    <path d="M360 60 L 360 90"/>
+    <path d="M300 136 L 150 166"/><path d="M360 136 L 360 166"/><path d="M420 136 L 570 166"/>
+  </g>
+  <g text-anchor="middle">
+    <text x="360" y="42" font-size="13" font-weight="600" fill="var(--ink)">detect_concurrency()</text>
+    <text x="360" y="112" font-size="12.5" fill="var(--ink-2)">classify each signal</text>
+    <text x="360" y="128" font-size="11.5" fill="var(--ink-3)">only-another-process?  or  could-be-you?</text>
+    <text x="130" y="192" font-size="13" font-weight="600" fill="var(--danger)">BLOCKING</text>
+    <text x="360" y="192" font-size="13" font-weight="600" fill="var(--warn)">ADVISORY</text>
+    <text x="590" y="192" font-size="13" font-weight="600" fill="var(--good)">CLEAN</text>
+  </g>
+  <g font-size="11.5" fill="var(--ink-2)">
+    <text x="44" y="214">staged by someone else</text>
+    <text x="44" y="232">index.lock / MERGE_HEAD</text>
+    <text x="44" y="250" font-weight="600" fill="var(--danger)">stop · exit 3</text>
+    <text x="44" y="268">--force to override</text>
+    <text x="276" y="214">tracked file touched</text>
+    <text x="276" y="232">in the last 120s</text>
+    <text x="276" y="250" font-weight="600" fill="var(--warn)">continue</text>
+    <text x="276" y="268">recorded in handoff</text>
+    <text x="504" y="214">no signal</text>
+    <text x="504" y="250" font-weight="600" fill="var(--good)">commit snapshot</text>
+    <text x="504" y="268">then re-check HEAD</text>
+  </g>
+</svg>`;
+
+  const D_PROMPT = `
+<svg viewBox="0 0 720 322" role="img" aria-label="prompt structure">
+  <g stroke-width="1.5">
+    <rect x="24" y="14" width="330" height="50" rx="7" fill="var(--surface-2)" stroke="var(--line)"/>
+    <rect x="24" y="74" width="330" height="50" rx="7" fill="var(--surface-2)" stroke="var(--line)"/>
+    <rect x="24" y="134" width="330" height="50" rx="7" fill="var(--surface-2)" stroke="var(--line)"/>
+    <rect x="24" y="194" width="330" height="50" rx="7" fill="var(--surface-2)" stroke="var(--line)"/>
+    <rect x="24" y="254" width="330" height="50" rx="7" fill="var(--accent-sub)" stroke="var(--accent)"/>
+  </g>
+  <g font-size="12.5" font-weight="600" fill="var(--ink)">
+    <text x="40" y="36">1 · repo / branch / HEAD</text>
+    <text x="40" y="96">2 · read the plan + intent sections</text>
+    <text x="40" y="156">3 · finished tasks by name</text>
+    <text x="40" y="216">4 · concrete gaps</text>
+    <text x="40" y="276" fill="var(--accent)">5 · expiry: time + HEAD</text>
+  </g>
+  <g font-size="11" fill="var(--ink-3)">
+    <text x="40" y="52">where am I</text>
+    <text x="40" y="112">what counts as done, what must not change</text>
+    <text x="40" y="172">do not redo Task 1 / Task 3</text>
+    <text x="40" y="232">missing file X, missing symbol Y</text>
+    <text x="40" y="292">rerun instead of reusing</text>
+  </g>
+  <g stroke="var(--danger)" stroke-width="1.2" stroke-dasharray="4 3" fill="none">
+    <path d="M354 39 L 396 39"/><path d="M354 99 L 396 99"/><path d="M354 159 L 396 159"/>
+    <path d="M354 219 L 396 219"/><path d="M354 279 L 396 279"/>
+  </g>
+  <g font-size="11.5" fill="var(--danger)">
+    <text x="404" y="43">agent has no coordinates</text>
+    <text x="404" y="103">plan read as a to-do list</text>
+    <text x="404" y="163">finished work redone</text>
+    <text x="404" y="223">gap search from scratch</text>
+    <text x="404" y="283">acts on a stale map</text>
+  </g>
+  <text x="404" y="20" font-size="11" font-weight="600" fill="var(--danger)">missing → consequence</text>
+</svg>`;
+
+  /* ── 章节 ────────────────────────────────────────────────── */
+  function build() {
+    const out = document.getElementById("body");
+    while (out.firstChild) out.removeChild(out.firstChild);
+    const secs = [];
+    const sec = (id, hKey, kids) => {
+      const s = h("section", { id: id }, h("h2", { text: g(hKey) }));
+      kids.forEach((k) => k && s.appendChild(k));
+      secs.push([id, g(hKey)]);
+      out.appendChild(s);
+    };
+
+    sec("s1", "s1.h", [
+      rich("p", "s1.p1"),
+      h("ul", null, rich("li", "s1.li1"), rich("li", "s1.li2"), rich("li", "s1.li3"), rich("li", "s1.li4")),
+      rich("p", "s1.p2")
+    ]);
+
+    const bands = [
+      ["≥ 8 MB", "critical", g("band.critical") || "", "s2.r1"],
+      ["≥ 3 MB", "high", "", "s2.r2"],
+      ["≥ 1 MB", "watch", "", "s2.r3"],
+      ["< 1 MB", "ok", "", "s2.r4"]
+    ];
+    const bandLabel = { critical: { "zh-Hans": "立刻交接", "zh-Hant": "立即交接", en: "hand off now" },
+                        high: { "zh-Hans": "尽快交接", "zh-Hant": "盡快交接", en: "hand off soon" },
+                        watch: { "zh-Hans": "留意", "zh-Hant": "留意", en: "watch" },
+                        ok: { "zh-Hans": "健康", "zh-Hant": "健康", en: "healthy" } };
+    const bandTable = h("table", null,
+      h("thead", null, h("tr", null,
+        h("th", { text: g("s2.t.size") }), h("th", { text: g("s2.t.verdict") }), h("th", { text: g("s2.t.measured") }))),
+      h("tbody", null, ...bands.map((b) => h("tr", null,
+        h("td", null, h("code", { text: b[0] })),
+        h("td", null, h("span", { class: "pill " + b[1], text: bandLabel[b[1]][lang] })),
+        h("td", { text: g(b[3]) })))));
+    sec("s2", "s2.h", [
+      rich("p", "s2.p1"),
+      h("ul", null, rich("li", "s2.li1"), rich("li", "s2.li2"), rich("li", "s2.li3")),
+      h("h3", { text: g("s2.h2") }), rich("p", "s2.p2"),
+      h("div.tw", null, bandTable), rich("p", "s2.p3")
+    ]);
+
+    const card = (hk, pk, code) => h("div.card", null, h("h3", { text: g(hk) }), rich("p", pk),
+      code ? h("pre", null, h("code", { text: code })) : null);
+    sec("s3", "s3.h", [
+      rich("p", "s3.p1"),
+      card("s3.gui.h", "s3.gui.p", "agent-handoff --gui"),
+      card("s3.menu.h", "s3.menu.p", "python -m agent_handoff.menu"),
+      card("s3.cli.h", "s3.cli.p",
+        "agent-handoff --vitals\nagent-handoff --find 01a00e83\nagent-handoff /path/to/project --dry-run\nagent-handoff /path/to/project")
+    ]);
+
+    const step = (n, hk, pk, extra) => h("div.step", null, h("div.n", { text: String(n) }),
+      h("div", null, h("h4", { text: g(hk) }), rich("p", pk), extra || null));
+    sec("s4", "s4.h", [
+      h("div.steps", null,
+        step(1, "s4.step1.h", "s4.step1.p", h("div.note.warn", null, rich("p", "s4.step1.note"))),
+        step(2, "s4.step2.h", "s4.step2.p"),
+        step(3, "s4.step3.h", "s4.step3.p"))
+    ]);
+
+    sec("s5", "s5.h", [
+      rich("p", "s5.p1"),
+      h("div.trio", null, card("s5.e1.h", "s5.e1.p"), card("s5.e2.h", "s5.e2.p")),
+      rich("p", "s5.p2"),
+      fig(D_VERDICT, "s5.diagram.title")
+    ]);
+
+    sec("s6", "s6.h", [
+      rich("p", "s6.p1"),
+      h("div.note.stop", null, h("h3", { text: g("s6.block.h") }), rich("p", "s6.block.p"),
+        h("ul", null, rich("li", "s6.block.li1"), rich("li", "s6.block.li2"), rich("li", "s6.block.li3"))),
+      h("div.note.warn", null, h("h3", { text: g("s6.warn.h") }), rich("p", "s6.warn.p")),
+      h("div.card", null, h("h3", { text: g("s6.why.h") }), rich("p", "s6.why.p")),
+      fig(D_CONC, "s6.diagram.title"),
+      h("div.card", null, h("h3", { text: g("s6.after.h") }), rich("p", "s6.after.p"))
+    ]);
+
+    sec("s7", "s7.h", [
+      rich("p", "s7.p1"),
+      h("div.trio", null,
+        card("s7.b1.h", "s7.b1.p"), card("s7.b2.h", "s7.b2.p"), card("s7.b3.h", "s7.b3.p"),
+        card("s7.b4.h", "s7.b4.p"), card("s7.b5.h", "s7.b5.p")),
+      fig(D_PROMPT, "s7.diagram.title")
+    ]);
+
+    sec("s8", "s8.h", [rich("p", "s8.p1"), rich("p", "s8.p2")]);
+
+    const PLAN = "**Goal:** " + (lang === "en" ? "One sentence on what this project is for."
+      : lang === "zh-Hant" ? "一句話說清這個專案要做什麼。" : "一句话说清这个项目要做什么。") +
+      "\n\n## Global Constraints\n- `docs/LOGO.jpg` " +
+      (lang === "en" ? "is a user-owned file and must not be committed."
+        : lang === "zh-Hant" ? "是使用者私有檔案，不得提交。" : "是用户私有文件，不得提交。") +
+      "\n\n### Task 1: " + (lang === "en" ? "Build the data layer" : lang === "zh-Hant" ? "建立資料層" : "建立数据层") +
+      "\n\n**Files:**\n- Create: `src/db/schema.py`\n- Modify: `src/config.py`\n\n" +
+      "**Interfaces:**\n- Produces: `create_schema`, `Migration`\n\n" +
+      "- [ ] **Step 1** " + (lang === "en" ? "Define the table structure" : lang === "zh-Hant" ? "定義表結構" : "定义表结构") +
+      "\n- [ ] **Step 2** " + (lang === "en" ? "Write the migration script" : lang === "zh-Hant" ? "寫遷移腳本" : "写迁移脚本");
+    sec("s9", "s9.h", [rich("p", "s9.p1"), h("pre", null, h("code", { text: PLAN })), rich("p", "s9.p2")]);
+
+    const FLAGS = [
+      ["repo", "cli.arg.repo"], ["--plan PATH", "cli.arg.plan"], ["--out PATH", "cli.arg.out"],
+      ["-m, --message MSG", "cli.arg.message"], ["--no-commit", "cli.arg.no_commit"],
+      ["--skip-tests", "cli.arg.skip_tests"], ["--test-timeout N", "cli.arg.test_timeout"],
+      ["--vitals", "cli.arg.vitals"], ["--no-vitals", "cli.arg.no_vitals"], ["--find KEYWORD", "cli.arg.find"],
+      ["--limit N", "cli.arg.limit"], ["--force", "cli.arg.force"], ["--dry-run", "cli.arg.dry_run"],
+      ["--lang LANG", "cli.arg.lang"], ["--gui", "cli.arg.gui"], ["--port N", "cli.arg.port"],
+      ["--no-browser", "cli.arg.no_browser"], ["--jobs N", "cli.arg.jobs"], ["--json", "cli.arg.json"]
+    ];
+    /* 参数说明直接复用程序自己的 i18n 表，避免文档与 --help 漂移 */
+    const CLI = window.__CLI_STRINGS__ || {};
+    const flagDesc = (k) => (CLI[lang] && CLI[lang][k]) || k;
+    const flagTable = h("table", null,
+      h("thead", null, h("tr", null, h("th", { text: g("s10.t.flag") }), h("th", { text: g("s10.t.what") }))),
+      h("tbody", null, ...FLAGS.map((f) => h("tr", null,
+        h("td", null, h("code", { text: f[0] })), h("td", { text: flagDesc(f[1]) })))));
+    const exitTable = h("table", null,
+      h("thead", null, h("tr", null, h("th", { text: g("s10.exit.h") }), h("th", { text: g("s10.t.what") }))),
+      h("tbody", null, ...["0", "1", "2", "3"].map((c) => h("tr", null,
+        h("td", null, h("code", { text: c })), h("td", { html: g("s10.exit." + c) })))));
+    sec("s10", "s10.h", [h("div.tw", null, flagTable), h("div.tw", null, exitTable)]);
+
+    sec("s11", "s11.h", [h("div.trio", null,
+      card("s11.c1.h", "s11.c1.p"), card("s11.c2.h", "s11.c2.p"), card("s11.c3.h", "s11.c3.p"))]);
+
+    sec("s12", "s12.h", [h("div.note.warn", null, rich("p", "s12.p"))]);
+
+    const FILES = [
+      ["src/agent_handoff/cli.py", "command line entry"],
+      ["src/agent_handoff/menu.py", "interactive menu"],
+      ["src/agent_handoff/gui/", "local web interface"],
+      ["src/agent_handoff/core/", "shared logic: vitals, plan, evidence, gitops, probe, report"],
+      ["src/agent_handoff/i18n/", "zh-Hans / zh-Hant / en strings"],
+      ["scripts/", "launchers for Windows and POSIX"],
+      ["docs/guide.html", "this page"],
+      ["tests/", "pytest suite"]
+    ];
+    sec("s13", "s13.h", [h("div.tw", null, h("table", null,
+      h("thead", null, h("tr", null, h("th", { text: g("s13.t.path") }), h("th", { text: g("s13.t.what") }))),
+      h("tbody", null, ...FILES.map((f) => h("tr", null,
+        h("td", null, h("code", { text: f[0] })), h("td", { text: f[1] }))))))]);
+
+    /* 目录 */
+    const toc = document.getElementById("toc");
+    while (toc.children.length > 1) toc.removeChild(toc.lastChild);
+    toc.firstElementChild.textContent = g("nav");
+    secs.forEach((s) => {
+      const a = h("a", { href: "#" + s[0], text: s[1] });
+      a.addEventListener("click", () => setTimeout(mark, 60));
+      toc.appendChild(a);
+    });
+    mark();
+  }
+
+  function mark() {
+    const links = Array.from(document.querySelectorAll(".toc a"));
+    let best = null, bestTop = -Infinity;
+    links.forEach((a) => {
+      const el = document.getElementById(a.getAttribute("href").slice(1));
+      if (!el) return;
+      const top = el.getBoundingClientRect().top - 90;
+      if (top <= 0 && top > bestTop) { bestTop = top; best = a; }
+    });
+    links.forEach((a) => a.classList.toggle("on", a === best));
+  }
+
+  function setLang(code) {
+    if (!T[code]) return;
+    lang = code;
+    try { localStorage.setItem("ah.guide.lang", code); } catch (e) {}
+    document.documentElement.lang = code;
+    document.title = g("title");
+    Array.from(document.querySelectorAll("[data-g]")).forEach((n) => { n.textContent = g(n.getAttribute("data-g")); });
+    Array.from(document.querySelectorAll("#lang-seg button")).forEach((b) => {
+      b.setAttribute("aria-pressed", String(b.getAttribute("data-lang") === code));
+    });
+    build();
+  }
+
+  function setTheme(mode) {
+    document.documentElement.setAttribute("data-theme", mode);
+    try { localStorage.setItem("ah.guide.theme", mode); } catch (e) {}
+    Array.from(document.querySelectorAll("#theme-seg button")).forEach((b) => {
+      b.setAttribute("aria-pressed", String(b.getAttribute("data-theme-set") === mode));
+    });
+  }
+
+  const seg = document.getElementById("lang-seg");
+  ORDER.filter((c) => T[c]).forEach((c) => {
+    const b = h("button", { text: SHORT[c], title: T[c]["dir_note"] || c, "data-lang": c });
+    b.addEventListener("click", () => setLang(c));
+    seg.appendChild(b);
+  });
+  Array.from(document.querySelectorAll("#theme-seg button")).forEach((b) => {
+    b.addEventListener("click", () => setTheme(b.getAttribute("data-theme-set")));
+  });
+
+  let savedTheme = null;
+  try { savedTheme = localStorage.getItem("ah.guide.theme"); } catch (e) {}
+  setTheme(savedTheme || "auto");
+  setLang(lang);
+  window.addEventListener("scroll", mark, { passive: true });
+})();
+</script>
+</body>
+</html>

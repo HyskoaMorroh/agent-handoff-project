@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="zh-Hans" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>会话交接工具 · 图文说明</title>
+<script id="guide-i18n" type="application/json">__GUIDE_I18N__</script>
+<script id="cli-i18n" type="application/json">__CLI_I18N__</script>
+<style>
+/* 与网页界面同一套 token，浅色为默认。单文件、零外链，双击即可打开。 */
+:root{
+  --bg:#EFF3F3;--surface:#FFFFFF;--surface-2:#F7FAFA;--line:#DDE5E4;--line-soft:#E7EEEC;
+  --ink:#0F1719;--ink-2:#3B4A4D;--ink-3:#6A7A7D;
+  --accent:#24664A;--accent-ink:#FFFFFF;--accent-sub:#DCEBE3;
+  --danger:#96352D;--danger-bg:#F6DFDC;--warn:#A9660F;--warn-bg:#F8EBD4;
+  --info:#3A5877;--info-bg:#E0E8F1;--good:#24664A;--good-bg:#DCEBE3;
+  --shadow-1:0 1px 2px rgba(15,23,25,.06),0 1px 3px rgba(15,23,25,.04);
+  --shadow-2:0 2px 4px rgba(15,23,25,.06),0 8px 24px rgba(15,23,25,.07);
+  --r-sm:6px;--r-md:10px;--r-lg:14px;
+  --mono:ui-monospace,SFMono-Regular,"Cascadia Mono","JetBrains Mono",Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI","PingFang SC","Microsoft YaHei UI","Noto Sans CJK SC",Roboto,Helvetica,Arial,sans-serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0A1013;--surface:#121B1E;--surface-2:#1A2528;--line:#243135;--line-soft:#1F2B2E;
+  --ink:#E7EEEC;--ink-2:#AFBDBC;--ink-3:#7B8B8D;
+  --accent:#6BC095;--accent-ink:#06120C;--accent-sub:#14301F;
+  --danger:#E0857B;--danger-bg:#341A17;--warn:#E4A85A;--warn-bg:#33260F;
+  --info:#93B9DB;--info-bg:#17222F;--good:#6BC095;--good-bg:#14301F;
+  --shadow-1:0 1px 2px rgba(0,0,0,.5);--shadow-2:0 2px 6px rgba(0,0,0,.5),0 10px 30px rgba(0,0,0,.45);
+}}
+:root[data-theme="dark"]{
+  --bg:#0A1013;--surface:#121B1E;--surface-2:#1A2528;--line:#243135;--line-soft:#1F2B2E;
+  --ink:#E7EEEC;--ink-2:#AFBDBC;--ink-3:#7B8B8D;
+  --accent:#6BC095;--accent-ink:#06120C;--accent-sub:#14301F;
+  --danger:#E0857B;--danger-bg:#341A17;--warn:#E4A85A;--warn-bg:#33260F;
+  --info:#93B9DB;--info-bg:#17222F;--good:#6BC095;--good-bg:#14301F;
+  --shadow-1:0 1px 2px rgba(0,0,0,.5);--shadow-2:0 2px 6px rgba(0,0,0,.5),0 10px 30px rgba(0,0,0,.45);
+}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 15px/1.72 var(--sans);-webkit-font-smoothing:antialiased}
+h1,h2,h3,h4{margin:0;font-weight:600;letter-spacing:-.012em}
+p{margin:0}
+a{color:var(--accent)}
+code{font-family:var(--mono);font-size:.88em;background:var(--surface-2);padding:1px 5px;border-radius:4px;border:1px solid var(--line-soft)}
+pre{margin:0;padding:15px 17px;background:var(--surface-2);border:1px solid var(--line-soft);border-radius:var(--r-sm);overflow-x:auto;font-family:var(--mono);font-size:12.8px;line-height:1.65}
+pre code{background:none;border:0;padding:0;font-size:inherit}
+svg text{font-family:var(--sans)}
+
+.top{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:14px;padding:11px 26px;background:var(--surface);border-bottom:1px solid var(--line)}
+.top .mark{width:27px;height:27px;flex:none}
+.top .mark rect{fill:var(--accent)}
+.top .mark path{fill:var(--accent-ink)}
+.top .name{font-size:14px;font-weight:600}
+.top .spacer{margin-left:auto}
+.seg{display:flex;gap:2px;padding:2px;background:var(--surface-2);border:1px solid var(--line-soft);border-radius:var(--r-sm)}
+.seg button{border:0;border-radius:4px;background:transparent;color:var(--ink-3);font:inherit;font-size:12.5px;padding:5px 11px;cursor:pointer}
+.seg button:hover{color:var(--ink)}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:var(--shadow-1);font-weight:600}
+
+.wrap{display:grid;grid-template-columns:minmax(0,1fr) 226px;gap:44px;max-width:1180px;margin:0 auto;padding:38px 26px 90px}
+.hero{margin-bottom:40px}
+.hero h1{font-size:31px;line-height:1.25}
+.hero p{margin-top:10px;font-size:16.5px;color:var(--ink-3);max-width:56ch}
+
+section{margin:0 0 44px}
+section>h2{font-size:22px;padding-bottom:9px;border-bottom:2px solid var(--accent-sub);margin-bottom:16px}
+section h3{font-size:16px;margin:22px 0 8px}
+section p+p{margin-top:11px}
+section p,section li{color:var(--ink-2)}
+section strong{color:var(--ink);font-weight:600}
+ul,ol{margin:11px 0;padding-left:22px}
+li{margin:5px 0}
+
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:19px 21px;box-shadow:var(--shadow-1);margin:15px 0}
+.card>h3:first-child,.card>h4:first-child{margin-top:0}
+.note{border-left:3px solid var(--info);background:var(--info-bg);border-radius:0 var(--r-sm) var(--r-sm) 0;padding:13px 16px;margin:15px 0;font-size:13.8px}
+.note.warn{border-left-color:var(--warn);background:var(--warn-bg)}
+.note.stop{border-left-color:var(--danger);background:var(--danger-bg)}
+.note p{color:inherit}
+
+.steps{display:grid;gap:13px;margin:17px 0}
+.step{display:grid;grid-template-columns:34px minmax(0,1fr);gap:15px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);padding:16px 18px}
+.step .n{display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:50%;background:var(--accent);color:var(--accent-ink);font:600 15px/1 var(--mono)}
+.step h4{font-size:14.5px;margin-bottom:5px}
+.step p{font-size:13.8px}
+
+.trio{display:grid;grid-template-columns:repeat(auto-fit,minmax(228px,1fr));gap:13px;margin:17px 0}
+
+table{width:100%;border-collapse:collapse;font-size:13.8px;margin:15px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line-soft);vertical-align:top}
+th{font-size:11.8px;font-weight:600;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;border-bottom:1px solid var(--line)}
+td code{white-space:nowrap}
+tr:last-child td{border-bottom:0}
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.pill{display:inline-block;padding:1.5px 8px;border-radius:100px;font-size:11.8px;font-weight:600;white-space:nowrap}
+.pill.critical{background:var(--danger-bg);color:var(--danger)}
+.pill.high{background:var(--warn-bg);color:var(--warn)}
+.pill.watch{background:var(--info-bg);color:var(--info)}
+.pill.ok{background:var(--good-bg);color:var(--good)}
+
+figure{margin:19px 0}
+figure svg{display:block;width:100%;height:auto;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md)}
+figcaption{margin-top:7px;font-size:12.5px;color:var(--ink-3);text-align:center}
+
+.toc{position:sticky;top:76px;align-self:start;font-size:13px;max-height:calc(100vh - 110px);overflow-y:auto}
+.toc h2{font-size:11.8px;color:var(--ink-3);letter-spacing:.06em;text-transform:uppercase;margin-bottom:9px}
+.toc a{display:block;padding:4px 0 4px 10px;color:var(--ink-3);text-decoration:none;border-left:2px solid var(--line);line-height:1.4}
+.toc a:hover{color:var(--ink);border-left-color:var(--ink-3)}
+.toc a.on{color:var(--accent);border-left-color:var(--accent);font-weight:550}
+
+@media (max-width:940px){
+  .wrap{grid-template-columns:minmax(0,1fr);gap:0;padding:26px 18px 70px}
+  .toc{display:none}
+  .hero h1{font-size:25px}
+  .top{padding:10px 16px}
+}
+@media print{.top,.toc{display:none}.wrap{display:block;max-width:none}}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9"/><path d="M8.5 21.5l5.2-9.4 4.1 6.2 2.1-3.2 3.6 6.4z"/></svg>
+  <span class="name" data-g="title"></span>
+  <span class="spacer"></span>
+  <div class="seg" id="lang-seg" role="group" aria-label="Language"></div>
+  <div class="seg" id="theme-seg" role="group" aria-label="Theme">
+    <button data-theme-set="light">☀</button>
+    <button data-theme-set="auto">◐</button>
+    <button data-theme-set="dark">☾</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <main>
+    <div class="hero">
+      <h1 data-g="title"></h1>
+      <p data-g="tagline"></p>
+    </div>
+    <div id="body"></div>
+  </main>
+  <nav class="toc" id="toc"><h2 data-g="nav"></h2></nav>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  const T = JSON.parse(document.getElementById("guide-i18n").textContent);
+  // 参数说明直接取程序自己的 i18n 表，文档与 --help 不可能漂移。
+  window.__CLI_STRINGS__ = JSON.parse(document.getElementById("cli-i18n").textContent);
+  const ORDER = ["zh-Hans", "zh-Hant", "en"];
+  const SHORT = { "zh-Hans": "简", "zh-Hant": "繁", en: "EN" };
+  let lang = pickLang();
+
+  function pickLang() {
+    let saved = null;
+    try { saved = localStorage.getItem("ah.guide.lang"); } catch (e) {}
+    if (saved && T[saved]) return saved;
+    const nav = (navigator.language || "zh-Hans").toLowerCase();
+    if (nav.startsWith("en")) return "en";
+    if (/hant|-tw|-hk|-mo/.test(nav)) return "zh-Hant";
+    return "zh-Hans";
+  }
+  const g = (k) => (T[lang] && T[lang][k]) !== undefined ? T[lang][k] : (T["zh-Hans"][k] || "??" + k + "??");
+
+  /* h(tag, attrs, ...kids) —— attrs.html 明确表示这段是模板自带的富文本，
+     它来自本仓库的 JSON，不是用户输入。其余一律 textContent。 */
+  function h(spec, attrs) {
+    const p = String(spec).split("."), n = document.createElement(p[0] || "div");
+    for (let i = 1; i < p.length; i++) n.classList.add(p[i]);
+    if (attrs) for (const k in attrs) {
+      if (attrs[k] == null || attrs[k] === false) continue;
+      if (k === "html") n.innerHTML = attrs[k];
+      else if (k === "text") n.textContent = String(attrs[k]);
+      else n.setAttribute(k, String(attrs[k]));
+    }
+    for (let i = 2; i < arguments.length; i++) {
+      const c = arguments[i];
+      if (c == null || c === false) continue;
+      n.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+    }
+    return n;
+  }
+  const rich = (tag, key) => h(tag, { html: g(key) });
+  const svg = (markup) => { const d = h("div"); d.innerHTML = markup; return d.firstElementChild; };
+  const fig = (markup, capKey) => h("figure", null, svg(markup), h("figcaption", { text: g(capKey) }));
+
+  /* ── 三张图。用 currentColor 与 CSS 变量，深浅两套主题下都可读。 ── */
+  const D_VERDICT = `
+<svg viewBox="0 0 720 232" role="img" aria-label="verdict flow">
+  <g fill="none" stroke="var(--line)" stroke-width="1.5">
+    <rect x="14" y="86" width="126" height="58" rx="8" fill="var(--surface-2)"/>
+    <rect x="196" y="20" width="140" height="52" rx="8" fill="var(--surface-2)"/>
+    <rect x="196" y="94" width="140" height="52" rx="8" fill="var(--surface-2)"/>
+    <rect x="196" y="168" width="140" height="52" rx="8" fill="var(--surface-2)"/>
+    <rect x="410" y="20" width="126" height="52" rx="8" fill="var(--good-bg)" stroke="var(--good)"/>
+    <rect x="410" y="94" width="126" height="52" rx="8" fill="var(--warn-bg)" stroke="var(--warn)"/>
+    <rect x="410" y="168" width="126" height="52" rx="8" fill="var(--danger-bg)" stroke="var(--danger)"/>
+  </g>
+  <g stroke="var(--ink-3)" stroke-width="1.4" fill="none" marker-end="url(#ah)">
+    <path d="M140 106 L 196 50"/><path d="M140 115 L 196 120"/><path d="M140 124 L 196 190"/>
+    <path d="M336 46 L 410 46"/><path d="M336 120 L 410 120"/><path d="M336 194 L 410 194"/>
+  </g>
+  <defs><marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0 0 L8 4 L0 8 z" fill="var(--ink-3)" stroke="none"/></marker></defs>
+  <g font-size="12.5" fill="var(--ink-2)" text-anchor="middle">
+    <text x="77" y="110">Task N</text><text x="77" y="128">files + symbols</text>
+    <text x="266" y="42">files 3/3</text><text x="266" y="58">symbols 4/4</text>
+    <text x="266" y="116">files 3/3</text><text x="266" y="132">symbols 2/4</text>
+    <text x="266" y="190">files 0/3</text><text x="266" y="206">symbols 0/4</text>
+  </g>
+  <g font-size="13" font-weight="600" text-anchor="middle">
+    <text x="473" y="51" fill="var(--good)">✓ tick all steps</text>
+    <text x="473" y="125" fill="var(--warn)">partial · no tick</text>
+    <text x="473" y="199" fill="var(--danger)">not started</text>
+  </g>
+  <g font-size="11.5" fill="var(--ink-3)">
+    <text x="556" y="46">complete = true</text>
+    <text x="556" y="120">complete = false</text>
+    <text x="556" y="194">complete = false</text>
+  </g>
+</svg>`;
+
+  const D_CONC = `
+<svg viewBox="0 0 720 300" role="img" aria-label="concurrency protection flow">
+  <defs><marker id="ah2" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0 0 L8 4 L0 8 z" fill="var(--ink-3)" stroke="none"/></marker></defs>
+  <g fill="var(--surface-2)" stroke="var(--line)" stroke-width="1.5">
+    <rect x="270" y="14" width="180" height="46" rx="8"/>
+    <rect x="270" y="90" width="180" height="46" rx="8"/>
+  </g>
+  <rect x="30" y="166" width="200" height="112" rx="8" fill="var(--danger-bg)" stroke="var(--danger)" stroke-width="1.5"/>
+  <rect x="262" y="166" width="196" height="112" rx="8" fill="var(--warn-bg)" stroke="var(--warn)" stroke-width="1.5"/>
+  <rect x="490" y="166" width="200" height="112" rx="8" fill="var(--good-bg)" stroke="var(--good)" stroke-width="1.5"/>
+  <g stroke="var(--ink-3)" stroke-width="1.4" fill="none" marker-end="url(#ah2)">
+    <path d="M360 60 L 360 90"/>
+    <path d="M300 136 L 150 166"/><path d="M360 136 L 360 166"/><path d="M420 136 L 570 166"/>
+  </g>
+  <g text-anchor="middle">
+    <text x="360" y="42" font-size="13" font-weight="600" fill="var(--ink)">detect_concurrency()</text>
+    <text x="360" y="112" font-size="12.5" fill="var(--ink-2)">classify each signal</text>
+    <text x="360" y="128" font-size="11.5" fill="var(--ink-3)">only-another-process?  or  could-be-you?</text>
+    <text x="130" y="192" font-size="13" font-weight="600" fill="var(--danger)">BLOCKING</text>
+    <text x="360" y="192" font-size="13" font-weight="600" fill="var(--warn)">ADVISORY</text>
+    <text x="590" y="192" font-size="13" font-weight="600" fill="var(--good)">CLEAN</text>
+  </g>
+  <g font-size="11.5" fill="var(--ink-2)">
+    <text x="44" y="214">staged by someone else</text>
+    <text x="44" y="232">index.lock / MERGE_HEAD</text>
+    <text x="44" y="250" font-weight="600" fill="var(--danger)">stop · exit 3</text>
+    <text x="44" y="268">--force to override</text>
+    <text x="276" y="214">tracked file touched</text>
+    <text x="276" y="232">in the last 120s</text>
+    <text x="276" y="250" font-weight="600" fill="var(--warn)">continue</text>
+    <text x="276" y="268">recorded in handoff</text>
+    <text x="504" y="214">no signal</text>
+    <text x="504" y="250" font-weight="600" fill="var(--good)">commit snapshot</text>
+    <text x="504" y="268">then re-check HEAD</text>
+  </g>
+</svg>`;
+
+  const D_PROMPT = `
+<svg viewBox="0 0 720 322" role="img" aria-label="prompt structure">
+  <g stroke-width="1.5">
+    <rect x="24" y="14" width="330" height="50" rx="7" fill="var(--surface-2)" stroke="var(--line)"/>
+    <rect x="24" y="74" width="330" height="50" rx="7" fill="var(--surface-2)" stroke="var(--line)"/>
+    <rect x="24" y="134" width="330" height="50" rx="7" fill="var(--surface-2)" stroke="var(--line)"/>
+    <rect x="24" y="194" width="330" height="50" rx="7" fill="var(--surface-2)" stroke="var(--line)"/>
+    <rect x="24" y="254" width="330" height="50" rx="7" fill="var(--accent-sub)" stroke="var(--accent)"/>
+  </g>
+  <g font-size="12.5" font-weight="600" fill="var(--ink)">
+    <text x="40" y="36">1 · repo / branch / HEAD</text>
+    <text x="40" y="96">2 · read the plan + intent sections</text>
+    <text x="40" y="156">3 · finished tasks by name</text>
+    <text x="40" y="216">4 · concrete gaps</text>
+    <text x="40" y="276" fill="var(--accent)">5 · expiry: time + HEAD</text>
+  </g>
+  <g font-size="11" fill="var(--ink-3)">
+    <text x="40" y="52">where am I</text>
+    <text x="40" y="112">what counts as done, what must not change</text>
+    <text x="40" y="172">do not redo Task 1 / Task 3</text>
+    <text x="40" y="232">missing file X, missing symbol Y</text>
+    <text x="40" y="292">rerun instead of reusing</text>
+  </g>
+  <g stroke="var(--danger)" stroke-width="1.2" stroke-dasharray="4 3" fill="none">
+    <path d="M354 39 L 396 39"/><path d="M354 99 L 396 99"/><path d="M354 159 L 396 159"/>
+    <path d="M354 219 L 396 219"/><path d="M354 279 L 396 279"/>
+  </g>
+  <g font-size="11.5" fill="var(--danger)">
+    <text x="404" y="43">agent has no coordinates</text>
+    <text x="404" y="103">plan read as a to-do list</text>
+    <text x="404" y="163">finished work redone</text>
+    <text x="404" y="223">gap search from scratch</text>
+    <text x="404" y="283">acts on a stale map</text>
+  </g>
+  <text x="404" y="20" font-size="11" font-weight="600" fill="var(--danger)">missing → consequence</text>
+</svg>`;
+
+  /* ── 章节 ────────────────────────────────────────────────── */
+  function build() {
+    const out = document.getElementById("body");
+    while (out.firstChild) out.removeChild(out.firstChild);
+    const secs = [];
+    const sec = (id, hKey, kids) => {
+      const s = h("section", { id: id }, h("h2", { text: g(hKey) }));
+      kids.forEach((k) => k && s.appendChild(k));
+      secs.push([id, g(hKey)]);
+      out.appendChild(s);
+    };
+
+    sec("s1", "s1.h", [
+      rich("p", "s1.p1"),
+      h("ul", null, rich("li", "s1.li1"), rich("li", "s1.li2"), rich("li", "s1.li3"), rich("li", "s1.li4")),
+      rich("p", "s1.p2")
+    ]);
+
+    const bands = [
+      ["≥ 8 MB", "critical", g("band.critical") || "", "s2.r1"],
+      ["≥ 3 MB", "high", "", "s2.r2"],
+      ["≥ 1 MB", "watch", "", "s2.r3"],
+      ["< 1 MB", "ok", "", "s2.r4"]
+    ];
+    const bandLabel = { critical: { "zh-Hans": "立刻交接", "zh-Hant": "立即交接", en: "hand off now" },
+                        high: { "zh-Hans": "尽快交接", "zh-Hant": "盡快交接", en: "hand off soon" },
+                        watch: { "zh-Hans": "留意", "zh-Hant": "留意", en: "watch" },
+                        ok: { "zh-Hans": "健康", "zh-Hant": "健康", en: "healthy" } };
+    const bandTable = h("table", null,
+      h("thead", null, h("tr", null,
+        h("th", { text: g("s2.t.size") }), h("th", { text: g("s2.t.verdict") }), h("th", { text: g("s2.t.measured") }))),
+      h("tbody", null, ...bands.map((b) => h("tr", null,
+        h("td", null, h("code", { text: b[0] })),
+        h("td", null, h("span", { class: "pill " + b[1], text: bandLabel[b[1]][lang] })),
+        h("td", { text: g(b[3]) })))));
+    sec("s2", "s2.h", [
+      rich("p", "s2.p1"),
+      h("ul", null, rich("li", "s2.li1"), rich("li", "s2.li2"), rich("li", "s2.li3")),
+      h("h3", { text: g("s2.h2") }), rich("p", "s2.p2"),
+      h("div.tw", null, bandTable), rich("p", "s2.p3")
+    ]);
+
+    const card = (hk, pk, code) => h("div.card", null, h("h3", { text: g(hk) }), rich("p", pk),
+      code ? h("pre", null, h("code", { text: code })) : null);
+    sec("s3", "s3.h", [
+      rich("p", "s3.p1"),
+      card("s3.gui.h", "s3.gui.p", "agent-handoff --gui"),
+      card("s3.menu.h", "s3.menu.p", "python -m agent_handoff.menu"),
+      card("s3.cli.h", "s3.cli.p",
+        "agent-handoff --vitals\nagent-handoff --find 01a00e83\nagent-handoff /path/to/project --dry-run\nagent-handoff /path/to/project")
+    ]);
+
+    const step = (n, hk, pk, extra) => h("div.step", null, h("div.n", { text: String(n) }),
+      h("div", null, h("h4", { text: g(hk) }), rich("p", pk), extra || null));
+    sec("s4", "s4.h", [
+      h("div.steps", null,
+        step(1, "s4.step1.h", "s4.step1.p", h("div.note.warn", null, rich("p", "s4.step1.note"))),
+        step(2, "s4.step2.h", "s4.step2.p"),
+        step(3, "s4.step3.h", "s4.step3.p"))
+    ]);
+
+    sec("s5", "s5.h", [
+      rich("p", "s5.p1"),
+      h("div.trio", null, card("s5.e1.h", "s5.e1.p"), card("s5.e2.h", "s5.e2.p")),
+      rich("p", "s5.p2"),
+      fig(D_VERDICT, "s5.diagram.title")
+    ]);
+
+    sec("s6", "s6.h", [
+      rich("p", "s6.p1"),
+      h("div.note.stop", null, h("h3", { text: g("s6.block.h") }), rich("p", "s6.block.p"),
+        h("ul", null, rich("li", "s6.block.li1"), rich("li", "s6.block.li2"), rich("li", "s6.block.li3"))),
+      h("div.note.warn", null, h("h3", { text: g("s6.warn.h") }), rich("p", "s6.warn.p")),
+      h("div.card", null, h("h3", { text: g("s6.why.h") }), rich("p", "s6.why.p")),
+      fig(D_CONC, "s6.diagram.title"),
+      h("div.card", null, h("h3", { text: g("s6.after.h") }), rich("p", "s6.after.p"))
+    ]);
+
+    sec("s7", "s7.h", [
+      rich("p", "s7.p1"),
+      h("div.trio", null,
+        card("s7.b1.h", "s7.b1.p"), card("s7.b2.h", "s7.b2.p"), card("s7.b3.h", "s7.b3.p"),
+        card("s7.b4.h", "s7.b4.p"), card("s7.b5.h", "s7.b5.p")),
+      fig(D_PROMPT, "s7.diagram.title")
+    ]);
+
+    sec("s8", "s8.h", [rich("p", "s8.p1"), rich("p", "s8.p2")]);
+
+    const PLAN = "**Goal:** " + (lang === "en" ? "One sentence on what this project is for."
+      : lang === "zh-Hant" ? "一句話說清這個專案要做什麼。" : "一句话说清这个项目要做什么。") +
+      "\n\n## Global Constraints\n- `docs/LOGO.jpg` " +
+      (lang === "en" ? "is a user-owned file and must not be committed."
+        : lang === "zh-Hant" ? "是使用者私有檔案，不得提交。" : "是用户私有文件，不得提交。") +
+      "\n\n### Task 1: " + (lang === "en" ? "Build the data layer" : lang === "zh-Hant" ? "建立資料層" : "建立数据层") +
+      "\n\n**Files:**\n- Create: `src/db/schema.py`\n- Modify: `src/config.py`\n\n" +
+      "**Interfaces:**\n- Produces: `create_schema`, `Migration`\n\n" +
+      "- [ ] **Step 1** " + (lang === "en" ? "Define the table structure" : lang === "zh-Hant" ? "定義表結構" : "定义表结构") +
+      "\n- [ ] **Step 2** " + (lang === "en" ? "Write the migration script" : lang === "zh-Hant" ? "寫遷移腳本" : "写迁移脚本");
+    sec("s9", "s9.h", [rich("p", "s9.p1"), h("pre", null, h("code", { text: PLAN })), rich("p", "s9.p2")]);
+
+    const FLAGS = [
+      ["repo", "cli.arg.repo"], ["--plan PATH", "cli.arg.plan"], ["--out PATH", "cli.arg.out"],
+      ["-m, --message MSG", "cli.arg.message"], ["--no-commit", "cli.arg.no_commit"],
+      ["--skip-tests", "cli.arg.skip_tests"], ["--test-timeout N", "cli.arg.test_timeout"],
+      ["--vitals", "cli.arg.vitals"], ["--no-vitals", "cli.arg.no_vitals"], ["--find KEYWORD", "cli.arg.find"],
+      ["--limit N", "cli.arg.limit"], ["--force", "cli.arg.force"], ["--dry-run", "cli.arg.dry_run"],
+      ["--lang LANG", "cli.arg.lang"], ["--gui", "cli.arg.gui"], ["--port N", "cli.arg.port"],
+      ["--no-browser", "cli.arg.no_browser"], ["--jobs N", "cli.arg.jobs"], ["--json", "cli.arg.json"]
+    ];
+    /* 参数说明直接复用程序自己的 i18n 表，避免文档与 --help 漂移 */
+    const CLI = window.__CLI_STRINGS__ || {};
+    const flagDesc = (k) => (CLI[lang] && CLI[lang][k]) || k;
+    const flagTable = h("table", null,
+      h("thead", null, h("tr", null, h("th", { text: g("s10.t.flag") }), h("th", { text: g("s10.t.what") }))),
+      h("tbody", null, ...FLAGS.map((f) => h("tr", null,
+        h("td", null, h("code", { text: f[0] })), h("td", { text: flagDesc(f[1]) })))));
+    const exitTable = h("table", null,
+      h("thead", null, h("tr", null, h("th", { text: g("s10.exit.h") }), h("th", { text: g("s10.t.what") }))),
+      h("tbody", null, ...["0", "1", "2", "3"].map((c) => h("tr", null,
+        h("td", null, h("code", { text: c })), h("td", { html: g("s10.exit." + c) })))));
+    sec("s10", "s10.h", [h("div.tw", null, flagTable), h("div.tw", null, exitTable)]);
+
+    sec("s11", "s11.h", [h("div.trio", null,
+      card("s11.c1.h", "s11.c1.p"), card("s11.c2.h", "s11.c2.p"), card("s11.c3.h", "s11.c3.p"))]);
+
+    sec("s12", "s12.h", [h("div.note.warn", null, rich("p", "s12.p"))]);
+
+    const FILES = [
+      ["src/agent_handoff/cli.py", "command line entry"],
+      ["src/agent_handoff/menu.py", "interactive menu"],
+      ["src/agent_handoff/gui/", "local web interface"],
+      ["src/agent_handoff/core/", "shared logic: vitals, plan, evidence, gitops, probe, report"],
+      ["src/agent_handoff/i18n/", "zh-Hans / zh-Hant / en strings"],
+      ["scripts/", "launchers for Windows and POSIX"],
+      ["docs/guide.html", "this page"],
+      ["tests/", "pytest suite"]
+    ];
+    sec("s13", "s13.h", [h("div.tw", null, h("table", null,
+      h("thead", null, h("tr", null, h("th", { text: g("s13.t.path") }), h("th", { text: g("s13.t.what") }))),
+      h("tbody", null, ...FILES.map((f) => h("tr", null,
+        h("td", null, h("code", { text: f[0] })), h("td", { text: f[1] }))))))]);
+
+    /* 目录 */
+    const toc = document.getElementById("toc");
+    while (toc.children.length > 1) toc.removeChild(toc.lastChild);
+    toc.firstElementChild.textContent = g("nav");
+    secs.forEach((s) => {
+      const a = h("a", { href: "#" + s[0], text: s[1] });
+      a.addEventListener("click", () => setTimeout(mark, 60));
+      toc.appendChild(a);
+    });
+    mark();
+  }
+
+  function mark() {
+    const links = Array.from(document.querySelectorAll(".toc a"));
+    let best = null, bestTop = -Infinity;
+    links.forEach((a) => {
+      const el = document.getElementById(a.getAttribute("href").slice(1));
+      if (!el) return;
+      const top = el.getBoundingClientRect().top - 90;
+      if (top <= 0 && top > bestTop) { bestTop = top; best = a; }
+    });
+    links.forEach((a) => a.classList.toggle("on", a === best));
+  }
+
+  function setLang(code) {
+    if (!T[code]) return;
+    lang = code;
+    try { localStorage.setItem("ah.guide.lang", code); } catch (e) {}
+    document.documentElement.lang = code;
+    document.title = g("title");
+    Array.from(document.querySelectorAll("[data-g]")).forEach((n) => { n.textContent = g(n.getAttribute("data-g")); });
+    Array.from(document.querySelectorAll("#lang-seg button")).forEach((b) => {
+      b.setAttribute("aria-pressed", String(b.getAttribute("data-lang") === code));
+    });
+    build();
+  }
+
+  function setTheme(mode) {
+    document.documentElement.setAttribute("data-theme", mode);
+    try { localStorage.setItem("ah.guide.theme", mode); } catch (e) {}
+    Array.from(document.querySelectorAll("#theme-seg button")).forEach((b) => {
+      b.setAttribute("aria-pressed", String(b.getAttribute("data-theme-set") === mode));
+    });
+  }
+
+  const seg = document.getElementById("lang-seg");
+  ORDER.filter((c) => T[c]).forEach((c) => {
+    const b = h("button", { text: SHORT[c], title: T[c]["dir_note"] || c, "data-lang": c });
+    b.addEventListener("click", () => setLang(c));
+    seg.appendChild(b);
+  });
+  Array.from(document.querySelectorAll("#theme-seg button")).forEach((b) => {
+    b.addEventListener("click", () => setTheme(b.getAttribute("data-theme-set")));
+  });
+
+  let savedTheme = null;
+  try { savedTheme = localStorage.getItem("ah.guide.theme"); } catch (e) {}
+  setTheme(savedTheme || "auto");
+  setLang(lang);
+  window.addEventListener("scroll", mark, { passive: true });
+})();
+</script>
+</body>
+</html>

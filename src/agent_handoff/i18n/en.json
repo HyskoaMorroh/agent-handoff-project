@@ -1,6 +1,5 @@
 {
   "meta.lang": "English",
-
   "band.critical": "hand off now",
   "band.high": "hand off soon",
   "band.watch": "watch",
@@ -9,7 +8,6 @@
   "band.advice.high": "Hand off soon. About a third of sessions in this band hit a fatal error.",
   "band.advice.watch": "Safe to continue, but keep an eye on it; about 17% of this band hit a fatal error.",
   "band.advice.ok": "Size is healthy.",
-
   "cli.desc": "Freeze a repository's current state into a lossless handoff (commit snapshot + plan backfill + handoff document).",
   "cli.arg.repo": "Repository path; defaults to the current directory",
   "cli.arg.plan": "Path to the plan document; omit to auto-detect the newest checkbox-bearing task document",
@@ -30,24 +28,20 @@
   "cli.arg.no_browser": "Start the web interface without opening a browser",
   "cli.arg.jobs": "Parallelism; 0 decides from the CPU count",
   "cli.arg.json": "Emit results as JSON for scripts to consume",
-
   "cli.step.meta": "[1/6] Reading repository metadata - {repo}",
   "cli.step.plan": "[2/6] Locating and parsing the plan document",
   "cli.step.score": "[3/6] Scoring completion from file and symbol evidence",
   "cli.step.commit": "[4/6] Committing the snapshot",
   "cli.step.tests": "[5/6] Running tests for evidence",
   "cli.step.write": "[6/6] Writing the handoff file",
-
   "cli.plan.found": "      {path} - {tasks} tasks, {steps} steps, {protected} protected files",
   "cli.plan.intent": "      Intent sections: {sections}",
   "cli.plan.no_intent": "      [note] No Goal / Constraints style intent section found in the plan; a fresh session may not know the overall goal. Consider adding one by hand.",
   "cli.plan.missing": "      No plan document found (skipping backfill; the handoff file is still written)",
   "cli.plan.backfilled": "      Plan backfill +{added} steps, {done}/{total} ticked",
-
   "cli.err.not_dir": "Error: {path} is not a directory",
   "cli.err.not_repo": "Error: {path} is not a git repository. The handoff relies on git metadata.",
   "cli.err.no_git": "Error: no executable git found. Every piece of evidence this tool produces comes from git, so install git and make sure it is on PATH.",
-
   "cli.conc.detected": "      Another session may be writing this repository right now:",
   "cli.conc.readonly": "      Not touching git this run; continuing (analysis only).",
   "cli.conc.stopped": "      Stopped without changing anything. Two writers on one worktree loses work:",
@@ -57,7 +51,6 @@
   "cli.conc.howto2": "      To continue anyway once you know there is no conflict: add --force",
   "cli.conc.howto3": "      To write only the handoff file and leave git alone: add --no-commit",
   "cli.conc.forced": "      [--force] ignoring concurrency signals:",
-
   "cli.commit.skipped": "skipped (--no-commit)",
   "cli.commit.msg": "chore: session handoff snapshot {stamp}",
   "cli.commit.docs_msg": "docs: backfill plan completion and record the handoff",
@@ -67,7 +60,6 @@
   "cli.commit.nothing_staged": "Nothing staged (every change may belong to a protected file); no commit made.",
   "cli.commit.failed": "git commit failed: {detail}",
   "cli.commit.done": "Committed.",
-
   "cli.tests.skipped": "      skipped (--skip-tests)",
   "cli.tests.none": "      No test command detected (no pyproject.toml / package.json, or no usable test script)",
   "cli.tests.running": "      {name}: {cmd}",
@@ -75,7 +67,6 @@
   "cli.tests.no_output": "<no output>",
   "cli.tests.timeout": "<timed out after {sec}s>",
   "cli.tests.not_found": "<command not found>",
-
   "cli.vitals.worst": "      Session vitals: most urgent {agent} {file} {mb} MB fatal={fatal} -> {band}",
   "cli.vitals.none": "No session transcripts found (neither ~/.claude/projects nor ~/.codex/sessions exists).",
   "cli.vitals.scanned": "Scanned {total} recent transcripts; {risky} need attention.",
@@ -88,7 +79,6 @@
   "cli.vitals.no_risk": "No high-risk sessions.",
   "cli.vitals.rest": "The other {count} transcripts (largest first, no action needed):",
   "cli.vitals.no_cwd": "<no working directory recorded>",
-
   "cli.find.none": "No session matches \"{needle}\".",
   "cli.find.hint": "Try: the first 8 characters of a session id, part of a project directory name, or a word from the opening prompt.",
   "cli.find.header": "{count} sessions match \"{needle}\", most recent first",
@@ -97,7 +87,6 @@
   "cli.find.solidify": "Freeze it: agent-handoff \"{repo}\"",
   "cli.find.multi_repo": "Several repositories involved; hand off one at a time (one run each):",
   "cli.find.no_repo": "Could not infer a git repository from the transcripts; name it explicitly: agent-handoff <project-path>",
-
   "cli.card.session_id": "      session id   {value}",
   "cli.card.unknown": "<unknown>",
   "cli.card.thread_id": "      source thread {value} (this session was forked from / resumed it)",
@@ -109,13 +98,11 @@
   "cli.card.repos_more": " (and {count} more)",
   "cli.card.file": "      transcript   {value}",
   "cli.card.summary": "  {index}{agent}   {label}   {mb} MB   fatal {fatal}   tool errors {errors}",
-
   "cli.dry.write": "DRY-RUN: would write {path} ({bytes} bytes). Preview:",
   "cli.prompt.banner": "Opening prompt for the new session (copy the whole block)",
   "cli.race.warn": "      [warning] HEAD moved under us while this ran:",
   "cli.race.explain1": "      Another session is writing at the same time. The HEAD in the prompt above may be stale,",
   "cli.race.explain2": "      so wait for that session to stop and run this again.",
-
   "conc.staged": "{count} files are already staged and this run did not stage them. Another session most likely ran git add without committing.",
   "conc.lock": "Found {lock} - {what}.",
   "conc.lock.index": "git is writing the index",
@@ -124,14 +111,12 @@
   "conc.lock.cherry": "a cherry-pick is in progress",
   "conc.recent": "Files modified within two minutes: {files}",
   "conc.recent_more": " and {count} more",
-
   "env.venv_broken": "`{name}/` is not a usable virtualenv (no executable Python, only {detail}). Do not delete or repair it; use a different interpreter.",
   "env.venv_empty": "<empty>",
   "env.venv_ok": "Usable interpreter: `{path}`",
   "env.no_test_script": "`{pkg}` has no `test` script; the real names are {names}. Running `npm test` will report Missing script.",
   "env.foreign_registry": "`{lock}` mixes in the non-official registries {mirrors}, which can break cross-environment reproducibility.",
   "env.git_dirty_submodule": "`{path}` is a submodule with uncommitted changes; the parent commit will not carry them, so the next session may see an inconsistent tree.",
-
   "doc.title": "# {repo} handoff ({date})",
   "doc.generated": "> Generated by agent-handoff. Every conclusion comes from command output, file existence, or symbol search;",
   "doc.generated2": "> anything unverified is labeled as such.",
@@ -169,7 +154,6 @@
   "doc.prompt.howto": "Paste the whole block below into the new session's input box. **Do not** paste this file's contents alongside it -",
   "doc.prompt.howto2": "it already lives in the repository; let the agent read it, so you do not repeat the context overflow.",
   "doc.plan_missing": "No plan document found, so completion backfill was skipped.",
-
   "prompt.resume": "Resuming {repo_name}. Repository {repo}, branch {branch}, HEAD {head}.",
   "prompt.read_plan_intent": "First thing: read {plan} in full.",
   "prompt.intent_sections": "Do not just scan the checkboxes - the {sections} sections carry this project's original requirements and hard limits,",
@@ -187,7 +171,6 @@
   "prompt.env": "Environment and hard limits:",
   "prompt.protected": "  - {path} is a user-owned file; never modify, move, delete, or package it",
   "prompt.expiry": "(This prompt was generated at {now} against HEAD {head}. If the repository has taken new commits since, rerun agent-handoff for a fresh prompt instead of reusing this one.)",
-
   "gui.title": "Session Salvage",
   "gui.subtitle": "When a session dies, move the progress out of the chat and into the repository",
   "gui.nav.vitals": "Vitals",
@@ -197,6 +180,12 @@
   "gui.theme.light": "Light",
   "gui.theme.dark": "Dark",
   "gui.theme.auto": "System",
+  "gui.ago.now": "just now",
+  "gui.ago.m": "{n}m ago",
+  "gui.ago.h": "{n}h ago",
+  "gui.ago.d": "{n}d ago",
+  "gui.ago.w": "{n}w ago",
+  "gui.ago.mo": "{n}mo ago",
   "gui.vitals.title": "Session vitals",
   "gui.vitals.lead": "Scan every local Claude Code and Codex transcript and decide which one needs a handoff. Read-only: writes no file, changes no config.",
   "gui.vitals.scan": "Scan",
@@ -259,7 +248,6 @@
   "gui.label.errors": "Tool errors",
   "gui.stop.title": "Stopped: another session may be writing this repository",
   "gui.stop.hint": "Confirm that session has stopped and committed, then retry; or tick \"Ignore concurrent-write warnings\".",
-
   "menu.title": "Session Salvage",
   "menu.1": "Vitals     see which session needs a handoff (read-only, safe to poke)",
   "menu.2": "Handoff    full run: commit + backfill + tests + generate",

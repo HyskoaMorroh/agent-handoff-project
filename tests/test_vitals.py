@@ -21,6 +21,7 @@ from agent_handoff.core.vitals import (
     band_for,
     clear_cache,
     find_sessions,
+    group_by_agent,
     scan_one,
     scan_session_vitals,
     sessions_for_repo,
@@ -270,6 +271,55 @@ def test_find_sessions_ranks_id_over_prompt():
     b = _row(9_000_000, session_id="other", first_prompt="deadbeef mentioned here")
     got = find_sessions("deadbeef", [b, a])
     assert got[0] is a, "ID 精确匹配必须排在提问文本匹配之前"
+
+
+# ── 按 APP 分组 ───────────────────────────────────────────────────────
+# 人认会话是先认 APP、再认时间。混在一起时"上一个会话"只能一行行看客户端字段找。
+
+def test_group_by_agent_splits_by_app():
+    rows = [
+        _row(1000, agent="Codex", mtime=datetime(2026, 8, 18, 10)),
+        _row(1000, agent="Claude Code", mtime=datetime(2026, 8, 18, 9)),
+        _row(1000, agent="Codex", mtime=datetime(2026, 8, 18, 8)),
+    ]
+    got = group_by_agent(rows)
+    assert [agent for agent, _ in got] == ["Codex", "Claude Code"]
+    assert [len(g) for _, g in got] == [2, 1]
+
+
+def test_group_by_agent_newest_first_within_group():
+    old = _row(9_000_000, agent="Codex", mtime=datetime(2026, 7, 1))
+    mid = _row(1000, agent="Codex", mtime=datetime(2026, 8, 10))
+    new = _row(500, agent="Codex", mtime=datetime(2026, 8, 18))
+    _, group = group_by_agent([mid, old, new])[0]
+    assert group == [new, mid, old], "组内必须严格按时间倒序，体积不参与"
+
+
+def test_group_order_follows_most_recent_activity():
+    """刚用过的 APP 出现在最上面，即使它的转录更小、风险更低。"""
+    rows = [
+        _row(9_000_000, agent="Claude Code", mtime=datetime(2026, 8, 1)),
+        _row(1000, agent="Codex", mtime=datetime(2026, 8, 18)),
+    ]
+    assert [a for a, _ in group_by_agent(rows)] == ["Codex", "Claude Code"]
+
+
+def test_group_by_agent_does_not_drop_rows():
+    rows = [_row(1000, agent=a, mtime=datetime(2026, 8, 18, i)) for i, a in enumerate(["A", "B", "A", "C"])]
+    got = group_by_agent(rows)
+    assert sum(len(g) for _, g in got) == len(rows)
+
+
+def test_group_by_agent_empty():
+    assert group_by_agent([]) == []
+
+
+def test_group_by_agent_stable_for_same_timestamp():
+    """时间戳相同时按 APP 名排，保证两次运行结果一致。"""
+    ts = datetime(2026, 8, 18, 12)
+    rows = [_row(1000, agent="Zed", mtime=ts), _row(1000, agent="Aider", mtime=ts)]
+    assert [a for a, _ in group_by_agent(rows)] == ["Aider", "Zed"]
+    assert [a for a, _ in group_by_agent(list(reversed(rows)))] == ["Aider", "Zed"]
 
 
 def test_find_sessions_prefers_recent_within_same_rank():

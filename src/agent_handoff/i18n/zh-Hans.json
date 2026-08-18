@@ -1,6 +1,5 @@
 {
   "meta.lang": "简体中文",
-
   "band.critical": "立刻交接",
   "band.high": "尽快交接",
   "band.watch": "留意",
@@ -9,7 +8,6 @@
   "band.advice.high": "尽快交接。该区间约三成会话出现过致命错误。",
   "band.advice.watch": "可以继续，但留意；该区间约一成七出现过致命错误。",
   "band.advice.ok": "尺寸健康。",
-
   "cli.desc": "把仓库当前状态固化成可无损接续的交接现场（提交快照 + 回填计划 + 生成交接文件）。",
   "cli.arg.repo": "仓库路径，默认当前目录",
   "cli.arg.plan": "计划文档路径；省略则自动探测最新的含复选框任务文档",
@@ -30,24 +28,20 @@
   "cli.arg.no_browser": "启动网页界面但不自动打开浏览器",
   "cli.arg.jobs": "并行度；0 表示按 CPU 核数自动决定",
   "cli.arg.json": "以 JSON 输出结果，供脚本消费",
-
   "cli.step.meta": "[1/6] 读取仓库元数据 — {repo}",
   "cli.step.plan": "[2/6] 定位并解析计划文档",
   "cli.step.score": "[3/6] 按文件与符号证据评估完成度",
   "cli.step.commit": "[4/6] 提交快照",
   "cli.step.tests": "[5/6] 运行测试取证",
   "cli.step.write": "[6/6] 生成交接文件",
-
   "cli.plan.found": "      {path} — {tasks} 个任务，{steps} 步，{protected} 个受保护文件",
   "cli.plan.intent": "      原始意图段落：{sections}",
   "cli.plan.no_intent": "      [注意] 计划文档里没找到 Goal / Constraints 之类的意图段落；新会话可能不知道整体目标，建议手工补一句。",
   "cli.plan.missing": "      未找到计划文档（跳过回填；交接文件仍会生成）",
   "cli.plan.backfilled": "      计划回填 +{added} 步，共 {done}/{total} 已勾选",
-
   "cli.err.not_dir": "错误：{path} 不是目录",
   "cli.err.not_repo": "错误：{path} 不是 git 仓库。交接依赖 git 元数据。",
   "cli.err.no_git": "错误：找不到可执行的 git。本工具的全部证据来自 git，请先安装 git 并确保它在 PATH 里。",
-
   "cli.conc.detected": "      检测到可能有另一个会话正在写这个仓库：",
   "cli.conc.readonly": "      本次不写 git，继续（仅分析）。",
   "cli.conc.stopped": "      已停止，未做任何改动。同时写同一个工作树会丢工作：",
@@ -57,7 +51,6 @@
   "cli.conc.howto2": "      确认无冲突要强行继续：加 --force",
   "cli.conc.howto3": "      只想生成交接文件不碰 git：加 --no-commit",
   "cli.conc.forced": "      [--force] 忽略并发信号：",
-
   "cli.commit.skipped": "已跳过（--no-commit）",
   "cli.commit.msg": "chore: 会话交接快照 {stamp}",
   "cli.commit.docs_msg": "docs: 回填计划完成状态并记录交接现场",
@@ -67,7 +60,6 @@
   "cli.commit.nothing_staged": "暂存区为空（改动可能全部属于受保护文件），未提交。",
   "cli.commit.failed": "git commit 失败：{detail}",
   "cli.commit.done": "已提交。",
-
   "cli.tests.skipped": "      已跳过（--skip-tests）",
   "cli.tests.none": "      未识别出测试命令（没有 pyproject.toml / package.json，或没有可用的测试脚本）",
   "cli.tests.running": "      {name}: {cmd}",
@@ -75,7 +67,6 @@
   "cli.tests.no_output": "<无输出>",
   "cli.tests.timeout": "<超时 {sec} 秒后中止>",
   "cli.tests.not_found": "<找不到该命令>",
-
   "cli.vitals.worst": "      会话体征：最紧迫 {agent} {file} {mb} MB fatal={fatal} -> {band}",
   "cli.vitals.none": "未找到任何会话转录（~/.claude/projects 与 ~/.codex/sessions 都不存在）。",
   "cli.vitals.scanned": "扫描了 {total} 个最新转录，其中 {risky} 个需要处理。",
@@ -88,7 +79,6 @@
   "cli.vitals.no_risk": "没有高危会话。",
   "cli.vitals.rest": "其余 {count} 个转录（体积由大到小，无需处理）：",
   "cli.vitals.no_cwd": "<未记录工作目录>",
-
   "cli.find.none": "没有会话匹配「{needle}」。",
   "cli.find.hint": "可以试：会话 ID 的前 8 位、项目目录名的一部分、或开场提问里的一个词。",
   "cli.find.header": "匹配「{needle}」的会话 {count} 个，最近活动优先",
@@ -97,7 +87,6 @@
   "cli.find.solidify": "固化现场：agent-handoff \"{repo}\"",
   "cli.find.multi_repo": "涉及多个仓库，逐个交接（每个仓库跑一次）：",
   "cli.find.no_repo": "没能从转录里推断出 git 仓库，请手动指定：agent-handoff <项目路径>",
-
   "cli.card.session_id": "      会话 ID   {value}",
   "cli.card.unknown": "<未知>",
   "cli.card.thread_id": "      源线程 ID {value}（本会话由它派生 / 续接）",
@@ -109,13 +98,11 @@
   "cli.card.repos_more": "（另有 {count} 个）",
   "cli.card.file": "      转录文件  {value}",
   "cli.card.summary": "  {index}{agent}   {label}   {mb} MB   致命 {fatal}   工具错误 {errors}",
-
   "cli.dry.write": "DRY-RUN：将写入 {path}（{bytes} 字节），内容预览：",
   "cli.prompt.banner": "新会话开场提示词（复制下面整段）",
   "cli.race.warn": "      [警告] 运行期间 HEAD 被别的提交推进了：",
   "cli.race.explain1": "      说明另一个会话同时在写。上面提示词里的 HEAD 可能已经过期，",
   "cli.race.explain2": "      建议等那个会话停止后重跑一次。",
-
   "conc.staged": "暂存区已有 {count} 个文件（不是本次操作放进去的）。很可能另一个会话 git add 了但还没提交。",
   "conc.lock": "发现 {lock} —— {what}。",
   "conc.lock.index": "git 正在写索引",
@@ -124,14 +111,12 @@
   "conc.lock.cherry": "cherry-pick 进行中",
   "conc.recent": "两分钟内被改动的文件：{files}",
   "conc.recent_more": " 等 {count} 个",
-
   "env.venv_broken": "`{name}/` 不是可用的虚拟环境（无可执行 Python，仅含 {detail}）。不要删除或修复它，改用其他解释器。",
   "env.venv_empty": "<空>",
   "env.venv_ok": "可用解释器：`{path}`",
   "env.no_test_script": "`{pkg}` 没有 `test` 脚本；实际名称是 {names}。直接跑 `npm test` 会报 Missing script。",
   "env.foreign_registry": "`{lock}` 混入了非官方源 {mirrors}，可能破坏跨环境可复现性。",
   "env.git_dirty_submodule": "`{path}` 是子模块且有未提交改动；父仓库的提交不会带上它，接续会话可能看到不一致的树。",
-
   "doc.title": "# {repo} 交接记录（{date}）",
   "doc.generated": "> 本文件由 agent-handoff 自动生成。所有结论来自命令输出、文件存在性或符号检索，",
   "doc.generated2": "> 未经验证的项目标注为「未验证」。",
@@ -169,7 +154,6 @@
   "doc.prompt.howto": "直接把下面整段粘贴进新会话的输入框发送。**不要**把本文件内容一起粘贴——",
   "doc.prompt.howto2": "它已在仓库里，让智能体自己读，以免重演上下文超限。",
   "doc.plan_missing": "未找到计划文档，跳过完成度回填。",
-
   "prompt.resume": "接续 {repo_name}。仓库 {repo}，分支 {branch}，HEAD {head}。",
   "prompt.read_plan_intent": "第一件事：完整读 {plan}。",
   "prompt.intent_sections": "不要只看勾选状态——{sections} 这几段是本项目的原始要求与红线，",
@@ -187,7 +171,6 @@
   "prompt.env": "环境与红线：",
   "prompt.protected": "  - {path} 是用户私有文件，不得改动、移动、删除或打包",
   "prompt.expiry": "（本提示词生成于 {now}，对应 HEAD {head}。若仓库此后又有提交，请重跑 agent-handoff 生成新的提示词，不要复用旧的。）",
-
   "gui.title": "会话交接工具",
   "gui.subtitle": "会话卡死时，把进度从对话里搬进仓库",
   "gui.nav.vitals": "体检",
@@ -197,6 +180,12 @@
   "gui.theme.light": "浅色",
   "gui.theme.dark": "深色",
   "gui.theme.auto": "跟随系统",
+  "gui.ago.now": "刚刚",
+  "gui.ago.m": "{n} 分钟前",
+  "gui.ago.h": "{n} 小时前",
+  "gui.ago.d": "{n} 天前",
+  "gui.ago.w": "{n} 周前",
+  "gui.ago.mo": "{n} 个月前",
   "gui.vitals.title": "会话体检",
   "gui.vitals.lead": "扫描本机所有 Claude Code 与 Codex 会话记录，判断哪个该交接。只读：不写文件、不改配置。",
   "gui.vitals.scan": "开始扫描",
@@ -259,7 +248,6 @@
   "gui.label.errors": "工具错误",
   "gui.stop.title": "已停止：可能有另一个会话在写这个仓库",
   "gui.stop.hint": "先确认那个会话已停止并提交，然后重试；或勾选「忽略并发写入警告」。",
-
   "menu.title": "会话交接工具",
   "menu.1": "体检      看哪个会话该交接了（只读，随便点）",
   "menu.2": "交接      完整流程：提交 + 回填 + 跑测试 + 生成",

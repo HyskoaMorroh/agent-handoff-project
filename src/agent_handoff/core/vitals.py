@@ -444,3 +444,26 @@ def find_sessions(needle: str, rows: Iterable[SessionRow]) -> list[SessionRow]:
             scored.append((3, -ts, r))
     scored.sort(key=lambda t: (t[0], t[1]))
     return [r for _, _, r in scored]
+
+
+def group_by_agent(rows: Iterable[SessionRow]) -> list[tuple[str, list[SessionRow]]]:
+    """按智能体（APP）分组，每组内最近活动在前。
+
+    为什么不按风险排一整个平铺列表：Claude Code 与 Codex 的转录混在一起时，
+    "上一个会话"这件事只能靠看客户端字段一行行找。人认会话是先认 APP、
+    再认时间——按这个顺序排，找上次那段对话就是看第一组第一张卡片。
+
+    组的顺序也按"该组最近活动"排：刚用过的 APP 出现在最上面。同一 APP 内部
+    严格按 mtime 倒序，不再让体积介入——体积是风险信号，卡片上的徽章已经
+    在说这件事，用它排序会把一个月前的大转录顶到今天的会话前面。
+    """
+    buckets: dict[str, list[SessionRow]] = {}
+    for r in rows:
+        buckets.setdefault(r.agent, []).append(r)
+    for group in buckets.values():
+        group.sort(key=lambda r: r.mtime, reverse=True)
+    # 组间：先按该组最新一条的时间倒序，时间相同再按名字，保证结果可复现。
+    return sorted(
+        buckets.items(),
+        key=lambda kv: (-kv[1][0].mtime.timestamp(), kv[0]),
+    )
