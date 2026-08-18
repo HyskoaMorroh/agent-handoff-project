@@ -39,7 +39,11 @@ def build_prompt(ctx: dict[str, Any], tr: Translator) -> str:
             line = tr.t("prompt.progress", done=ctx["ticked"], left=ctx["total_steps"] - ctx["ticked"])
             done_tasks = ctx.get("done_tasks") or []
             if done_tasks:
-                line += tr.t("prompt.dont_redo", tasks=" / ".join(f"Task {n}" for n in done_tasks))
+                # 两句之间要有分隔。三种语言的句末标点不同（。vs .），
+                # 统一在拼接处补一个空格，而不是把空格写进任一句的模板里。
+                line = line.rstrip() + " " + tr.t(
+                    "prompt.dont_redo", tasks=" / ".join(f"Task {n}" for n in done_tasks)
+                )
             a(line)
     elif ctx["handoff_rel"]:
         a(tr.t("prompt.handoff_only", handoff=ctx["handoff_rel"]))

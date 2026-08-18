@@ -191,6 +191,18 @@ def test_own_previous_outputs_do_not_trigger_concurrency(repo: Path, tr):
     assert second.code == EXIT_OK, second.conflicts
 
 
+def test_protected_file_edit_is_not_a_concurrency_signal(repo: Path, tr):
+    """受保护文件永不提交，它被改动跟"另一个会话在写代码"无关。
+
+    报出来只会让用户以为有冲突而去加 --force，而 --force 会把真正的阻断
+    信号一起放过。这是比误报本身更坏的二阶后果。
+    """
+    (repo / "docs" / "LOGO.jpg").write_bytes(b"\xff\xd8new-logo-bytes")
+    res = _run(repo, tr)
+    assert res.code == EXIT_OK
+    assert not any("LOGO" in c for c in res.conflicts), res.conflicts
+
+
 # ── 时间戳一致性 ──────────────────────────────────────────────────────
 
 def test_timestamps_are_consistent(repo: Path, tr):
@@ -225,6 +237,30 @@ def test_prompt_lists_done_tasks_by_name(repo: Path, tr):
     res = _run(repo, tr)
     assert "Task 1" in res.prompt
     assert res.ctx["done_tasks"] == [1]
+
+
+def test_prompt_sentences_are_separated(repo: Path, tr):
+    """进度句与"不要重做"句直接相接会粘成 `1 left.Do not redo Task 1.`。
+
+    三种语言句末标点不同（。/ .），空格必须在拼接处补，不能写进模板。
+    """
+    res = _run(repo, tr)
+    line = next(ln for ln in res.prompt.splitlines() if "Do not redo" in ln)
+    assert ". Do not redo" in line or "。 Do not redo" in line, line
+    assert not re.search(r"[.。]\S", line.replace("...", "")), line
+
+
+def test_prompt_sentence_separation_in_all_languages(repo: Path):
+    """繁中与简中的句末是「。」，英文是「.」。三种都不能粘连。"""
+    from agent_handoff.i18n import Translator
+
+    for lang in ("zh-Hans", "zh-Hant", "en"):
+        t2 = Translator(lang)
+        res = _run(repo, t2)
+        redo = t2.t("prompt.dont_redo", tasks="Task 1")
+        line = next((ln for ln in res.prompt.splitlines() if redo in ln), None)
+        assert line, f"{lang}: 找不到 dont_redo 行"
+        assert " " + redo in line, f"{lang}: 两句之间缺空格 -> {line}"
 
 
 def test_prompt_lists_concrete_gaps(repo: Path, tr):

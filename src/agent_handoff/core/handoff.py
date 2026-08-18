@@ -201,7 +201,11 @@ def run_handoff(
 
     say(tr.t("cli.step.commit"))
     head_before = head_sha(repo)
-    self_paths: set[str] = set()
+    # 从并发信号里排除本工具自己的产物与计划文档声明为用户私有的文件：
+    #   · 交接文件与计划文档：上一轮运行刚写过，会落在两分钟窗口里
+    #   · 受保护文件：本来就永不提交，它被改动跟"另一个会话在写代码"无关，
+    #     报出来只会让用户以为有冲突而去加 --force
+    self_paths: set[str] = {p.replace("\\", "/").lstrip("./") for p in protected}
     for p in (out_path, plan_path):
         if p is None:
             continue
