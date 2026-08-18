@@ -14,6 +14,16 @@ Run this once before starting the new session and it freezes those things into t
 
 It **hardcodes no project knowledge**: project name, paths, task names, and test commands are all inferred from the repository itself.
 
+<p align="center">
+  <img src="docs/img/gui-light.png" alt="Session vitals (light)" width="820">
+</p>
+<details>
+<summary>Dark mode</summary>
+<p align="center">
+  <img src="docs/img/gui-dark.png" alt="Session vitals (dark)" width="820">
+</p>
+</details>
+
 ---
 
 ## Install

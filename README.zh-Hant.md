@@ -14,6 +14,16 @@ AI 編碼工作階段會因為上游 400、供應商熔斷、上下文超限而�
 
 它**不硬編碼任何專案知識**：專案名、路徑、任務名、測試命令全部從儲存庫自身推斷。
 
+<p align="center">
+  <img src="docs/img/gui-light.png" alt="工作階段健檢介面（淺色）" width="820">
+</p>
+<details>
+<summary>深色模式</summary>
+<p align="center">
+  <img src="docs/img/gui-dark.png" alt="工作階段健檢介面（深色）" width="820">
+</p>
+</details>
+
 ---
 
 ## 安裝

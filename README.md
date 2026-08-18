@@ -14,6 +14,16 @@ AI 编码会话会因为上游 400、供应商熔断、上下文超限而突然�
 
 它**不硬编码任何项目知识**：项目名、路径、任务名、测试命令全部从仓库自身推断。
 
+<p align="center">
+  <img src="docs/img/gui-light.png" alt="会话体检界面（浅色）" width="820">
+</p>
+<details>
+<summary>深色模式</summary>
+<p align="center">
+  <img src="docs/img/gui-dark.png" alt="会话体检界面（深色）" width="820">
+</p>
+</details>
+
 ---
 
 ## 装
