@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-handoff"
+version = "2.0.0"
+description = "Freeze an AI coding session into a lossless handoff: commit snapshot, plan backfill, handoff document, opening prompt."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "devin" }]
+keywords = ["claude-code", "codex", "handoff", "session", "context-limit"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Version Control :: Git",
+]
+# Zero runtime dependencies on purpose: this tool runs in a broken environment,
+# right after a session died. Anything it needs to pip-install is a way to fail.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "ruff>=0.4"]
+
+[project.urls]
+Homepage = "https://github.com/devin/agent-handoff"
+Issues = "https://github.com/devin/agent-handoff/issues"
+
+[project.scripts]
+agent-handoff = "agent_handoff.cli:main_entry"
+agent-handoff-gui = "agent_handoff.gui.server:main_entry"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+agent_handoff = ["i18n/*.json", "gui/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+# UP009: 原版每个文件都有 `# -*- coding: utf-8 -*-`，那是要保留的原貌之一。
+#        Python 3 里它确实多余，但删掉会让文件在 GBK 编辑器里被猜错编码，
+#        而这个工具的读者一半在中文 Windows 上。
+# SIM105: `contextlib.suppress` 比 try/except/pass 慢一个数量级（要建上下文
+#         管理器对象），而这些位置在热路径上（每个转录每行都可能走到）。
+ignore = ["E501", "B008", "SIM108", "UP009", "SIM105"]
