@@ -1,0 +1,39 @@
+# 换行风格由 git 强制，不靠贡献者的编辑器设置。
+#
+# 为什么必需：本项目的测试里有一条专门验证「CRLF 计划文档回填后仍是 CRLF」。
+# 如果 fixture 文件本身在 checkout 时被转成了别的换行，那条测试测的就不是它
+# 声称要测的东西——而且会在 Windows 上绿、在 Linux 上红，最难查的一类假象。
+* text=auto eol=lf
+
+# 交接文件与计划文档：工具自己保证输出纯 LF，git 不要再插手。
+*.md text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+
+# Windows 批处理必须是 CRLF：cmd.exe 对 LF 结尾的 .cmd 会在某些
+# 命令（尤其带续行的）上行为异常。
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# POSIX 脚本必须是 LF：CRLF 会让 shebang 变成 `/usr/bin/env sh\r`，
+# 内核找不到那个解释器，报的却是 "no such file or directory"。
+*.sh text eol=lf
+
+# 二进制，永不转换。
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.whl binary
+
+# GitHub 语言统计：生成物与文档不该盖过真正的源码。
+docs/guide.html linguist-generated=true
+src/agent_handoff/i18n/*.json linguist-detectable=false
