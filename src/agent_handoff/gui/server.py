@@ -276,7 +276,14 @@ class Handler(BaseHTTPRequestHandler):
             if not p.is_dir():
                 self._json({"ok": False, "reason": "missing"})
                 return
-            self._json({"ok": is_repo(p), "reason": "" if is_repo(p) else "not_git", "path": str(p.resolve())})
+            # 没有 git 不再是「不合格」。会话传承、计划完成度、测试取证都不依赖
+            # git，只有提交快照依赖。返回 ok=True 但带上 warn，让界面提示而不是拦。
+            self._json({
+                "ok": True,
+                "reason": "",
+                "warn": "" if is_repo(p) else "not_git",
+                "path": str(p.resolve()),
+            })
             return
 
         if path == "/api/job":
@@ -317,9 +324,8 @@ class Handler(BaseHTTPRequestHandler):
         if not repo.is_dir():
             self._err(HTTPStatus.BAD_REQUEST, tr.t("gui.err.repo_missing"))
             return
-        if not is_repo(repo):
-            self._err(HTTPStatus.BAD_REQUEST, tr.t("gui.err.not_git"))
-            return
+        # 不再因为缺 git 而拒绝：run_handoff 自己会降级（跳过提交与 git 现场），
+        # 而用户要的往往正是不依赖 git 的那部分——把前序会话的结论带走。
 
         def flag(key: str) -> bool:
             return bool(body.get(key))

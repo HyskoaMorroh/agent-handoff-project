@@ -176,8 +176,12 @@ def run_handoff(
 
     if not repo.is_dir():
         return Result(code=EXIT_BAD_INPUT, error=tr.t("cli.err.not_dir", path=repo))
-    if not is_repo(repo):
-        return Result(code=EXIT_BAD_INPUT, error=tr.t("cli.err.not_repo", path=repo))
+    # git 不再是硬门禁。会话传承、计划完成度、测试取证都不依赖 git——
+    # 只有「提交快照」和「现场坐标」依赖。原先在这里直接失败，于是一个还没
+    # git init 的目录（或根本不需要版本控制的工作目录，例如 Codex Desktop 的
+    # 沙箱容器）完全用不了这个工具，哪怕用户要的只是把前序会话的结论带走。
+    # 现在降级：没有 git 就跳过提交与 git 现场，其余照做，并在产出里说明。
+    has_git = is_repo(repo)
 
     # 整个流程用同一个时刻。原版在六处各调一次 datetime.now()，于是提交信息、
     # 文件名、交接文件里的"生成时间"和提示词里的过期时间戳可以互相错开几秒，
@@ -188,7 +192,17 @@ def run_handoff(
     stamp_day = f"{started:%Y-%m-%d}"
 
     say(tr.t("cli.step.meta", repo=repo))
-    meta = repo_meta(repo)
+    if has_git:
+        meta = repo_meta(repo)
+    else:
+        # 没有 git 时给出同形状的空壳，让下游渲染逻辑不必到处判空。
+        # 值用明确的占位符而不是空串：空串会在提示词里渲染成「分支 」这种
+        # 断句，读者分不清是「没有」还是「读失败」。
+        meta = {
+            "branch": "", "head": "", "head_sha": "", "head_full": "",
+            "upstream": "", "ahead": "", "remote": "", "unpushed": "",
+        }
+        say(tr.t("cli.step.no_git"))
 
     say(tr.t("cli.step.plan"))
     plan_path = find_plan(repo, opts.plan)
@@ -233,7 +247,7 @@ def run_handoff(
         out_path = repo / out_path
 
     say(tr.t("cli.step.commit"))
-    head_before = head_sha(repo)
+    head_before = head_sha(repo) if has_git else ""
     # 从并发信号里排除本工具自己的产物与计划文档声明为用户私有的文件：
     #   · 交接文件与计划文档：上一轮运行刚写过，会落在两分钟窗口里
     #   · 受保护文件：本来就永不提交，它被改动跟"另一个会话在写代码"无关，
@@ -247,7 +261,7 @@ def run_handoff(
         except ValueError:
             continue
 
-    blocking, advisory = detect_concurrency(repo, tr, ignore=self_paths)
+    blocking, advisory = detect_concurrency(repo, tr, ignore=self_paths) if has_git else ([], [])
     conflicts = blocking + advisory
     if conflicts:
         say(tr.t("cli.conc.detected"))
@@ -270,7 +284,9 @@ def run_handoff(
         say(tr.t("cli.conc.forced"))
 
     msg = opts.message or tr.t("cli.commit.msg", stamp=stamp_min)
-    if opts.no_commit:
+    if not has_git:
+        commit_result = tr.t("cli.commit.no_git")
+    elif opts.no_commit:
         commit_result = tr.t("cli.commit.skipped")
     else:
         commit_result = do_commit(repo, protected, msg, opts.dry_run, tr)
@@ -400,7 +416,8 @@ def run_handoff(
         "intent_sections": intent_sections,
         "vitals": vitals,
         "sessions": picked,
-        "recent_commits": recent_commits(repo),
+        "recent_commits": recent_commits(repo) if has_git else "",
+        "has_git": has_git,
         "dry_run": opts.dry_run,
     }
     ctx["prompt"] = build_prompt(ctx, tr)
@@ -427,7 +444,7 @@ def run_handoff(
     out_path.write_bytes(body.encode("utf-8"))
     say(f"      {out_path}")
 
-    if not opts.no_commit:
+    if has_git and not opts.no_commit:
         paths = [out_path]
         if plan_path:
             paths.append(plan_path)
@@ -435,7 +452,8 @@ def run_handoff(
 
     # 运行期间有人把 HEAD 从我们脚下挪走了吗？我们自己的提交是预期的；
     # 别的提交意味着第二个会话在赛跑，上面提示词里的 HEAD 可能已经不存在。
-    res.race_warnings = foreign_commits(repo, head_before, _our_commit_prefixes(tr))
+    if has_git:
+        res.race_warnings = foreign_commits(repo, head_before, _our_commit_prefixes(tr))
     if res.race_warnings:
         say("")
         say(tr.t("cli.race.warn"))

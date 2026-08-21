@@ -71,10 +71,11 @@ def ask_repo(tr: Translator) -> Path | None:
         print("\n" + tr.t("menu.ask_repo.bad") + f"\n    {p}")
         return None
     if not is_repo(p):
+        # 提示但不拦。缺 git 只让「提交快照」这一步做不了；会话传承、
+        # 完成度评估、测试取证照旧，而那往往正是用户要的。
         print("\n" + tr.t("menu.ask_repo.not_git") + f"\n    {p}\n")
         print(tr.t("menu.ask_repo.not_git2"))
         print(tr.t("menu.ask_repo.not_git3"))
-        return None
     return p
 
 

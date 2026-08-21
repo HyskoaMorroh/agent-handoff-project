@@ -77,11 +77,23 @@ def test_lang_choices_are_the_three():
 
 # ── 退出码 ────────────────────────────────────────────────────────────
 
-def test_exit_code_2_on_non_repo(tmp_path: Path, capsys):
+def test_exit_code_2_on_missing_path(tmp_path: Path, capsys):
+    """路径不存在仍是参数错误。
+
+    但「存在却不是 git 仓库」不再是错误——那个用例移到了 test_handoff.py 的
+    test_accepts_non_repo_with_degraded_git_steps：缺 git 只让提交快照降级，
+    会话传承与完成度评估照旧。
+    """
+    assert main([str(tmp_path / "nope"), "--skip-tests", "--no-vitals", "--lang", "en"]) == 2
+    assert "not a directory" in capsys.readouterr().err
+
+
+def test_non_repo_runs_and_exits_zero(tmp_path: Path, capsys):
     d = tmp_path / "plain"
     d.mkdir()
-    assert main([str(d), "--skip-tests", "--no-vitals", "--lang", "en"]) == 2
-    assert "not a git repository" in capsys.readouterr().err
+    assert main([str(d), "--skip-tests", "--no-vitals", "--no-commit", "--lang", "en"]) == 0
+    out = capsys.readouterr().out
+    assert "not under git" in out
 
 
 def test_exit_code_3_on_concurrency(repo: Path, capsys):
@@ -261,13 +273,17 @@ def test_gui_check_repo_validates(gui_server, repo: Path, tmp_path: Path):
     base, token = gui_server
     q = urllib.parse.quote(str(repo))
     _, ok = _get(f"{base}/api/check-repo?path={q}", token=token)
-    assert json.loads(ok)["ok"] is True
+    parsed_ok = json.loads(ok)
+    assert parsed_ok["ok"] is True and not parsed_ok["warn"]
 
+    # 缺 git 不再是「不合格」，而是一条提示：只有提交快照做不了，
+    # 会话传承与完成度评估照旧。原先这里返回 ok=False，界面据此拦下整个
+    # 流程——用户一个还没 git init 的工作目录就完全用不了这个工具。
     plain = tmp_path / "plain"
     plain.mkdir()
     _, bad = _get(f"{base}/api/check-repo?path={urllib.parse.quote(str(plain))}", token=token)
     parsed = json.loads(bad)
-    assert parsed["ok"] is False and parsed["reason"] == "not_git"
+    assert parsed["ok"] is True and parsed["warn"] == "not_git"
 
     _, missing = _get(f"{base}/api/check-repo?path={urllib.parse.quote(str(tmp_path / 'nope'))}", token=token)
     assert json.loads(missing) == {"ok": False, "reason": "missing"}

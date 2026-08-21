@@ -40,11 +40,18 @@ def test_rejects_non_directory(tmp_path: Path, tr):
     assert res.code == EXIT_BAD_INPUT and "not a directory" in res.error
 
 
-def test_rejects_non_repo(tmp_path: Path, tr):
+def test_accepts_non_repo_with_degraded_git_steps(tmp_path: Path, tr):
+    """缺 git 只让 git 相关的步骤降级，不再整体拒绝。
+
+    这个测试原先断言 EXIT_BAD_INPUT + "not a git repository"。那个行为是错的：
+    会话传承、完成度评估、测试取证都不碰 git，把它们一起挡掉让工具在「还没
+    git init 的工作目录」上完全不可用——而那是交接最常见的场景之一。
+    """
     d = tmp_path / "plain"
     d.mkdir()
-    res = _run(d, tr)
-    assert res.code == EXIT_BAD_INPUT and "not a git repository" in res.error
+    res = _run(d, tr, no_commit=True)
+    assert res.code == EXIT_OK
+    assert res.ctx["has_git"] is False
 
 
 # ── 三步都发生了 ──────────────────────────────────────────────────────
@@ -477,6 +484,63 @@ def test_missing_selected_session_is_reported_not_silent(repo: Path, tr, tmp_pat
     assert res.code == EXIT_OK
     assert res.ctx["sessions"] == []
     assert any("nope.jsonl" in ln for ln in lines), lines
+
+
+def test_runs_without_git(tmp_path: Path, tr):
+    """git 不是硬门禁。
+
+    原先一个没 git init 的目录直接以 EXIT_BAD_INPUT 失败，于是用户连
+    「把前序会话的结论带走」都做不到——而那一步根本不碰 git。实测正是这个
+    场景挡住了用户：Codex Desktop 的工作目录没有版本控制。
+    """
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "note.txt").write_text("x\n", encoding="utf-8")
+    res = _run(plain, tr, no_commit=True)
+    assert res.code == EXIT_OK, res.error
+    assert res.ctx["has_git"] is False
+    # 提示词不能出现「分支 ，HEAD 」这种空值断句。
+    assert tr.t("prompt.resume_no_git", repo_name="plain", repo=plain.as_posix()) in res.prompt
+    assert tr.t("prompt.no_git") in res.prompt
+    # 不能渲染出空值断句（`分支 ，HEAD 。`）——那读起来像读取失败。
+    assert "，分支 ，HEAD" not in res.prompt
+    assert "branch , HEAD" not in res.prompt
+    # 文档要说清没有版本控制，而不是留空。
+    assert tr.t("doc.scene.no_git") in res.body
+    assert tr.t("cli.commit.no_git") in res.body
+
+
+def test_no_git_still_carries_sessions(tmp_path: Path, tr):
+    """缺 git 时会话传承必须照做——那正是用户要的那一步。"""
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    fp = tmp_path / "rollout-2026-08-22T00-00-00-ng1.jsonl"
+    rows = [
+        {"type": "session_meta", "payload": {"session_id": "ng1", "cwd": str(plain)}},
+        {"type": "compacted", "payload": {
+            "message": "结论：改用 cc-switch 接管",
+            "window_number": 1,
+            "replacement_history": [
+                {"role": "user", "content": [{"text": "不要动 settings.json"}]},
+            ],
+        }},
+    ]
+    with fp.open("w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    res = _run(plain, tr, no_commit=True, sessions=[str(fp)])
+    assert res.code == EXIT_OK
+    assert "结论：改用 cc-switch 接管" in res.body
+    assert "不要动 settings.json" in res.body
+    assert "ng1" in res.prompt
+
+
+def test_no_git_expiry_has_no_head(tmp_path: Path, tr):
+    """过期声明挂在 HEAD 上；没有 git 就只能给时间，不能渲染空 sha。"""
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    res = _run(plain, tr, no_commit=True)
+    assert tr.t("prompt.expiry_no_git", now=res.ctx["now"]) in res.prompt
 
 
 def test_prompt_carries_portable_repo_identity(repo: Path, tr):

@@ -92,12 +92,20 @@ def test_ask_repo_rejects_missing_path(tmp_path: Path, monkeypatch, capsys):
     assert "does not exist" in capsys.readouterr().out
 
 
-def test_ask_repo_rejects_non_git_dir(tmp_path: Path, monkeypatch, capsys):
+def test_ask_repo_warns_but_accepts_non_git_dir(tmp_path: Path, monkeypatch, capsys):
+    """缺 git 只提示，不再取消选择。
+
+    原先返回 None 直接把用户挡回主菜单，于是一个没 git init 的工作目录
+    完全用不了这个工具——哪怕用户要的只是把前序会话的结论带走，而那一步
+    根本不碰 git。
+    """
     plain = tmp_path / "plain"
     plain.mkdir()
     _stdin(monkeypatch, str(plain))
-    assert menu.ask_repo(Translator("en")) is None
-    assert "not a git repository" in capsys.readouterr().out
+    assert menu.ask_repo(Translator("en")) == plain
+    out = capsys.readouterr().out
+    assert "not under git" in out
+    assert "You can still continue" in out
 
 
 def test_ask_repo_empty_input_cancels(monkeypatch, capsys):

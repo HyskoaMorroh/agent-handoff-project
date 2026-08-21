@@ -169,7 +169,14 @@ def agent_session_roots() -> list[tuple[str, Path]]:
 
     seen: set[str] = set()
     for home in homes:
-        for name, rel in (("Claude Code", ".claude/projects"), ("Codex", ".codex/sessions")):
+        # `.codex/archived_sessions` 也要扫：在 Codex 里归档一个会话只是把它移出
+        # 活动列表，转录本身还在，而「归档了但还想把结论带走」恰恰是交接的典型
+        # 场景——实测用户勾中的会话就在这里，工具却报「找不到这个转录」。
+        for name, rel in (
+            ("Claude Code", ".claude/projects"),
+            ("Codex", ".codex/sessions"),
+            ("Codex", ".codex/archived_sessions"),
+        ):
             p = home / rel
             key = str(p).lower()
             if key in seen:

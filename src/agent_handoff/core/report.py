@@ -87,16 +87,28 @@ def build_prompt(ctx: dict[str, Any], tr: Translator) -> str:
     """
     L: list[str] = []
     a = L.append
-    a(tr.t("prompt.resume", repo_name=ctx["repo_name"], repo=ctx["repo"], branch=ctx["branch"], head=ctx["head_sha"]))
-    # 仓库身份与「这台机器上的位置」是两件事。远程 URL + 完整 sha 在任何机器上
-    # 都能定位到同一个状态；路径不能。未推送的提交则根本传不过去——新会话在别处
-    # clone 只会拿到远程有的东西，不说清楚它会以为自己看到的是全部。
-    if ctx.get("remote"):
-        a(tr.t("prompt.identity", remote=ctx["remote"], sha=ctx.get("head_full") or ctx["head_sha"]))
+    # 没有 git 时不要渲染「分支 ，HEAD 」这种断句——空值读起来像读取失败。
+    # 换一句只讲目录的开场，并说明为什么没有 git 现场。
+    if ctx.get("has_git", True):
+        a(tr.t(
+            "prompt.resume",
+            repo_name=ctx["repo_name"],
+            repo=ctx["repo"],
+            branch=ctx["branch"],
+            head=ctx["head_sha"],
+        ))
+        # 仓库身份与「这台机器上的位置」是两件事。远程 URL + 完整 sha 在任何机器上
+        # 都能定位到同一个状态；路径不能。未推送的提交则根本传不过去——新会话在别处
+        # clone 只会拿到远程有的东西，不说清楚它会以为自己看到的是全部。
+        if ctx.get("remote"):
+            a(tr.t("prompt.identity", remote=ctx["remote"], sha=ctx.get("head_full") or ctx["head_sha"]))
+        else:
+            a(tr.t("prompt.no_remote"))
+        if ctx.get("unpushed"):
+            a(tr.t("prompt.unpushed", count=ctx["unpushed"]))
     else:
-        a(tr.t("prompt.no_remote"))
-    if ctx.get("unpushed"):
-        a(tr.t("prompt.unpushed", count=ctx["unpushed"]))
+        a(tr.t("prompt.resume_no_git", repo_name=ctx["repo_name"], repo=ctx["repo"]))
+        a(tr.t("prompt.no_git"))
     a("")
 
     if ctx["plan_rel"]:
@@ -165,7 +177,11 @@ def build_prompt(ctx: dict[str, Any], tr: Translator) -> str:
         a(tr.t("prompt.protected", path=p))
 
     a("")
-    a(tr.t("prompt.expiry", now=ctx["now"], head=ctx["head_sha"]))
+    # 过期声明挂在 HEAD 上：没有 git 就没有可比较的锚点，只能给时间。
+    if ctx.get("has_git", True) and ctx["head_sha"]:
+        a(tr.t("prompt.expiry", now=ctx["now"], head=ctx["head_sha"]))
+    else:
+        a(tr.t("prompt.expiry_no_git", now=ctx["now"]))
     return "\n".join(x for x in L if x is not None)
 
 
@@ -205,13 +221,18 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
 
     a(tr.t("doc.h.scene") + "\n")
     a(tr.t("doc.scene.repo", repo=ctx["repo"]))
-    branch_line = tr.t("doc.scene.branch", branch=ctx["branch"])
-    if ctx["branch"] not in ("main", "master"):
-        branch_line += tr.t("doc.scene.not_trunk")
-    a(branch_line)
-    a(tr.t("doc.scene.head", head=ctx["head"]))
-    if ctx["ahead"]:
-        a(tr.t("doc.scene.ahead", count=ctx["ahead"]))
+    # 分支 / HEAD / 领先数都只在有 git 时才有意义。渲染空值会让读者
+    # 分不清「没有版本控制」和「读 git 失败」。
+    if ctx.get("has_git", True):
+        branch_line = tr.t("doc.scene.branch", branch=ctx["branch"])
+        if ctx["branch"] not in ("main", "master"):
+            branch_line += tr.t("doc.scene.not_trunk")
+        a(branch_line)
+        a(tr.t("doc.scene.head", head=ctx["head"]))
+        if ctx["ahead"]:
+            a(tr.t("doc.scene.ahead", count=ctx["ahead"]))
+    else:
+        a(tr.t("doc.scene.no_git"))
     if ctx["plan_rel"]:
         a(tr.t("doc.scene.plan", plan=ctx["plan_rel"]))
     a(tr.t("doc.scene.now", now=ctx["now"]) + "\n")
