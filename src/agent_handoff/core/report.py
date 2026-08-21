@@ -3,10 +3,55 @@
 """渲染交接 Markdown 与新会话开场提示词。这里的一切都来自实测。"""
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
 from ..i18n import Translator
+
+
+# 家目录在交接**文档**里要脱敏。文档会被 git 提交、可能推送到公开仓库，
+# 而转录的绝对路径里带着操作系统用户名（`C:\Users\devin\.codex\…`）。
+# 那不是密钥，但也没有理由公开：接续会话读转录靠的是提示词，
+# 提示词是本机粘贴的、保留真实路径，两者的受众不同。
+#
+# 每次调用都重新读家目录，不在导入时算好：测试要能通过 monkeypatch 换 HOME，
+# 而导入时求值会把第一次的值钉死，脱敏在换过家目录的环境里静默失效——
+# 那正是「以为脱敏了其实没脱」的最坏情形。
+def _home_variants() -> list[str]:
+    """家目录的各种书写形态，长的在前，避免短的先替换把长的切碎。
+
+    包含 Claude Code 的 slug 形态：它把 cwd 里的非字母数字换成 `-` 作项目
+    目录名，于是 `C:\\Users\\devin` 变成 `C--Users-devin`——只换路径前缀的话，
+    用户名仍留在那一段里。
+    """
+    home = os.path.expanduser("~")
+    if not home:
+        return []
+    forms = {home, home.replace("\\", "/"), home.replace("/", "\\")}
+    slug = re.sub(r"[^A-Za-z0-9]", "-", home)
+    out = [f for f in forms if f]
+    if len(slug) > 3:
+        out.append(slug)
+    # 长的先替换：slug 通常最长，且包含盘符与分隔符的编码形态。
+    return sorted(out, key=len, reverse=True)
+
+
+def _redact_home(text: str) -> str:
+    """把家目录换成 `~`（slug 形态换成 `_HOME_`），让文档不带操作系统用户名。
+
+    只替换目录前缀，不改路径其余部分——文件名本身（会话 ID）是定位转录所
+    必需的，脱掉它文档就失去了可操作性。
+    """
+    if not text:
+        return text
+    out = text
+    for form in _home_variants():
+        # slug 是目录名的一段，写成 `~` 会读成「这里嵌了个家目录」，
+        # 而它其实只是被编码过的项目标识。
+        repl = "_HOME_" if re.fullmatch(r"[A-Za-z0-9-]+", form) else "~"
+        out = re.sub(re.escape(form), repl, out, flags=re.I)
+    return out
 
 
 def _vitals_id(r: dict[str, Any]) -> str:
@@ -271,17 +316,19 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
         a(tr.t("doc.h.sessions") + "\n")
         a(tr.t("doc.sessions.intro") + "\n")
         for s in sessions:
-            title = (s.get("label") or "").strip() or s.get("session_id", "")
+            # 标题来自 label，label 可能取自摘要的第一句实质内容——而摘要里
+            # 照抄了大量绝对路径。标题同样要脱敏，否则用户名从这里漏出去。
+            title = _redact_home((s.get("label") or "").strip()) or s.get("session_id", "")
             a(f"### {s.get('agent', '')} — {title}\n")
             a(tr.t("doc.sessions.id", value=s.get("session_id", "") or "-"))
             if s.get("thread_id"):
                 a(tr.t("doc.sessions.thread", value=s["thread_id"]))
             a(tr.t("doc.sessions.mtime", value=s.get("mtime_text", "")))
             if s.get("cwd"):
-                a(tr.t("doc.sessions.cwd", value=s["cwd"]))
+                a(tr.t("doc.sessions.cwd", value=_redact_home(s["cwd"])))
             for rp in (s.get("repos") or [])[:3]:
-                a(tr.t("doc.sessions.repo", value=rp))
-            a(tr.t("doc.sessions.file", value=s.get("path", "")))
+                a(tr.t("doc.sessions.repo", value=_redact_home(rp)))
+            a(tr.t("doc.sessions.file", value=_redact_home(s.get("path", ""))))
             if s.get("digest_windows", 0) > 1:
                 a(tr.t("doc.sessions.windows", count=s["digest_windows"]))
             asks = s.get("asks") or []
@@ -289,17 +336,18 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
                 a("")
                 a(tr.t("doc.sessions.asks"))
                 for one in asks:
-                    _block(a, one)
+                    _block(a, _redact_home(one))
             if s.get("last_prompt"):
                 a("")
                 a(tr.t("doc.sessions.last_prompt"))
-                _block(a, s["last_prompt"])
+                _block(a, _redact_home(s["last_prompt"]))
             if s.get("digest"):
                 a("")
                 a(tr.t("doc.sessions.digest"))
                 # 摘要是 Markdown（带 # 标题与代码块），整段放进代码围栏，
                 # 避免它的标题层级与本文档打架、列表被当成本文档的结构。
-                _block(a, s["digest"])
+                # 摘要来自转录，里面照抄了大量绝对路径，同样要脱敏。
+                _block(a, _redact_home(s["digest"]))
             a("")
 
     a(tr.t("doc.h.prompt") + "\n")

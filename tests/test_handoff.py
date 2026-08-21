@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -17,6 +18,7 @@ import pytest
 
 from agent_handoff.core.gitops import git, head_sha
 from agent_handoff.core.handoff import EXIT_BAD_INPUT, EXIT_CONCURRENT, EXIT_OK, Options, run_handoff
+from agent_handoff.core.report import _redact_home
 from agent_handoff.i18n import Translator
 
 
@@ -506,8 +508,85 @@ def test_prompt_declares_handoff_is_lossy(repo: Path, tr, tmp_path: Path):
     assert tr.t("prompt.sessions.lossy") in res.prompt
 
 
+@pytest.mark.parametrize(
+    ("label", "value", "must_keep"),
+    [
+        ("反斜杠转录路径", r"{home}\.codex\sessions\rollout-x.jsonl", "rollout-x.jsonl"),
+        ("正斜杠转录路径", "{home}/.claude/projects/p/abc.jsonl", "abc.jsonl"),
+        ("散文里的路径", "摘要提到 {home}\\Documents\\slug 这个目录", "Documents"),
+    ],
+)
+def test_redact_home_forms(label: str, value: str, must_keep: str):
+    home = os.path.expanduser("~")
+    user = os.path.basename(home)
+    got = _redact_home(value.format(home=home))
+    assert user.lower() not in got.lower(), label
+    assert must_keep in got, f"{label}: 定位所需的部分被脱掉了"
+
+
+def test_redact_home_covers_claude_project_slug():
+    """Claude Code 把 cwd 里的非字母数字换成 `-` 作项目目录名，于是
+    `C:\\Users\\devin` 变成 `C--Users-devin`——家目录前缀换掉后用户名仍在。"""
+    home = os.path.expanduser("~")
+    user = os.path.basename(home)
+    slug = re.sub(r"[^A-Za-z0-9]", "-", home)
+    got = _redact_home(f"{home}\\.claude\\projects\\{slug}\\5370f0b4.jsonl")
+    assert user.lower() not in got.lower()
+    assert "5370f0b4.jsonl" in got
+
+
+def test_redact_home_leaves_other_paths_alone():
+    """家目录之外的路径不能被动——仓库路径是接续会话要用的信息。"""
+    outside = "E:/output/kirara-ai/kirara-ai3.3.0b8"
+    assert _redact_home(outside) == outside
+
+
+def test_document_redacts_home_directory(repo: Path, tr, tmp_path: Path, monkeypatch):
+    """交接文档会被 git 提交、可能推到公开仓库；转录路径里带着操作系统用户名。
+
+    提示词是本机粘贴的、保留真实路径（接续会话要照它去读转录）；
+    **文档**里的家目录必须脱敏成 `~`，两者受众不同。
+    """
+    # 用一个假家目录，名字不可能出现在临时路径里，避免误判成泄露。
+    fake_home = tmp_path / "hh"
+    fake_home.mkdir()
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("HOME", str(fake_home))
+    home = str(fake_home)
+    marker = fake_home.name
+
+    # 转录放在假家目录**里面**，与真实布局一致（转录就住在 ~/.codex 下）。
+    fp = fake_home / ".codex" / "sessions" / "rollout-2026-08-21T00-00-00-red1.jsonl"
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"type": "session_meta", "payload": {"session_id": "red1", "cwd": home + r"\Documents\Codex\x"}},
+        {"type": "compacted", "payload": {
+            "message": f"摘要提到 {home}\\.codex\\sessions\\y.jsonl 这个文件",
+            "window_number": 1,
+            "replacement_history": [
+                {"role": "user", "content": [{"text": f"看一下 {home}/notes.md"}]},
+            ],
+        }},
+    ]
+    with fp.open("w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    res = _run(repo, tr, sessions=[str(fp)])
+    # 只看会话那一节：提示词是本机粘贴用的，按设计保留真实路径，
+    # 而 body 的末尾就是提示词——切到文件尾会把它一起框进来。
+    start = res.body.find(tr.t("doc.h.sessions"))
+    end = res.body.find(tr.t("doc.h.prompt"), start + 1)
+    assert start >= 0 and end > start, "文档结构变了，测试的定位失效"
+    section = res.body[start:end]
+    assert marker not in section, "文档的会话节泄露了家目录名"
+    assert "~" in section, "家目录应被替换成 ~"
+    # 会话 ID 文件名必须保留，否则文档失去可操作性。
+    assert "red1" in section
+    # 提示词那一节反过来必须保留真实路径，否则新会话照它读不到转录。
+    assert marker in res.body[end:], "提示词不应脱敏——它是本机使用的"
+
+
 def test_user_asks_land_in_document_verbatim(repo: Path, tr, tmp_path: Path):
-    """用户原话优先于任何转述——摘要会丢措辞里的约束。"""
     fp = tmp_path / "codexlogs" / "rollout-2026-08-21T00-00-00-ask1.jsonl"
     fp.parent.mkdir(parents=True, exist_ok=True)
     rows = [
