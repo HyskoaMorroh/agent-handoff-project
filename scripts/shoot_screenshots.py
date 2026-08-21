@@ -22,7 +22,6 @@ import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -30,13 +29,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "docs" / "img"
-# 只拍体检视图：它是这个工具唯一有内容可看的界面。交接视图在没填仓库路径时
-# 是一张空表单，截下来只能证明「有个表单」——而且视图切换有淡入动画，
-# headless 抓到的往往是两个导航项同时高亮的过渡帧。
 SHOTS = (
-    # (filename, theme, viewport)
-    ("gui-light.png", "light", (1440, 1000)),
-    ("gui-dark.png", "dark", (1440, 1000)),
+    # (filename, theme, viewport, what to drive before capturing, virtual-time budget ms)
+    ("gui-light.png", "light", (1440, 1000), "vitals", 4000),
+    ("gui-dark.png", "dark", (1440, 1000), "vitals", 4000),
+    # 交接结果：空表单证明不了任何事，所以脚本先造一个演示仓库、按下「预演」，
+    # 等结果面板出现再拍。用 --dry-run 是有意的：截图脚本不该产生提交。
+    # 预算给到 30s——这一屏要等一个真实子进程走完仓库，虚拟时间不会加速它。
+    ("gui-result.png", "light", (1440, 1180), "result", 30000),
 )
 
 
@@ -114,15 +114,107 @@ def fake_sessions(home: Path) -> None:
                 ensure_ascii=False) + "\n")
 
 
-def shoot(chrome: str, url: str, png: Path, size: tuple[int, int], profile: Path) -> bool:
+def demo_repo(base: Path) -> Path:
+    """一个最小但**真实**的 git 仓库，让交接结果那一屏有内容可看。
+
+    必须是真仓库：交接流程读 git 元数据、查文件存在性、扫符号定义。
+    造假数据糊不过去——那正是这个工具的判据。
+
+    计划文档刻意留一处缺口（`Task 2` 的 `render_ui` 未定义），因为「文件在但
+    符号没定义 = 部分完成，不勾」是这个工具最该被看到的一条判据。
+    """
+    repo = base / "checkout-service"
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    (repo / "docs").mkdir(parents=True, exist_ok=True)
+
+    (repo / "src" / "refund.py").write_text(
+        "def process_refund(order_id: str) -> bool:\n"
+        '    """退款主流程。"""\n'
+        "    return True\n\n\n"
+        "class RefundLedger:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    # Task 2 的文件存在，但它声明的符号没有定义——于是判定为「部分」。
+    (repo / "src" / "report.py").write_text("# TODO: 对账报表\n", encoding="utf-8")
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "checkout-service"\nversion = "1.4.0"\n', encoding="utf-8"
+    )
+    (repo / "docs" / "plan.md").write_text(
+        "# checkout-service 改造计划\n\n"
+        "**Goal:** 把退款与对账两条流程做成可恢复的。\n\n"
+        "## Global Constraints\n"
+        "- `docs/LOGO.jpg` 是用户私有文件，不得提交。\n\n"
+        "### Task 1: 退款流程\n\n"
+        "**Files:**\n- Create: `src/refund.py`\n\n"
+        "**Interfaces:**\n- Produces: `process_refund`, `RefundLedger`\n\n"
+        "- [ ] **Step 1** 定义退款状态机\n"
+        "- [ ] **Step 2** 补幂等键\n\n"
+        "### Task 2: 对账报表\n\n"
+        "**Files:**\n- Create: `src/report.py`\n\n"
+        "**Interfaces:**\n- Produces: `render_report`\n\n"
+        "- [ ] **Step 1** 游标分页\n"
+        "- [ ] **Step 2** 跨月边界测试\n",
+        encoding="utf-8",
+    )
+    for cmd in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.email", "demo@example.com"],
+        ["git", "config", "user.name", "demo"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-qm", "feat: recoverable refund and reconciliation"],
+    ):
+        subprocess.run(cmd, cwd=str(repo), check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return repo
+
+
+def prewarm_handoff(base: str, token: str, repo: Path) -> str:
+    """Run the handoff once over HTTP and return its finished job id.
+
+    The result screen polls `/api/job`, and the job runs in a server-side thread.
+    `--virtual-time-budget` fast-forwards the browser's timers but cannot
+    fast-forward that thread, so a page that starts its own job is always
+    captured mid-progress (`[1/6]`, empty panel below). Instead the work is done
+    here, and the page is told to attach to this already-finished job.
+
+    Always `dry_run`: a screenshot script must never create a commit.
+    """
+    body = json.dumps({
+        "token": token, "repo": str(repo), "dry_run": True, "skip_tests": True,
+        "no_commit": True, "no_vitals": True,
+    }).encode()
+    req = urllib.request.Request(
+        base + "api/handoff", data=body,
+        headers={"Content-Type": "application/json"},
+    )
+    jid = json.loads(urllib.request.urlopen(req, timeout=60).read())["job"]
+    for _ in range(200):
+        got = json.loads(urllib.request.urlopen(
+            base + f"api/job?token={token}&id={jid}&since=0", timeout=30).read())
+        if got.get("state") != "running":
+            return jid
+        time.sleep(0.25)
+    raise RuntimeError("the prewarm handoff never finished")
+
+
+def shoot(chrome: str, url: str, png: Path, size: tuple[int, int], profile: Path,
+          budget: int = 4000) -> bool:
+    """Capture one screenshot.
+
+    `--virtual-time-budget` fast-forwards timers and only then captures, which is
+    what makes these deterministic — there is no "wait N seconds" flag in headless
+    Chrome (`--timeout` bounds the whole run, it does not delay the capture).
+    """
     args = [
         chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars",
         f"--window-size={size[0]},{size[1]}",
         f"--screenshot={png}", f"--user-data-dir={profile}",
-        "--force-device-scale-factor=2", "--virtual-time-budget=4000",
+        "--force-device-scale-factor=2",
+        f"--virtual-time-budget={budget}",
         url,
     ]
-    r = subprocess.run(args, capture_output=True, text=True, timeout=180)
+    r = subprocess.run(args, capture_output=True, text=True, timeout=240)
     if not png.is_file():
         print(r.stderr[-500:], file=sys.stderr)
         return False
@@ -143,8 +235,17 @@ def main() -> int:
         shutil.rmtree(base_tmp, ignore_errors=True)
     try:
         base_tmp.mkdir(parents=True)
-    except OSError:
-        base_tmp = Path(tempfile.mkdtemp(prefix="ah-shots-"))
+    except OSError as exc:
+        # 不静默退回 tempfile：那条路会把用户名印进图里，而「图看起来正常」
+        # 让人不会去检查。宁可失败并说清原因。
+        print(f"cannot create {base_tmp} ({exc}).", file=sys.stderr)
+        print("A writable drive-root directory is required so the captured paths "
+              "carry no real user name. Pass one via AH_SHOTS_TMP.", file=sys.stderr)
+        override = os.environ.get("AH_SHOTS_TMP", "")
+        if not override:
+            return 1
+        base_tmp = Path(override)
+        base_tmp.mkdir(parents=True, exist_ok=True)
     try:
         return run(chrome, base_tmp)
     finally:
@@ -155,6 +256,7 @@ def run(chrome: str, tmp: Path) -> int:
     home = tmp / "home"
     home.mkdir(parents=True, exist_ok=True)
     fake_sessions(home)
+    repo = demo_repo(tmp / "work")
     profile = tmp / "chrome"
 
     env = dict(os.environ)
@@ -174,7 +276,7 @@ def run(chrome: str, tmp: Path) -> int:
         "import sys, pathlib;"
         "from agent_handoff.gui import server as S;"
         f"pathlib.Path(r'{token_file}').write_text(S.TOKEN, encoding='utf-8');"
-        f"sys.exit(S.serve(port={port}, open_browser=False))"
+        f"sys.exit(S.serve(port={port}, open_browser=False, default_repo=r'{repo}'))"
     )
     server = subprocess.Popen(
         [sys.executable, "-X", "utf8", "-c", boot],
@@ -205,13 +307,19 @@ def run(chrome: str, tmp: Path) -> int:
 
         OUT.mkdir(parents=True, exist_ok=True)
         ok = 0
-        for i, (name, theme, size) in enumerate(SHOTS):
-            url = f"{base}?token={token}#theme={theme}"
+        for i, (name, theme, size, what, budget) in enumerate(SHOTS):
+            frag = f"#theme={theme}"
+            if what == "result":
+                # 先把活干完，再让页面附着到那个已完成的任务去渲染。
+                jid = prewarm_handoff(base, token, repo)
+                frag += f"&view=handoff&job={jid}"
+            url = f"{base}?token={token}{frag}"
             # 每张图一个干净 profile：profile 会存 localStorage，上一张存下的
             # ah.theme 会把下一张的主题带跑偏。
-            if shoot(chrome, url, OUT / name, size, profile.with_name(f"chrome-{i}")):
+            if shoot(chrome, url, OUT / name, size, profile.with_name(f"chrome-{i}"),
+                     budget=budget):
                 kb = (OUT / name).stat().st_size // 1024
-                print(f"{name}  {size[0]}x{size[1]}  {theme}  {kb} KB")
+                print(f"{name}  {size[0]}x{size[1]}  {theme}  {what}  {kb} KB")
                 ok += 1
         return 0 if ok == len(SHOTS) else 1
     finally:

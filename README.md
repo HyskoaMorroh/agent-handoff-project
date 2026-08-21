@@ -46,6 +46,15 @@ AI 编码会话会因为上游 400、供应商熔断、上下文超限而突然�
 </p>
 </details>
 
+<details>
+<summary><b>交接结果长什么样</b>（完成度判定 · 缺口 · 受保护文件 · 开场提示词）</summary>
+<p align="center">
+  <img src="docs/img/gui-result.png" alt="交接结果：完成度表格、缺口明细、受保护文件与可复制的开场提示词" width="880">
+  <br><sub>注意 <code>Task 2</code>：文件在、但它声明的 <code>render_report</code> 没定义 → 判「部分」，不勾。<br>
+  这正是这个工具最该被看到的一条判据。</sub>
+</p>
+</details>
+
 ---
 
 ## ⚠ 先读这一节：什么时候**不该**用它

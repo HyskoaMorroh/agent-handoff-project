@@ -34,12 +34,23 @@ AI coding sessions die suddenly — an upstream 400, a provider cutting you off,
 It **hardcodes no project knowledge**: project name, paths, task names, and test commands are all inferred from the repository itself.
 
 <p align="center">
-  <img src="docs/img/gui-light.png" alt="Session vitals (light)" width="820">
+  <img src="docs/img/gui-light.png" alt="Session vitals (light)" width="880">
+  <br><sub>Session vitals · light</sub>
 </p>
+
 <details>
-<summary>Dark mode</summary>
+<summary><b>Dark (follows the system)</b></summary>
 <p align="center">
-  <img src="docs/img/gui-dark.png" alt="Session vitals (dark)" width="820">
+  <img src="docs/img/gui-dark.png" alt="Session vitals (dark)" width="880">
+</p>
+</details>
+
+<details>
+<summary><b>What a finished handoff looks like</b> (completion verdicts · gaps · protected files · opening prompt)</summary>
+<p align="center">
+  <img src="docs/img/gui-result.png" alt="Handoff result: completion table, gap detail, protected files, and the copyable opening prompt" width="880">
+  <br><sub>Look at <code>Task 2</code>: the file exists, but the <code>render_report</code> it declares is not defined → <b>partial</b>, not ticked.<br>
+  That is the single most important judgement this tool makes.</sub>
 </p>
 </details>
 

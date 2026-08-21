@@ -311,6 +311,41 @@
       el("div.panel-b", null, el("p", { text: msg })));
   }
 
+  // 附着到一个**已存在**的任务，不新建。截图脚本用它：任务在浏览器启动前就
+  // 由脚本跑完了，页面只负责渲染结果——否则虚拟时间会把捕获停在进度行上。
+  function attachJob(jobId, dry) {
+    const out = clear($("#handoff-out"));
+    lastDry = dry;
+    const logPre = el("pre.log");
+    out.appendChild(el("div.panel", null,
+      el("div.panel-h", null,
+        dry ? el("span.badge.badge-dry", { text: t("gui.badge.dry") }) : null,
+        el("span", { text: t("gui.handoff.running") })),
+      el("div.panel-b", null, el("div.progress", null, el("span")), logPre)));
+    pollJob(jobId, logPre, 0);
+  }
+
+  // 轮询一个任务直到它结束。抽出来是因为「新建任务」与「附着到已有任务」
+  // 只在前半段不同，后半段的日志追加与结果渲染必须逐字一致。
+  function pollJob(jobId, logPre, since) {
+    polling = setInterval(async () => {
+      let st;
+      try {
+        st = await api("/api/job?id=" + encodeURIComponent(jobId) + "&since=" + since);
+      } catch (e) { return; }
+      if (st.log && st.log.length) {
+        since = st.next;
+        logPre.textContent += st.log.join("\n") + "\n";
+        logPre.scrollTop = logPre.scrollHeight;
+      }
+      if (st.state === "running") return;
+      clearInterval(polling); polling = null;
+      $("#run-btn").disabled = false; $("#dry-btn").disabled = false;
+      lastResult = st.result;
+      renderResult(st.state, logPre.textContent);
+    }, 450);
+  }
+
   async function startHandoff(dry) {
     if (polling) return;
     const repo = $("#repo").value.trim();
@@ -347,23 +382,7 @@
       return;
     }
 
-    let since = 0;
-    polling = setInterval(async () => {
-      let st;
-      try {
-        st = await api("/api/job?id=" + encodeURIComponent(job.job) + "&since=" + since);
-      } catch (e) { return; }
-      if (st.log && st.log.length) {
-        since = st.next;
-        logPre.textContent += st.log.join("\n") + "\n";
-        logPre.scrollTop = logPre.scrollHeight;
-      }
-      if (st.state === "running") return;
-      clearInterval(polling); polling = null;
-      $("#run-btn").disabled = false; $("#dry-btn").disabled = false;
-      lastResult = st.result;
-      renderResult(st.state, logPre.textContent);
-    }, 450);
+    pollJob(job.job, logPre, 0);
   }
 
   function renderResult(state, logText) {
@@ -547,7 +566,16 @@
     // 令牌通过注入的 bootstrap 传递；从地址栏抹掉，免得它进浏览器历史或被截图带走。
     if (location.search) history.replaceState(null, "", location.pathname);
 
-    scanVitals();
+    // 截图脚本用 #view=handoff&job=<id> 附着到一个已经跑完的任务，
+    // 让交接结果那一屏有内容可拍。只读地渲染，不会新建任务、不会提交。
+    const view = hashQ && hashQ.get("view");
+    if (view && $(`.nav-item[data-view="${view}"]`)) showView(view);
+    const attach = hashQ && hashQ.get("job");
+    if (attach) {
+      attachJob(attach, true);
+    } else {
+      scanVitals();
+    }
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

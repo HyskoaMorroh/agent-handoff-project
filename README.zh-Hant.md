@@ -35,12 +35,23 @@ AI 編碼工作階段會因為上游 400、供應商熔斷、上下文超限而�
 它**不硬編碼任何專案知識**：專案名、路徑、任務名、測試命令全部從儲存庫自身推斷。
 
 <p align="center">
-  <img src="docs/img/gui-light.png" alt="工作階段健檢介面（淺色）" width="820">
+  <img src="docs/img/gui-light.png" alt="工作階段健檢介面（淺色）" width="880">
+  <br><sub>工作階段健檢 · 淺色</sub>
 </p>
+
 <details>
-<summary>深色模式</summary>
+<summary><b>深色（跟隨系統）</b></summary>
 <p align="center">
-  <img src="docs/img/gui-dark.png" alt="工作階段健檢介面（深色）" width="820">
+  <img src="docs/img/gui-dark.png" alt="工作階段健檢介面（深色）" width="880">
+</p>
+</details>
+
+<details>
+<summary><b>交接結果長什麼樣</b>（完成度判定 · 缺口 · 受保護檔案 · 開場提示詞）</summary>
+<p align="center">
+  <img src="docs/img/gui-result.png" alt="交接結果：完成度表格、缺口明細、受保護檔案與可複製的開場提示詞" width="880">
+  <br><sub>注意 <code>Task 2</code>：檔案在、但它宣告的 <code>render_report</code> 沒定義 → 判「部分」，不勾。<br>
+  這正是這個工具最該被看到的一條判據。</sub>
 </p>
 </details>
 
