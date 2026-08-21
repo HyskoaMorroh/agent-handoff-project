@@ -172,6 +172,14 @@ li::marker{color:var(--ink-4)}
 .card h3{margin:0 0 7px;font-size:14.5px}
 .card h4{margin:0 0 6px;font-size:14px}
 .card>pre{margin-top:11px}
+/* 实测数字。左边一个大号量值、右边一句话说明它意味着什么——这类内容写成
+   散文会被读者跳过，而它恰恰是「凭什么这么做」的全部依据。 */
+.metric{display:grid;grid-template-columns:minmax(96px,auto) 1fr;gap:0 16px;align-items:baseline;
+  padding:12px 16px;border:1px solid var(--line);border-left:3px solid var(--high);
+  border-radius:var(--r);background:var(--surface);margin:10px 0}
+.metric b{font:700 20px/1.15 var(--mono);color:var(--high);letter-spacing:-.01em}
+.metric span{color:var(--ink-2);font-size:13.5px}
+@media (max-width:560px){.metric{grid-template-columns:1fr;gap:4px}}
 .grid{display:grid;gap:12px;margin:14px 0}
 .grid.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
 .grid.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
@@ -573,7 +581,8 @@ figcaption{margin-top:12px;text-align:center;font:500 11.5px/1 var(--mono);
       h("ul", null, rich("li", "s2.li1"), rich("li", "s2.li2"), rich("li", "s2.li3")),
       h("h3", { text: g("s2.h2") }), rich("p", "s2.p2"),
       h("div.tw", null, bandTable),
-      h("div.note", null, rich("p", "s2.p3"))
+      h("div.note", null, rich("p", "s2.p3")),
+      h("div.note.warn", null, rich("p", "s2.p4"))
     ]);
 
     // 三种入口是并列选项：给等宽命令 + 一句取舍，读者挑一个照抄就走。
@@ -601,6 +610,20 @@ figcaption{margin-top:12px;text-align:center;font:500 11.5px/1 var(--mono);
     ]);
 
     const card = (hk, pk) => h("div.card", null, h("h3", { text: g(hk) }), rich("p", pk));
+    // 传承的证据。它紧跟「四步做了什么」：第 4 步说了「会传承会话」，
+    // 这一节回答「凭什么必须全都传，少传会丢什么」——数字是全部依据。
+    const metric = (k) => h("div.metric", null,
+      h("b", { text: g(`sc.${k}.k`) }), rich("span", `sc.${k}.v`));
+    sec("sc", "sc.h", [
+      rich("p", "sc.p1"),
+      h("div.note.stop", null, rich("p", "sc.p2")),
+      metric("m1"), metric("m2"), metric("m3"),
+      h("div.note.good", null, rich("p", "sc.p3")),
+      rich("p", "sc.p4")
+    ]);
+
+    sec("si", "si.h", [rich("p", "si.p1"), h("div.note.warn", null, rich("p", "si.p2"))]);
+
     sec("s5", "s5.h", [
       rich("p", "s5.p1"),
       h("div.grid.g2", null, card("s5.e1.h", "s5.e1.p"), card("s5.e2.h", "s5.e2.p")),
@@ -756,6 +779,18 @@ figcaption{margin-top:12px;text-align:center;font:500 11.5px/1 var(--mono);
   setTheme(savedTheme || "auto");
   setLang(lang);
   window.addEventListener("scroll", mark, { passive: true });
+
+  /* 章节是 setLang 之后才建出来的，所以带 #hash 打开时目标元素在浏览器
+     处理哈希的那一刻还不存在——链接看起来「没反应」。建完再滚一次。
+     用 replace 而不是重新赋值 hash：避免在历史里多压一条记录。 */
+  function jumpToHash() {
+    const id = decodeURIComponent(location.hash.slice(1));
+    if (!id) return;
+    const target = document.getElementById(id);
+    if (target) target.scrollIntoView();
+  }
+  jumpToHash();
+  window.addEventListener("hashchange", jumpToHash);
 })();
 </script>
 </body>
