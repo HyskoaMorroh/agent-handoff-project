@@ -572,18 +572,14 @@ def test_document_redacts_home_directory(repo: Path, tr, tmp_path: Path, monkeyp
         for r in rows:
             fh.write(json.dumps(r, ensure_ascii=False) + "\n")
     res = _run(repo, tr, sessions=[str(fp)])
-    # 只看会话那一节：提示词是本机粘贴用的，按设计保留真实路径，
-    # 而 body 的末尾就是提示词——切到文件尾会把它一起框进来。
-    start = res.body.find(tr.t("doc.h.sessions"))
-    end = res.body.find(tr.t("doc.h.prompt"), start + 1)
-    assert start >= 0 and end > start, "文档结构变了，测试的定位失效"
-    section = res.body[start:end]
-    assert marker not in section, "文档的会话节泄露了家目录名"
-    assert "~" in section, "家目录应被替换成 ~"
+    # 整份文档都不能带家目录名：它会被 git 提交，可能推到公开仓库。
+    # 文档里嵌的提示词副本同样要脱敏——受众是仓库的读者，不是本机的粘贴板。
+    assert marker not in res.body, "文档泄露了家目录名"
+    assert "~" in res.body, "家目录应被替换成 ~"
     # 会话 ID 文件名必须保留，否则文档失去可操作性。
-    assert "red1" in section
-    # 提示词那一节反过来必须保留真实路径，否则新会话照它读不到转录。
-    assert marker in res.body[end:], "提示词不应脱敏——它是本机使用的"
+    assert "red1" in res.body
+    # 终端打印用的那份提示词保留真实路径：它是给人当场复制粘贴的。
+    assert marker in res.prompt, "提示词本身不该脱敏——它在本机使用"
 
 
 def test_user_asks_land_in_document_verbatim(repo: Path, tr, tmp_path: Path):

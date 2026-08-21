@@ -354,5 +354,13 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
     a(tr.t("doc.prompt.howto"))
     a(tr.t("doc.prompt.howto2") + "\n")
     # 提示词里含会话话题，话题可能带反引号（`E:\path` 这类），同样要挑更长的围栏。
-    _block(a, ctx["prompt"])
+    #
+    # 这份**文档里嵌的副本**也要脱敏。终端打印的那份保留真实路径（那是给人
+    # 复制粘贴的，就在本机用），但文档会进 git、可能推到公开仓库——两处受众
+    # 不同，同一段文字要有两种形态。此前只脱敏了会话小节，用户名照样从这里
+    # 漏出去：实测生成的文档里 `C:\Users\<name>\.codex\…` 还在提示词块中。
+    #
+    # 家目录写成 `~` 之后提示词仍然可用：`~/.codex/…` 在 shell 与两个 APP 里
+    # 都会被展开，接续会话照它一样能找到转录。
+    _block(a, _redact_home(ctx["prompt"]))
     return "\n".join(L) + "\n"
