@@ -4,143 +4,313 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>会话交接工具 · 图文说明</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2324664A'/%3E%3Cpath d='M9 20l5-9 4 6 2-3 3 6z' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231F6B4F'/%3E%3Cpath d='M6 22h3v-5H6zm5.5 0h3V9h-3zm5.5 0h3v-8h-3zm5.5 0h3V5h-3z' fill='%23fff'/%3E%3C/svg%3E">
 <script id="guide-i18n" type="application/json">__GUIDE_I18N__</script>
 <script id="cli-i18n" type="application/json">__CLI_I18N__</script>
 <style>
-/* 与网页界面同一套 token，浅色为默认。单文件、零外链，双击即可打开。 */
+/* ───────────────────────────────────────────────────────────────────────────
+   仪表盘，不是宣传页。
+
+   这个工具的全部说服力来自实测数字（250 KB 以下无一致命、8 MB 以上全部致命、
+   只留末窗丢掉 78%），所以页面的主角是读数而不是标题：首屏第一眼看到的是
+   一支按对数刻度画出的量程条，柱高就是该区间实测的失败率。
+
+   配色不是挑好看的颜色，而是**工具自己的四档判据**：健康→留意→尽快→立刻。
+   它天然是一条绿→赭→橙→红的序列色阶，量程条、徽章、边框全部取自这一条，
+   于是颜色本身携带信息，换一种配色就等于改判据。
+
+   等宽字体是主声部而非配角：工具的产物（转录、提示词、参数、阈值）全是等宽的，
+   页面的数据层也就全用等宽，只有叙述用无衬线。中文必须走系统字体——这份文档
+   是单文件、零外链，任何 CJK 网络字体都是几 MB 的额外失败路径。
+   ─────────────────────────────────────────────────────────────────────── */
 :root{
-  --bg:#EFF3F3;--surface:#FFFFFF;--surface-2:#F7FAFA;--line:#DDE5E4;--line-soft:#E7EEEC;
-  --ink:#0F1719;--ink-2:#3B4A4D;--ink-3:#6A7A7D;
-  --accent:#24664A;--accent-ink:#FFFFFF;--accent-sub:#DCEBE3;
-  --danger:#96352D;--danger-bg:#F6DFDC;--warn:#A9660F;--warn-bg:#F8EBD4;
-  --info:#3A5877;--info-bg:#E0E8F1;--good:#24664A;--good-bg:#DCEBE3;
-  --shadow-1:0 1px 2px rgba(15,23,25,.06),0 1px 3px rgba(15,23,25,.04);
-  --shadow-2:0 2px 4px rgba(15,23,25,.06),0 8px 24px rgba(15,23,25,.07);
-  --r-sm:6px;--r-md:10px;--r-lg:14px;
-  --mono:ui-monospace,SFMono-Regular,"Cascadia Mono","JetBrains Mono",Consolas,monospace;
+  color-scheme:light;
+  /* 冷灰纸，带一点绿味；不是米白，也不是纯中性灰 */
+  --bg:#EBEEEE;--bg-deep:#E0E5E5;--surface:#FFFFFF;--surface-2:#F4F7F7;
+  --line:#D2DADA;--line-hard:#B6C2C2;--line-soft:#E3E9E9;
+  --ink:#0E1416;--ink-2:#39474A;--ink-3:#6B7B7E;--ink-4:#94A2A4;
+  /* 四档判据 = 序列色阶。顺序即严重度，不可打乱。 */
+  --ok:#1F6B4F;--ok-bg:#DBEAE1;
+  --watch:#7C6210;--watch-bg:#F0E7CC;
+  --high:#A85219;--high-bg:#F5E1D1;
+  --critical:#93261E;--crit-bg:#F3D9D5;
+  /* 主色取自「健康」：工具的目的就是把你送回这一档 */
+  --accent:#1F6B4F;--accent-ink:#FFFFFF;--accent-soft:#DBEAE1;
+  --info:#2F5473;--info-bg:#DEE7EF;
+  --sh-1:0 1px 2px rgba(14,20,22,.05);
+  --sh-2:0 1px 2px rgba(14,20,22,.05),0 10px 28px rgba(14,20,22,.07);
+  --r:4px;--r-md:7px;--r-lg:11px;
+  --mono:ui-monospace,"Cascadia Mono","SF Mono","JetBrains Mono","DejaVu Sans Mono",Consolas,monospace;
   --sans:-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI","PingFang SC","Microsoft YaHei UI","Noto Sans CJK SC",Roboto,Helvetica,Arial,sans-serif;
 }
+/* 深色不是把浅色反过来：纸张变成炭黑玻璃，四档色阶整体提亮以保住对比度，
+   而顺序（绿→赭→橙→红）逐字不变——顺序携带信息，不能因为主题而重排。 */
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
-  --bg:#0A1013;--surface:#121B1E;--surface-2:#1A2528;--line:#243135;--line-soft:#1F2B2E;
-  --ink:#E7EEEC;--ink-2:#AFBDBC;--ink-3:#7B8B8D;
-  --accent:#6BC095;--accent-ink:#06120C;--accent-sub:#14301F;
-  --danger:#E0857B;--danger-bg:#341A17;--warn:#E4A85A;--warn-bg:#33260F;
-  --info:#93B9DB;--info-bg:#17222F;--good:#6BC095;--good-bg:#14301F;
-  --shadow-1:0 1px 2px rgba(0,0,0,.5);--shadow-2:0 2px 6px rgba(0,0,0,.5),0 10px 30px rgba(0,0,0,.45);
+  color-scheme:dark;
+  --bg:#0B1012;--bg-deep:#070C0D;--surface:#131A1C;--surface-2:#1B2427;
+  --line:#263134;--line-hard:#38474A;--line-soft:#1F282B;
+  --ink:#E6EDEB;--ink-2:#AEBDBB;--ink-3:#7D8D8F;--ink-4:#5A6A6C;
+  --ok:#5CBE93;--ok-bg:#11301F;
+  --watch:#D5B054;--watch-bg:#2D2510;
+  --high:#E38A50;--high-bg:#331F11;
+  --critical:#E27A6E;--crit-bg:#331714;
+  --accent:#5CBE93;--accent-ink:#06110B;--accent-soft:#11301F;
+  --info:#8FB6D8;--info-bg:#15212C;
+  --sh-1:0 1px 2px rgba(0,0,0,.55);
+  --sh-2:0 1px 2px rgba(0,0,0,.55),0 12px 32px rgba(0,0,0,.5);
 }}
 :root[data-theme="dark"]{
-  --bg:#0A1013;--surface:#121B1E;--surface-2:#1A2528;--line:#243135;--line-soft:#1F2B2E;
-  --ink:#E7EEEC;--ink-2:#AFBDBC;--ink-3:#7B8B8D;
-  --accent:#6BC095;--accent-ink:#06120C;--accent-sub:#14301F;
-  --danger:#E0857B;--danger-bg:#341A17;--warn:#E4A85A;--warn-bg:#33260F;
-  --info:#93B9DB;--info-bg:#17222F;--good:#6BC095;--good-bg:#14301F;
-  --shadow-1:0 1px 2px rgba(0,0,0,.5);--shadow-2:0 2px 6px rgba(0,0,0,.5),0 10px 30px rgba(0,0,0,.45);
+  color-scheme:dark;
+  --bg:#0B1012;--bg-deep:#070C0D;--surface:#131A1C;--surface-2:#1B2427;
+  --line:#263134;--line-hard:#38474A;--line-soft:#1F282B;
+  --ink:#E6EDEB;--ink-2:#AEBDBB;--ink-3:#7D8D8F;--ink-4:#5A6A6C;
+  --ok:#5CBE93;--ok-bg:#11301F;
+  --watch:#D5B054;--watch-bg:#2D2510;
+  --high:#E38A50;--high-bg:#331F11;
+  --critical:#E27A6E;--crit-bg:#331714;
+  --accent:#5CBE93;--accent-ink:#06110B;--accent-soft:#11301F;
+  --info:#8FB6D8;--info-bg:#15212C;
+  --sh-1:0 1px 2px rgba(0,0,0,.55);
+  --sh-2:0 1px 2px rgba(0,0,0,.55),0 12px 32px rgba(0,0,0,.5);
 }
 *,*::before,*::after{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:400 15px/1.72 var(--sans);-webkit-font-smoothing:antialiased}
-h1,h2,h3,h4{margin:0;font-weight:600;letter-spacing:-.012em}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}
+  *,*::before,*::after{animation-duration:.001ms!important;transition-duration:.001ms!important}}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:400 15px/1.7 var(--sans);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:-.014em}
 p{margin:0}
-a{color:var(--accent)}
-code{font-family:var(--mono);font-size:.88em;background:var(--surface-2);padding:1px 5px;border-radius:4px;border:1px solid var(--line-soft)}
-pre{margin:0;padding:15px 17px;background:var(--surface-2);border:1px solid var(--line-soft);border-radius:var(--r-sm);overflow-x:auto;font-family:var(--mono);font-size:12.8px;line-height:1.65}
-pre code{background:none;border:0;padding:0;font-size:inherit}
-svg text{font-family:var(--sans)}
+a{color:var(--accent);text-underline-offset:2px}
+a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--r)}
 
-.top{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:14px;padding:11px 26px;background:var(--surface);border-bottom:1px solid var(--line)}
-.top .mark{width:27px;height:27px;flex:none}
+/* 数据层一律等宽：阈值、参数、路径、会话 ID 都是可复制的字面量，
+   等宽让它们在视觉上与叙述分层，读者一眼知道哪些字要照抄。 */
+code,kbd{font-family:var(--mono);font-size:.86em;font-variant-ligatures:none}
+code{background:var(--surface-2);padding:1.5px 5px;border-radius:var(--r);
+  border:1px solid var(--line-soft);color:var(--ink)}
+pre{margin:0;padding:14px 16px;background:var(--bg-deep);border:1px solid var(--line);
+  border-radius:var(--r-md);overflow-x:auto;font-family:var(--mono);font-size:12.6px;line-height:1.62;
+  color:var(--ink-2);tab-size:2}
+pre code{background:none;border:0;padding:0;font-size:inherit;color:inherit}
+svg{display:block;max-width:100%}
+svg text{font-family:var(--mono)}
+
+/* ── 顶栏 ─────────────────────────────────────────────────────────────── */
+.top{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:12px;
+  padding:0 22px;height:52px;background:color-mix(in srgb,var(--surface) 88%,transparent);
+  backdrop-filter:saturate(1.6) blur(9px);border-bottom:1px solid var(--line)}
+.top .mark{width:24px;height:24px;flex:none}
 .top .mark rect{fill:var(--accent)}
 .top .mark path{fill:var(--accent-ink)}
-.top .name{font-size:14px;font-weight:600}
+.top .name{font-size:13.5px;font-weight:650;letter-spacing:-.01em}
+.top .ver{font:500 11px/1 var(--mono);color:var(--ink-4);padding:3px 6px;
+  border:1px solid var(--line);border-radius:var(--r)}
 .top .spacer{margin-left:auto}
-.seg{display:flex;gap:2px;padding:2px;background:var(--surface-2);border:1px solid var(--line-soft);border-radius:var(--r-sm)}
-.seg button{border:0;border-radius:4px;background:transparent;color:var(--ink-3);font:inherit;font-size:12.5px;padding:5px 11px;cursor:pointer}
+.seg{display:flex;gap:1px;padding:2px;background:var(--surface-2);
+  border:1px solid var(--line);border-radius:var(--r-md)}
+.seg button{border:0;border-radius:var(--r);background:transparent;color:var(--ink-3);
+  font:500 12px/1 var(--sans);padding:6px 10px;cursor:pointer;transition:color .12s,background .12s}
 .seg button:hover{color:var(--ink)}
-.seg button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:var(--shadow-1);font-weight:600}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--ink);
+  box-shadow:var(--sh-1);font-weight:650}
 
-.wrap{display:grid;grid-template-columns:minmax(0,1fr) 226px;gap:44px;max-width:1180px;margin:0 auto;padding:38px 26px 90px}
-.hero{margin-bottom:40px}
-.hero h1{font-size:31px;line-height:1.25}
-.hero p{margin-top:10px;font-size:16.5px;color:var(--ink-3);max-width:56ch}
+/* ── 首屏：量程条是主角 ────────────────────────────────────────────────
+   一支按体积对数刻度排布的横条，四段宽度对应四个区间，段内数字是实测失败率。
+   它同时是全文的图例：后面每一个徽章、每一条左边框都取这四色之一。 */
+.hero{border-bottom:1px solid var(--line);background:
+  linear-gradient(180deg,color-mix(in srgb,var(--surface) 70%,transparent),transparent)}
+.hero-in{max-width:1120px;margin:0 auto;padding:52px 22px 40px}
+.eyebrow{display:flex;align-items:center;gap:9px;font:600 11px/1 var(--mono);
+  letter-spacing:.11em;text-transform:uppercase;color:var(--ink-4)}
+.eyebrow::after{content:"";flex:1;height:1px;background:var(--line)}
+.hero h1{margin-top:16px;font-size:clamp(28px,4.4vw,44px);line-height:1.1;letter-spacing:-.03em;
+  max-width:20ch;font-weight:700}
+.hero .lede{margin-top:14px;font-size:clamp(15px,1.4vw,17.5px);line-height:1.6;
+  color:var(--ink-2);max-width:52ch}
 
-section{margin:0 0 44px}
-section>h2{font-size:22px;padding-bottom:9px;border-bottom:2px solid var(--accent-sub);margin-bottom:16px}
-section h3{font-size:16px;margin:22px 0 8px}
+.gauge{margin-top:34px}
+.gauge-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
+  font:500 11.5px/1 var(--mono);color:var(--ink-4);letter-spacing:.04em;
+  padding-bottom:7px;border-bottom:1px solid var(--line)}
+.gauge-bars{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;margin-top:14px}
+.gb{position:relative;padding:13px 12px 12px;border-radius:var(--r-md);
+  border:1px solid var(--line);background:var(--surface);overflow:hidden}
+/* 顶部那道 4px 实色是这一档的身份色，也是全文配色的定义处 */
+.gb::before{content:"";position:absolute;inset:0 0 auto 0;height:4px;background:var(--c)}
+.gb .pct{font:700 clamp(22px,3vw,32px)/1 var(--mono);color:var(--c);letter-spacing:-.03em}
+.gb .band{margin-top:7px;font:650 12.5px/1.3 var(--sans);color:var(--ink)}
+.gb .size{margin-top:3px;font:500 11.5px/1.3 var(--mono);color:var(--ink-4)}
+.gb[data-b="ok"]{--c:var(--ok)}
+.gb[data-b="watch"]{--c:var(--watch)}
+.gb[data-b="high"]{--c:var(--high)}
+.gb[data-b="critical"]{--c:var(--critical);background:var(--crit-bg);border-color:var(--critical)}
+.gauge-foot{margin-top:11px;font:400 12.5px/1.6 var(--sans);color:var(--ink-3);max-width:76ch}
+
+/* ── 主体骨架 ─────────────────────────────────────────────────────────── */
+.wrap{display:grid;grid-template-columns:minmax(0,1fr) 214px;gap:52px;
+  max-width:1120px;margin:0 auto;padding:40px 22px 100px}
+
+/* 章节编号有意义：它是**执行顺序**（先体检 → 再交接 → 再看凭据），
+   不是装饰性的 01/02/03。所以编号跟着 h2 走，且用等宽。 */
+section{margin:0 0 52px;scroll-margin-top:70px}
+section>h2{display:flex;align-items:center;gap:11px;font-size:clamp(19px,2.2vw,23px);
+  letter-spacing:-.022em;padding-bottom:10px;border-bottom:1px solid var(--line);margin-bottom:18px}
+section>h2::before{content:attr(data-n);flex:none;font:650 12px/1 var(--mono);color:var(--accent);
+  background:var(--accent-soft);border-radius:var(--r);padding:5px 7px;letter-spacing:.02em}
+section h3{font-size:15.5px;margin:24px 0 9px;letter-spacing:-.01em}
 section p+p{margin-top:11px}
 section p,section li{color:var(--ink-2)}
-section strong{color:var(--ink);font-weight:600}
-ul,ol{margin:11px 0;padding-left:22px}
+section strong{color:var(--ink);font-weight:650}
+ul,ol{margin:11px 0;padding-left:20px}
 li{margin:5px 0}
+li::marker{color:var(--ink-4)}
 
-.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:19px 21px;box-shadow:var(--shadow-1);margin:15px 0}
-.card>h3:first-child,.card>h4:first-child{margin-top:0}
-.note{border-left:3px solid var(--info);background:var(--info-bg);border-radius:0 var(--r-sm) var(--r-sm) 0;padding:13px 16px;margin:15px 0;font-size:13.8px}
-.note.warn{border-left-color:var(--warn);background:var(--warn-bg)}
-.note.stop{border-left-color:var(--danger);background:var(--danger-bg)}
-.note p{color:inherit}
+/* ── 卡片与网格 ───────────────────────────────────────────────────────── */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);
+  padding:16px 18px;box-shadow:var(--sh-1)}
+.card h3{margin:0 0 7px;font-size:14.5px}
+.card h4{margin:0 0 6px;font-size:14px}
+.card>pre{margin-top:11px}
+.grid{display:grid;gap:12px;margin:14px 0}
+.grid.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.grid.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
 
-.steps{display:grid;gap:13px;margin:17px 0}
-.step{display:grid;grid-template-columns:34px minmax(0,1fr);gap:15px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);padding:16px 18px}
-.step .n{display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:50%;background:var(--accent);color:var(--accent-ink);font:600 15px/1 var(--mono)}
-.step h4{font-size:14.5px;margin-bottom:5px}
-.step p{font-size:13.8px}
+/* 三种入口是**并列选项**，所以给等宽的三栏与一个可复制的命令，
+   而不是叙述性的段落堆叠——读者来这一节只为了挑一个然后照抄。 */
+.entry{display:flex;flex-direction:column;gap:10px;background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--r-lg);padding:16px 17px;box-shadow:var(--sh-1)}
+.entry .tag{align-self:flex-start;font:650 10.5px/1 var(--mono);letter-spacing:.09em;
+  text-transform:uppercase;color:var(--accent);background:var(--accent-soft);
+  padding:5px 7px;border-radius:var(--r)}
+.entry h3{margin:0;font-size:15px}
+.entry p{flex:1;font-size:13.6px;line-height:1.62}
+.entry pre{font-size:12px;padding:11px 13px}
 
-.trio{display:grid;grid-template-columns:repeat(auto-fit,minmax(228px,1fr));gap:13px;margin:17px 0}
+/* 四步是真序列，编号必须在，且要看得出「1 之后是 2」——用一条竖线连起来。 */
+.steps{display:grid;gap:0;margin-top:6px}
+.step{position:relative;display:grid;grid-template-columns:34px minmax(0,1fr);gap:14px;
+  padding:0 0 22px 0}
+.step:last-child{padding-bottom:0}
+.step::before{content:"";position:absolute;left:16px;top:32px;bottom:0;width:1px;background:var(--line)}
+.step:last-child::before{display:none}
+.step .n{width:33px;height:33px;border-radius:50%;display:grid;place-items:center;
+  font:650 13px/1 var(--mono);color:var(--accent-ink);background:var(--accent);
+  box-shadow:0 0 0 4px var(--bg)}
+.step h4{font-size:15px;margin-bottom:5px}
+.step p{font-size:14px}
 
-table{width:100%;border-collapse:collapse;font-size:13.8px;margin:15px 0}
-th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line-soft);vertical-align:top}
-th{font-size:11.8px;font-weight:600;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;border-bottom:1px solid var(--line)}
-td code{white-space:nowrap}
+/* ── 提示条：左边框颜色 = 四档色阶，与量程条同源 ──────────────────────── */
+.note{border-left:3px solid var(--info);background:var(--info-bg);
+  border-radius:0 var(--r-md) var(--r-md) 0;padding:13px 16px;margin:14px 0}
+.note h3{margin:0 0 6px;font-size:14px;color:var(--ink)}
+.note p,.note li{font-size:13.6px;color:var(--ink-2)}
+.note.warn{border-left-color:var(--high);background:var(--high-bg)}
+.note.stop{border-left-color:var(--critical);background:var(--crit-bg)}
+.note.good{border-left-color:var(--ok);background:var(--ok-bg)}
+.note ul{margin:8px 0 0}
+
+/* ── 表格 ─────────────────────────────────────────────────────────────── */
+.tw{overflow-x:auto;margin:14px 0;border:1px solid var(--line);border-radius:var(--r-lg);
+  background:var(--surface)}
+table{width:100%;border-collapse:collapse;font-size:13.4px}
+th{text-align:left;font:650 11px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;
+  color:var(--ink-4);padding:11px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:10px 14px;border-bottom:1px solid var(--line-soft);color:var(--ink-2);vertical-align:top}
 tr:last-child td{border-bottom:0}
-.tw{overflow-x:auto;-webkit-overflow-scrolling:touch}
-.pill{display:inline-block;padding:1.5px 8px;border-radius:100px;font-size:11.8px;font-weight:600;white-space:nowrap}
-.pill.critical{background:var(--danger-bg);color:var(--danger)}
-.pill.high{background:var(--warn-bg);color:var(--warn)}
-.pill.watch{background:var(--info-bg);color:var(--info)}
-.pill.ok{background:var(--good-bg);color:var(--good)}
+tbody tr:hover{background:var(--surface-2)}
+td code{white-space:nowrap}
 
-figure{margin:19px 0}
-figure svg{display:block;width:100%;height:auto;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md)}
-figcaption{margin-top:7px;font-size:12.5px;color:var(--ink-3);text-align:center}
+.pill{display:inline-block;font:650 11.5px/1 var(--sans);padding:5px 9px;border-radius:100px;
+  border:1px solid currentColor}
+.pill.ok{color:var(--ok);background:var(--ok-bg)}
+.pill.watch{color:var(--watch);background:var(--watch-bg)}
+.pill.high{color:var(--high);background:var(--high-bg)}
+.pill.critical{color:var(--critical);background:var(--crit-bg)}
 
-.toc{position:sticky;top:76px;align-self:start;font-size:13px;max-height:calc(100vh - 110px);overflow-y:auto}
-.toc h2{font-size:11.8px;color:var(--ink-3);letter-spacing:.06em;text-transform:uppercase;margin-bottom:9px}
-.toc a{display:block;padding:4px 0 4px 10px;color:var(--ink-3);text-decoration:none;border-left:2px solid var(--line);line-height:1.4}
-.toc a:hover{color:var(--ink);border-left-color:var(--ink-3)}
-.toc a.on{color:var(--accent);border-left-color:var(--accent);font-weight:550}
+/* ── 图 ───────────────────────────────────────────────────────────────── */
+figure{margin:20px 0;padding:18px 16px 12px;background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--r-lg)}
+figcaption{margin-top:12px;text-align:center;font:500 11.5px/1 var(--mono);
+  letter-spacing:.06em;color:var(--ink-4)}
 
-@media (max-width:940px){
-  .wrap{grid-template-columns:minmax(0,1fr);gap:0;padding:26px 18px 70px}
-  .toc{display:none}
-  .hero h1{font-size:25px}
-  .top{padding:10px 16px}
+/* ── 目录 ─────────────────────────────────────────────────────────────── */
+.toc{position:sticky;top:76px;align-self:start;max-height:calc(100vh - 100px);overflow-y:auto}
+.toc h2{font:650 10.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;
+  color:var(--ink-4);margin-bottom:11px}
+.toc a{display:flex;gap:8px;padding:5px 0 5px 11px;font-size:12.8px;line-height:1.45;
+  color:var(--ink-3);text-decoration:none;border-left:2px solid var(--line-soft);
+  transition:color .12s,border-color .12s}
+.toc a:hover{color:var(--ink)}
+.toc a[aria-current="true"]{color:var(--accent);border-left-color:var(--accent);font-weight:650}
+.toc a .tn{font:650 10.5px/1.45 var(--mono);color:var(--ink-4);flex:none}
+.toc a[aria-current="true"] .tn{color:var(--accent)}
+
+/* ── 响应式：目录先降为顶部横排，再完全让位给正文 ────────────────────── */
+@media (max-width:1020px){
+  .wrap{grid-template-columns:minmax(0,1fr);gap:0}
+  .toc{position:static;max-height:none;order:-1;margin-bottom:30px;
+    padding-bottom:16px;border-bottom:1px solid var(--line)}
+  .toc a{display:inline-flex;border-left:0;border-bottom:2px solid transparent;
+    padding:5px 10px 5px 0;margin-right:6px}
+  .toc a[aria-current="true"]{border-left:0;border-bottom-color:var(--accent)}
+  .grid.g3{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
-@media print{.top,.toc{display:none}.wrap{display:block;max-width:none}}
+@media (max-width:720px){
+  .gauge-bars{grid-template-columns:repeat(2,1fr)}
+  .grid.g2,.grid.g3{grid-template-columns:minmax(0,1fr)}
+  .hero-in{padding:36px 18px 30px}
+  .wrap{padding:28px 18px 70px}
+  .top{padding:0 16px}
+  .top .ver{display:none}
+}
+@media print{
+  .top,.toc{display:none}
+  .wrap{grid-template-columns:1fr;padding:0}
+  body{background:#fff}
+  section{break-inside:avoid}
+}
+
+
 </style>
 </head>
 <body>
-
 <header class="top">
-  <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9"/><path d="M8.5 21.5l5.2-9.4 4.1 6.2 2.1-3.2 3.6 6.4z"/></svg>
+  <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+    <rect width="32" height="32" rx="8"/>
+    <path d="M6 22h3v-5H6zm5.5 0h3V9h-3zm5.5 0h3v-8h-3zm5.5 0h3V5h-3z"/>
+  </svg>
   <span class="name" data-g="title"></span>
+  <span class="ver" id="ver"></span>
   <span class="spacer"></span>
   <div class="seg" id="lang-seg" role="group" aria-label="Language"></div>
   <div class="seg" id="theme-seg" role="group" aria-label="Theme">
-    <button data-theme-set="light">☀</button>
-    <button data-theme-set="auto">◐</button>
-    <button data-theme-set="dark">☾</button>
+    <button data-theme-set="light" title="Light">☀</button>
+    <button data-theme-set="auto" title="System">◐</button>
+    <button data-theme-set="dark" title="Dark">☾</button>
   </div>
 </header>
 
-<div class="wrap">
-  <main>
-    <div class="hero">
-      <h1 data-g="title"></h1>
-      <p data-g="tagline"></p>
+<div class="hero">
+  <div class="hero-in">
+    <p class="eyebrow"><span data-g="eyebrow"></span></p>
+    <h1 data-g="title"></h1>
+    <p class="lede" data-g="tagline"></p>
+    <!-- 量程条：柱高即实测失败率，颜色即四档判据。全文配色由此定义。 -->
+    <div class="gauge">
+      <div class="gauge-head">
+        <span data-g="gauge.axis"></span>
+        <span data-g="gauge.metric"></span>
+      </div>
+      <div class="gauge-bars" id="gauge-bars"></div>
+      <p class="gauge-foot" data-g="gauge.foot"></p>
     </div>
-    <div id="body"></div>
-  </main>
-  <nav class="toc" id="toc"><h2 data-g="nav"></h2></nav>
+  </div>
+</div>
+
+<div class="wrap">
+  <main id="body"></main>
+  <nav class="toc" id="toc" aria-label="Contents"><h2 data-g="nav"></h2></nav>
 </div>
 
 <script>
@@ -148,7 +318,7 @@ figcaption{margin-top:7px;font-size:12.5px;color:var(--ink-3);text-align:center}
   "use strict";
   const T = JSON.parse(document.getElementById("guide-i18n").textContent);
   // 参数说明直接取程序自己的 i18n 表，文档与 --help 不可能漂移。
-  window.__CLI_STRINGS__ = JSON.parse(document.getElementById("cli-i18n").textContent);
+  const CLI = JSON.parse(document.getElementById("cli-i18n").textContent);
   const ORDER = ["zh-Hans", "zh-Hant", "en"];
   const SHORT = { "zh-Hans": "简", "zh-Hant": "繁", en: "EN" };
   let lang = pickLang();
@@ -163,8 +333,9 @@ figcaption{margin-top:7px;font-size:12.5px;color:var(--ink-3);text-align:center}
     return "zh-Hans";
   }
   const g = (k) => (T[lang] && T[lang][k]) !== undefined ? T[lang][k] : (T["zh-Hans"][k] || "??" + k + "??");
+  const cliDesc = (k) => (CLI[lang] && CLI[lang][k]) || (CLI["zh-Hans"] && CLI["zh-Hans"][k]) || k;
 
-  /* h(tag, attrs, ...kids) —— attrs.html 明确表示这段是模板自带的富文本，
+  /* h(tag.class, attrs, ...kids) —— attrs.html 明确表示这段是模板自带的富文本，
      它来自本仓库的 JSON，不是用户输入。其余一律 textContent。 */
   function h(spec, attrs) {
     const p = String(spec).split("."), n = document.createElement(p[0] || "div");
@@ -183,173 +354,215 @@ figcaption{margin-top:7px;font-size:12.5px;color:var(--ink-3);text-align:center}
     return n;
   }
   const rich = (tag, key) => h(tag, { html: g(key) });
-  const svg = (markup) => { const d = h("div"); d.innerHTML = markup; return d.firstElementChild; };
-  const fig = (markup, capKey) => h("figure", null, svg(markup), h("figcaption", { text: g(capKey) }));
+  const svgEl = (markup) => { const d = h("div"); d.innerHTML = markup; return d.firstElementChild; };
+  const fig = (markup, capKey) => h("figure", null, svgEl(markup), h("figcaption", { text: g(capKey) }));
 
-  /* ── 三张图。用 currentColor 与 CSS 变量，深浅两套主题下都可读。 ── */
+  /* 四档判据。顺序即严重度，页面所有颜色都从这里取——量程条、徽章、图里的
+     边框全部同源，于是颜色本身携带信息，而不是装饰。 */
+  const BANDS = [
+    { b: "ok", size: "< 1 MB", pct: "0%", rate: "s2.r4" },
+    { b: "watch", size: "≥ 1 MB", pct: "17%", rate: "s2.r3" },
+    { b: "high", size: "≥ 3 MB", pct: "30%", rate: "s2.r2" },
+    { b: "critical", size: "≥ 8 MB", pct: "100%", rate: "s2.r1" }
+  ];
+  const BAND_LABEL = {
+    ok: { "zh-Hans": "健康", "zh-Hant": "健康", en: "Healthy" },
+    watch: { "zh-Hans": "留意", "zh-Hant": "留意", en: "Watch" },
+    high: { "zh-Hans": "尽快交接", "zh-Hant": "盡快交接", en: "Hand off soon" },
+    critical: { "zh-Hans": "立刻交接", "zh-Hant": "立即交接", en: "Hand off now" }
+  };
+  const bandName = (b) => BAND_LABEL[b][lang] || BAND_LABEL[b]["zh-Hans"];
+
+  /* ── 首屏量程条 ──────────────────────────────────────────────────────
+     四段并列，每段顶部 4px 是该档身份色，大字是实测失败率。它既是数据，
+     也是全文的图例。 */
+  function gauge() {
+    const box = document.getElementById("gauge-bars");
+    while (box.firstChild) box.removeChild(box.firstChild);
+    BANDS.forEach((x) => {
+      box.appendChild(h("div.gb", { "data-b": x.b },
+        h("div.pct", { text: x.pct }),
+        h("div.band", { text: bandName(x.b) }),
+        h("div.size", { text: x.size })));
+    });
+  }
+
+  /* ── 三张流程图 ──────────────────────────────────────────────────────
+     用 currentColor 与主题变量作画，深浅两套主题下都可读；四档色与量程条同源。 */
   const D_VERDICT = `
 <svg viewBox="0 0 720 232" role="img" aria-label="verdict flow">
-  <g fill="none" stroke="var(--line)" stroke-width="1.5">
-    <rect x="14" y="86" width="126" height="58" rx="8" fill="var(--surface-2)"/>
-    <rect x="196" y="20" width="140" height="52" rx="8" fill="var(--surface-2)"/>
-    <rect x="196" y="94" width="140" height="52" rx="8" fill="var(--surface-2)"/>
-    <rect x="196" y="168" width="140" height="52" rx="8" fill="var(--surface-2)"/>
-    <rect x="410" y="20" width="126" height="52" rx="8" fill="var(--good-bg)" stroke="var(--good)"/>
-    <rect x="410" y="94" width="126" height="52" rx="8" fill="var(--warn-bg)" stroke="var(--warn)"/>
-    <rect x="410" y="168" width="126" height="52" rx="8" fill="var(--danger-bg)" stroke="var(--danger)"/>
+  <defs><marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+    <path d="M0 0 L8 4 L0 8 z" fill="var(--ink-4)" stroke="none"/></marker></defs>
+  <g fill="none" stroke="var(--line-hard)" stroke-width="1.4">
+    <rect x="14" y="86" width="126" height="58" rx="7" fill="var(--surface-2)"/>
+    <rect x="196" y="20" width="140" height="52" rx="7" fill="var(--surface-2)"/>
+    <rect x="196" y="94" width="140" height="52" rx="7" fill="var(--surface-2)"/>
+    <rect x="196" y="168" width="140" height="52" rx="7" fill="var(--surface-2)"/>
+    <rect x="410" y="20" width="150" height="52" rx="7" fill="var(--ok-bg)" stroke="var(--ok)"/>
+    <rect x="410" y="94" width="150" height="52" rx="7" fill="var(--high-bg)" stroke="var(--high)"/>
+    <rect x="410" y="168" width="150" height="52" rx="7" fill="var(--crit-bg)" stroke="var(--critical)"/>
   </g>
-  <g stroke="var(--ink-3)" stroke-width="1.4" fill="none" marker-end="url(#ah)">
+  <g stroke="var(--ink-4)" stroke-width="1.3" fill="none" marker-end="url(#ah)">
     <path d="M140 106 L 196 50"/><path d="M140 115 L 196 120"/><path d="M140 124 L 196 190"/>
     <path d="M336 46 L 410 46"/><path d="M336 120 L 410 120"/><path d="M336 194 L 410 194"/>
   </g>
-  <defs><marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
-    <path d="M0 0 L8 4 L0 8 z" fill="var(--ink-3)" stroke="none"/></marker></defs>
-  <g font-size="12.5" fill="var(--ink-2)" text-anchor="middle">
+  <g font-size="12" fill="var(--ink-2)" text-anchor="middle">
     <text x="77" y="110">Task N</text><text x="77" y="128">files + symbols</text>
     <text x="266" y="42">files 3/3</text><text x="266" y="58">symbols 4/4</text>
     <text x="266" y="116">files 3/3</text><text x="266" y="132">symbols 2/4</text>
     <text x="266" y="190">files 0/3</text><text x="266" y="206">symbols 0/4</text>
   </g>
-  <g font-size="13" font-weight="600" text-anchor="middle">
-    <text x="473" y="51" fill="var(--good)">✓ tick all steps</text>
-    <text x="473" y="125" fill="var(--warn)">partial · no tick</text>
-    <text x="473" y="199" fill="var(--danger)">not started</text>
+  <g font-size="12" font-weight="700" text-anchor="middle">
+    <text x="485" y="51" fill="var(--ok)">tick all steps</text>
+    <text x="485" y="125" fill="var(--high)">partial · no tick</text>
+    <text x="485" y="199" fill="var(--critical)">not started</text>
   </g>
-  <g font-size="11.5" fill="var(--ink-3)">
-    <text x="556" y="46">complete = true</text>
-    <text x="556" y="120">complete = false</text>
-    <text x="556" y="194">complete = false</text>
+  <g font-size="11" fill="var(--ink-4)">
+    <text x="578" y="46">complete = true</text>
+    <text x="578" y="120">complete = false</text>
+    <text x="578" y="194">complete = false</text>
   </g>
 </svg>`;
 
   const D_CONC = `
 <svg viewBox="0 0 720 300" role="img" aria-label="concurrency protection flow">
   <defs><marker id="ah2" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
-    <path d="M0 0 L8 4 L0 8 z" fill="var(--ink-3)" stroke="none"/></marker></defs>
-  <g fill="var(--surface-2)" stroke="var(--line)" stroke-width="1.5">
-    <rect x="270" y="14" width="180" height="46" rx="8"/>
-    <rect x="270" y="90" width="180" height="46" rx="8"/>
+    <path d="M0 0 L8 4 L0 8 z" fill="var(--ink-4)" stroke="none"/></marker></defs>
+  <g fill="var(--surface-2)" stroke="var(--line-hard)" stroke-width="1.4">
+    <rect x="270" y="14" width="180" height="46" rx="7"/>
+    <rect x="270" y="90" width="180" height="46" rx="7"/>
   </g>
-  <rect x="30" y="166" width="200" height="112" rx="8" fill="var(--danger-bg)" stroke="var(--danger)" stroke-width="1.5"/>
-  <rect x="262" y="166" width="196" height="112" rx="8" fill="var(--warn-bg)" stroke="var(--warn)" stroke-width="1.5"/>
-  <rect x="490" y="166" width="200" height="112" rx="8" fill="var(--good-bg)" stroke="var(--good)" stroke-width="1.5"/>
-  <g stroke="var(--ink-3)" stroke-width="1.4" fill="none" marker-end="url(#ah2)">
+  <rect x="30" y="166" width="200" height="112" rx="7" fill="var(--crit-bg)" stroke="var(--critical)" stroke-width="1.4"/>
+  <rect x="262" y="166" width="196" height="112" rx="7" fill="var(--high-bg)" stroke="var(--high)" stroke-width="1.4"/>
+  <rect x="490" y="166" width="200" height="112" rx="7" fill="var(--ok-bg)" stroke="var(--ok)" stroke-width="1.4"/>
+  <g stroke="var(--ink-4)" stroke-width="1.3" fill="none" marker-end="url(#ah2)">
     <path d="M360 60 L 360 90"/>
     <path d="M300 136 L 150 166"/><path d="M360 136 L 360 166"/><path d="M420 136 L 570 166"/>
   </g>
   <g text-anchor="middle">
-    <text x="360" y="42" font-size="13" font-weight="600" fill="var(--ink)">detect_concurrency()</text>
-    <text x="360" y="112" font-size="12.5" fill="var(--ink-2)">classify each signal</text>
-    <text x="360" y="128" font-size="11.5" fill="var(--ink-3)">only-another-process?  or  could-be-you?</text>
-    <text x="130" y="192" font-size="13" font-weight="600" fill="var(--danger)">BLOCKING</text>
-    <text x="360" y="192" font-size="13" font-weight="600" fill="var(--warn)">ADVISORY</text>
-    <text x="590" y="192" font-size="13" font-weight="600" fill="var(--good)">CLEAN</text>
+    <text x="360" y="42" font-size="12.5" font-weight="700" fill="var(--ink)">detect_concurrency()</text>
+    <text x="360" y="112" font-size="12" fill="var(--ink-2)">classify each signal</text>
+    <text x="360" y="128" font-size="10.5" fill="var(--ink-4)">another process, or you?</text>
+    <text x="130" y="192" font-size="12.5" font-weight="700" fill="var(--critical)">BLOCKING</text>
+    <text x="360" y="192" font-size="12.5" font-weight="700" fill="var(--high)">ADVISORY</text>
+    <text x="590" y="192" font-size="12.5" font-weight="700" fill="var(--ok)">CLEAN</text>
   </g>
-  <g font-size="11.5" fill="var(--ink-2)">
+  <g font-size="11" fill="var(--ink-2)">
     <text x="44" y="214">staged by someone else</text>
     <text x="44" y="232">index.lock / MERGE_HEAD</text>
-    <text x="44" y="250" font-weight="600" fill="var(--danger)">stop · exit 3</text>
+    <text x="44" y="250" font-weight="700" fill="var(--critical)">stop · exit 3</text>
     <text x="44" y="268">--force to override</text>
     <text x="276" y="214">tracked file touched</text>
     <text x="276" y="232">in the last 120s</text>
-    <text x="276" y="250" font-weight="600" fill="var(--warn)">continue</text>
+    <text x="276" y="250" font-weight="700" fill="var(--high)">continue</text>
     <text x="276" y="268">recorded in handoff</text>
     <text x="504" y="214">no signal</text>
-    <text x="504" y="250" font-weight="600" fill="var(--good)">commit snapshot</text>
+    <text x="504" y="250" font-weight="700" fill="var(--ok)">commit snapshot</text>
     <text x="504" y="268">then re-check HEAD</text>
   </g>
 </svg>`;
 
+  /* 提示词六块。右侧红字是「缺了这块会怎样」——把结构与后果并置，
+     比单画一个方框列表更能说明每一块为什么必须在。 */
   const D_PROMPT = `
-<svg viewBox="0 0 720 322" role="img" aria-label="prompt structure">
-  <g stroke-width="1.5">
-    <rect x="24" y="14" width="330" height="50" rx="7" fill="var(--surface-2)" stroke="var(--line)"/>
-    <rect x="24" y="74" width="330" height="50" rx="7" fill="var(--surface-2)" stroke="var(--line)"/>
-    <rect x="24" y="134" width="330" height="50" rx="7" fill="var(--surface-2)" stroke="var(--line)"/>
-    <rect x="24" y="194" width="330" height="50" rx="7" fill="var(--surface-2)" stroke="var(--line)"/>
-    <rect x="24" y="254" width="330" height="50" rx="7" fill="var(--accent-sub)" stroke="var(--accent)"/>
+<svg viewBox="0 0 720 382" role="img" aria-label="prompt structure and the cost of omitting each block">
+  <g stroke-width="1.4">
+    <rect x="24" y="14" width="330" height="50" rx="7" fill="var(--surface-2)" stroke="var(--line-hard)"/>
+    <rect x="24" y="74" width="330" height="50" rx="7" fill="var(--surface-2)" stroke="var(--line-hard)"/>
+    <rect x="24" y="134" width="330" height="50" rx="7" fill="var(--surface-2)" stroke="var(--line-hard)"/>
+    <rect x="24" y="194" width="330" height="50" rx="7" fill="var(--surface-2)" stroke="var(--line-hard)"/>
+    <rect x="24" y="254" width="330" height="50" rx="7" fill="var(--info-bg)" stroke="var(--info)"/>
+    <rect x="24" y="314" width="330" height="50" rx="7" fill="var(--ok-bg)" stroke="var(--ok)"/>
   </g>
-  <g font-size="12.5" font-weight="600" fill="var(--ink)">
-    <text x="40" y="36">1 · repo / branch / HEAD</text>
+  <g font-size="12" font-weight="700" fill="var(--ink)">
+    <text x="40" y="36">1 · repo / branch / HEAD / remote</text>
     <text x="40" y="96">2 · read the plan + intent sections</text>
     <text x="40" y="156">3 · finished tasks by name</text>
     <text x="40" y="216">4 · concrete gaps</text>
-    <text x="40" y="276" fill="var(--accent)">5 · expiry: time + HEAD</text>
+    <text x="40" y="276" fill="var(--info)">5 · prior sessions + digests</text>
+    <text x="40" y="336" fill="var(--ok)">6 · expiry: time + HEAD</text>
   </g>
-  <g font-size="11" fill="var(--ink-3)">
-    <text x="40" y="52">where am I</text>
+  <g font-size="10.5" fill="var(--ink-4)">
+    <text x="40" y="52">where am I, and which clone is it</text>
     <text x="40" y="112">what counts as done, what must not change</text>
     <text x="40" y="172">do not redo Task 1 / Task 3</text>
     <text x="40" y="232">missing file X, missing symbol Y</text>
-    <text x="40" y="292">rerun instead of reusing</text>
+    <text x="40" y="292">what earlier sessions already concluded</text>
+    <text x="40" y="352">rerun instead of reusing</text>
   </g>
-  <g stroke="var(--danger)" stroke-width="1.2" stroke-dasharray="4 3" fill="none">
-    <path d="M354 39 L 396 39"/><path d="M354 99 L 396 99"/><path d="M354 159 L 396 159"/>
-    <path d="M354 219 L 396 219"/><path d="M354 279 L 396 279"/>
+  <g stroke="var(--critical)" stroke-width="1.1" stroke-dasharray="4 3" fill="none">
+    <path d="M354 39 L 394 39"/><path d="M354 99 L 394 99"/><path d="M354 159 L 394 159"/>
+    <path d="M354 219 L 394 219"/><path d="M354 279 L 394 279"/><path d="M354 339 L 394 339"/>
   </g>
-  <g font-size="11.5" fill="var(--danger)">
-    <text x="404" y="43">agent has no coordinates</text>
-    <text x="404" y="103">plan read as a to-do list</text>
-    <text x="404" y="163">finished work redone</text>
-    <text x="404" y="223">gap search from scratch</text>
-    <text x="404" y="283">acts on a stale map</text>
+  <g font-size="11" fill="var(--critical)">
+    <text x="402" y="43">no coordinates</text>
+    <text x="402" y="103">plan read as a to-do list</text>
+    <text x="402" y="163">finished work redone</text>
+    <text x="402" y="223">gap search from scratch</text>
+    <text x="402" y="283">re-derives settled answers</text>
+    <text x="402" y="343">acts on a stale map</text>
   </g>
-  <text x="404" y="20" font-size="11" font-weight="600" fill="var(--danger)">missing → consequence</text>
+  <text x="402" y="20" font-size="10.5" font-weight="700" fill="var(--critical)">omit it → this happens</text>
 </svg>`;
 
-  /* ── 章节 ────────────────────────────────────────────────── */
+  /* ── 章节 ────────────────────────────────────────────────────────────
+     编号是**执行顺序**（先认清丢了什么 → 何时跑 → 怎么跑 → 跑完发生什么），
+     不是装饰性的 01/02/03，所以它跟着 h2 一起渲染并进目录。 */
   function build() {
     const out = document.getElementById("body");
     while (out.firstChild) out.removeChild(out.firstChild);
     const secs = [];
+    let n = 0;
     const sec = (id, hKey, kids) => {
-      const s = h("section", { id: id }, h("h2", { text: g(hKey) }));
+      n += 1;
+      const num = String(n).padStart(2, "0");
+      const s = h("section", { id: id }, h("h2", { text: g(hKey), "data-n": num }));
       kids.forEach((k) => k && s.appendChild(k));
-      secs.push([id, g(hKey)]);
+      secs.push([id, g(hKey), num]);
       out.appendChild(s);
     };
 
     sec("s1", "s1.h", [
       rich("p", "s1.p1"),
-      h("ul", null, rich("li", "s1.li1"), rich("li", "s1.li2"), rich("li", "s1.li3"), rich("li", "s1.li4")),
+      // 四样丢失的东西是并列、等重的。用网格而不是项目符号：项目符号读起来
+      // 像「还有别的」，网格读起来像「就这四样，全丢」。
+      h("div.grid.g2", null,
+        ...["s1.li1", "s1.li2", "s1.li3", "s1.li4"].map((k) => h("div.card", null, rich("p", k)))),
       rich("p", "s1.p2")
     ]);
 
-    const bands = [
-      ["≥ 8 MB", "critical", g("band.critical") || "", "s2.r1"],
-      ["≥ 3 MB", "high", "", "s2.r2"],
-      ["≥ 1 MB", "watch", "", "s2.r3"],
-      ["< 1 MB", "ok", "", "s2.r4"]
-    ];
-    const bandLabel = { critical: { "zh-Hans": "立刻交接", "zh-Hant": "立即交接", en: "hand off now" },
-                        high: { "zh-Hans": "尽快交接", "zh-Hant": "盡快交接", en: "hand off soon" },
-                        watch: { "zh-Hans": "留意", "zh-Hant": "留意", en: "watch" },
-                        ok: { "zh-Hans": "健康", "zh-Hant": "健康", en: "healthy" } };
     const bandTable = h("table", null,
       h("thead", null, h("tr", null,
-        h("th", { text: g("s2.t.size") }), h("th", { text: g("s2.t.verdict") }), h("th", { text: g("s2.t.measured") }))),
-      h("tbody", null, ...bands.map((b) => h("tr", null,
-        h("td", null, h("code", { text: b[0] })),
-        h("td", null, h("span", { class: "pill " + b[1], text: bandLabel[b[1]][lang] })),
-        h("td", { text: g(b[3]) })))));
+        h("th", { text: g("s2.t.size") }),
+        h("th", { text: g("s2.t.verdict") }),
+        h("th", { text: g("s2.t.measured") }))),
+      h("tbody", null, ...BANDS.slice().reverse().map((x) => h("tr", null,
+        h("td", null, h("code", { text: x.size })),
+        h("td", null, h("span", { class: "pill " + x.b, text: bandName(x.b) })),
+        h("td", { text: g(x.rate) })))));
     sec("s2", "s2.h", [
       rich("p", "s2.p1"),
       h("ul", null, rich("li", "s2.li1"), rich("li", "s2.li2"), rich("li", "s2.li3")),
       h("h3", { text: g("s2.h2") }), rich("p", "s2.p2"),
-      h("div.tw", null, bandTable), rich("p", "s2.p3")
+      h("div.tw", null, bandTable),
+      h("div.note", null, rich("p", "s2.p3"))
     ]);
 
-    const card = (hk, pk, code) => h("div.card", null, h("h3", { text: g(hk) }), rich("p", pk),
+    // 三种入口是并列选项：给等宽命令 + 一句取舍，读者挑一个照抄就走。
+    const entry = (tag, hk, pk, code) => h("div.entry", null,
+      h("span.tag", { text: tag }), h("h3", { text: g(hk) }), rich("p", pk),
       code ? h("pre", null, h("code", { text: code })) : null);
     sec("s3", "s3.h", [
       rich("p", "s3.p1"),
-      card("s3.gui.h", "s3.gui.p", "agent-handoff --gui"),
-      card("s3.menu.h", "s3.menu.p", "python -m agent_handoff.menu"),
-      card("s3.cli.h", "s3.cli.p",
-        "agent-handoff --vitals\nagent-handoff --find 01a00e83\nagent-handoff /path/to/project --dry-run\nagent-handoff /path/to/project")
+      h("div.grid.g3", null,
+        entry("GUI", "s3.gui.h", "s3.gui.p", "agent-handoff --gui"),
+        entry("MENU", "s3.menu.h", "s3.menu.p", "python -m agent_handoff.menu"),
+        entry("CLI", "s3.cli.h", "s3.cli.p",
+          "agent-handoff --vitals\nagent-handoff --find 01a00e83\nagent-handoff . --pick-sessions"))
     ]);
 
-    const step = (n, hk, pk, extra) => h("div.step", null, h("div.n", { text: String(n) }),
+    const step = (i, hk, pk, extra) => h("div.step", null,
+      h("div.n", { text: String(i) }),
       h("div", null, h("h4", { text: g(hk) }), rich("p", pk), extra || null));
     sec("s4", "s4.h", [
       h("div.steps", null,
@@ -359,10 +572,11 @@ figcaption{margin-top:7px;font-size:12.5px;color:var(--ink-3);text-align:center}
         step(4, "s4.step4.h", "s4.step4.p", h("div.note", null, rich("p", "s4.step4.note"))))
     ]);
 
+    const card = (hk, pk) => h("div.card", null, h("h3", { text: g(hk) }), rich("p", pk));
     sec("s5", "s5.h", [
       rich("p", "s5.p1"),
-      h("div.trio", null, card("s5.e1.h", "s5.e1.p"), card("s5.e2.h", "s5.e2.p")),
-      rich("p", "s5.p2"),
+      h("div.grid.g2", null, card("s5.e1.h", "s5.e1.p"), card("s5.e2.h", "s5.e2.p")),
+      h("div.note.warn", null, rich("p", "s5.p2")),
       fig(D_VERDICT, "s5.diagram.title")
     ]);
 
@@ -371,20 +585,23 @@ figcaption{margin-top:7px;font-size:12.5px;color:var(--ink-3);text-align:center}
       h("div.note.stop", null, h("h3", { text: g("s6.block.h") }), rich("p", "s6.block.p"),
         h("ul", null, rich("li", "s6.block.li1"), rich("li", "s6.block.li2"), rich("li", "s6.block.li3"))),
       h("div.note.warn", null, h("h3", { text: g("s6.warn.h") }), rich("p", "s6.warn.p")),
-      h("div.card", null, h("h3", { text: g("s6.why.h") }), rich("p", "s6.why.p")),
       fig(D_CONC, "s6.diagram.title"),
-      h("div.card", null, h("h3", { text: g("s6.after.h") }), rich("p", "s6.after.p"))
+      h("div.grid.g2", null, card("s6.why.h", "s6.why.p"), card("s6.after.h", "s6.after.p"))
     ]);
 
     sec("s7", "s7.h", [
       rich("p", "s7.p1"),
-      h("div.trio", null,
+      fig(D_PROMPT, "s7.diagram.title"),
+      // 卡片顺序必须与图和 build_prompt 的实际输出顺序一致：
+      // 坐标 → 计划 → 已完成 → 缺口 → 前序会话 → 过期声明。
+      // `b5` 这个键名早于「前序会话」这一块存在（当时只有五块），
+      // 所以键名的数字与位置不再对应——按语义排，不按键名排。
+      h("div.grid.g3", null,
         card("s7.b1.h", "s7.b1.p"), card("s7.b2.h", "s7.b2.p"), card("s7.b3.h", "s7.b3.p"),
-        card("s7.b4.h", "s7.b4.p"), card("s7.b5.h", "s7.b5.p")),
-      fig(D_PROMPT, "s7.diagram.title")
+        card("s7.b4.h", "s7.b4.p"), card("s7.b6.h", "s7.b6.p"), card("s7.b5.h", "s7.b5.p"))
     ]);
 
-    sec("s8", "s8.h", [rich("p", "s8.p1"), rich("p", "s8.p2")]);
+    sec("s8", "s8.h", [rich("p", "s8.p1"), h("div.note.warn", null, rich("p", "s8.p2"))]);
 
     const PLAN = "**Goal:** " + (lang === "en" ? "One sentence on what this project is for."
       : lang === "zh-Hant" ? "一句話說清這個專案要做什麼。" : "一句话说清这个项目要做什么。") +
@@ -408,23 +625,23 @@ figcaption{margin-top:7px;font-size:12.5px;color:var(--ink-3);text-align:center}
       ["--lang LANG", "cli.arg.lang"], ["--gui", "cli.arg.gui"], ["--port N", "cli.arg.port"],
       ["--no-browser", "cli.arg.no_browser"], ["--jobs N", "cli.arg.jobs"], ["--json", "cli.arg.json"]
     ];
-    /* 参数说明直接复用程序自己的 i18n 表，避免文档与 --help 漂移 */
-    const CLI = window.__CLI_STRINGS__ || {};
-    const flagDesc = (k) => (CLI[lang] && CLI[lang][k]) || k;
     const flagTable = h("table", null,
       h("thead", null, h("tr", null, h("th", { text: g("s10.t.flag") }), h("th", { text: g("s10.t.what") }))),
       h("tbody", null, ...FLAGS.map((f) => h("tr", null,
-        h("td", null, h("code", { text: f[0] })), h("td", { text: flagDesc(f[1]) })))));
+        h("td", null, h("code", { text: f[0] })), h("td", { text: cliDesc(f[1]) })))));
+    // 退出码用与量程条同一套语义色：0 是健康，3 是被拦下。
+    const EXIT = [["0", "ok"], ["1", "watch"], ["2", "high"], ["3", "critical"]];
     const exitTable = h("table", null,
       h("thead", null, h("tr", null, h("th", { text: g("s10.exit.h") }), h("th", { text: g("s10.t.what") }))),
-      h("tbody", null, ...["0", "1", "2", "3"].map((c) => h("tr", null,
-        h("td", null, h("code", { text: c })), h("td", { html: g("s10.exit." + c) })))));
+      h("tbody", null, ...EXIT.map((e) => h("tr", null,
+        h("td", null, h("span", { class: "pill " + e[1], text: e[0] })),
+        h("td", { html: g("s10.exit." + e[0]) })))));
     sec("s10", "s10.h", [h("div.tw", null, flagTable), h("div.tw", null, exitTable)]);
 
-    sec("s11", "s11.h", [h("div.trio", null,
+    sec("s11", "s11.h", [h("div.grid.g3", null,
       card("s11.c1.h", "s11.c1.p"), card("s11.c2.h", "s11.c2.p"), card("s11.c3.h", "s11.c3.p"))]);
 
-    sec("s12", "s12.h", [h("div.note.warn", null, rich("p", "s12.p"))]);
+    sec("s12", "s12.h", [h("div.note.stop", null, rich("p", "s12.p"))]);
 
     const FILES = [
       ["src/agent_handoff/cli.py", "command line entry"],
@@ -441,28 +658,33 @@ figcaption{margin-top:7px;font-size:12.5px;color:var(--ink-3);text-align:center}
       h("tbody", null, ...FILES.map((f) => h("tr", null,
         h("td", null, h("code", { text: f[0] })), h("td", { text: f[1] }))))))]);
 
-    /* 目录 */
+    /* 目录：编号与正文一致，读者能把「第 07 节」直接对上。 */
     const toc = document.getElementById("toc");
     while (toc.children.length > 1) toc.removeChild(toc.lastChild);
     toc.firstElementChild.textContent = g("nav");
     secs.forEach((s) => {
-      const a = h("a", { href: "#" + s[0], text: s[1] });
+      const a = h("a", { href: "#" + s[0] },
+        h("span.tn", { text: s[2] }), h("span", { text: s[1] }));
       a.addEventListener("click", () => setTimeout(mark, 60));
       toc.appendChild(a);
     });
     mark();
   }
 
+  /* 当前章节高亮。用 aria-current 而不是自定义 class：它同时驱动样式与读屏。 */
   function mark() {
     const links = Array.from(document.querySelectorAll(".toc a"));
     let best = null, bestTop = -Infinity;
     links.forEach((a) => {
       const el = document.getElementById(a.getAttribute("href").slice(1));
       if (!el) return;
-      const top = el.getBoundingClientRect().top - 90;
+      const top = el.getBoundingClientRect().top - 96;
       if (top <= 0 && top > bestTop) { bestTop = top; best = a; }
     });
-    links.forEach((a) => a.classList.toggle("on", a === best));
+    links.forEach((a) => {
+      if (a === best) a.setAttribute("aria-current", "true");
+      else a.removeAttribute("aria-current");
+    });
   }
 
   function setLang(code) {
@@ -471,10 +693,13 @@ figcaption{margin-top:7px;font-size:12.5px;color:var(--ink-3);text-align:center}
     try { localStorage.setItem("ah.guide.lang", code); } catch (e) {}
     document.documentElement.lang = code;
     document.title = g("title");
-    Array.from(document.querySelectorAll("[data-g]")).forEach((n) => { n.textContent = g(n.getAttribute("data-g")); });
+    Array.from(document.querySelectorAll("[data-g]")).forEach((el) => {
+      el.textContent = g(el.getAttribute("data-g"));
+    });
     Array.from(document.querySelectorAll("#lang-seg button")).forEach((b) => {
       b.setAttribute("aria-pressed", String(b.getAttribute("data-lang") === code));
     });
+    gauge();
     build();
   }
 
@@ -495,6 +720,8 @@ figcaption{margin-top:7px;font-size:12.5px;color:var(--ink-3);text-align:center}
   Array.from(document.querySelectorAll("#theme-seg button")).forEach((b) => {
     b.addEventListener("click", () => setTheme(b.getAttribute("data-theme-set")));
   });
+
+  document.getElementById("ver").textContent = "__VERSION__";
 
   let savedTheme = null;
   try { savedTheme = localStorage.getItem("ah.guide.theme"); } catch (e) {}

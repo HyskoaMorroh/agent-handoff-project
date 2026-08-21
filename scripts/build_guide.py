@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -71,11 +72,24 @@ def main() -> int:
     # </script> 出现在 JSON 字符串里会提前关闭标签。
     blob = json.dumps(tables, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     cli_blob = json.dumps(cli, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
-    for placeholder in ("__GUIDE_I18N__", "__CLI_I18N__"):
+    for placeholder in ("__GUIDE_I18N__", "__CLI_I18N__", "__VERSION__"):
         if placeholder not in html:
             print(f"template has no {placeholder} placeholder", file=sys.stderr)
             return 1
     html = html.replace("__GUIDE_I18N__", blob).replace("__CLI_I18N__", cli_blob)
+
+    # 版本号显示在顶栏。从包里读而不是手写：文档说它是 v2.3.0 而程序是 v2.4.0
+    # 这种不一致，读者只会当成文档不可信。
+    version = ""
+    init = ROOT / "src" / "agent_handoff" / "__init__.py"
+    if init.is_file():
+        m = re.search(r'__version__\s*=\s*"([^"]+)"', init.read_text(encoding="utf-8"))
+        if m:
+            version = "v" + m.group(1)
+    if not version:
+        print("cannot read __version__ from the package", file=sys.stderr)
+        return 1
+    html = html.replace("__VERSION__", version)
 
     OUT.write_text(html, encoding="utf-8", newline="")
     size = OUT.stat().st_size

@@ -516,9 +516,14 @@
   function init() {
     $("#ver").textContent = BOOT.version;
 
+    // hash 里的主题优先于记住的选择：截图脚本靠它固定主题，而浏览器 profile
+    // 可能留着上一次运行存下的 ah.theme，那会让「浅色」这一张拍成深色。
+    const hashQ = location.hash ? new URLSearchParams(location.hash.slice(1)) : null;
+    const forced = hashQ && hashQ.get("theme");
     let saved = null;
     try { saved = localStorage.getItem("ah.theme"); } catch (_) {}
-    setTheme(saved || "auto");
+    setTheme((forced === "light" || forced === "dark" || forced === "auto")
+      ? forced : (saved || "auto"));
     $$("#theme-seg button").forEach((b) => {
       b.addEventListener("click", () => setTheme(b.getAttribute("data-theme-set")));
     });
