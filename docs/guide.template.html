@@ -531,6 +531,34 @@ figcaption{margin-top:12px;text-align:center;font:500 11.5px/1 var(--mono);
       rich("p", "s1.p2")
     ]);
 
+    // 这一节必须紧跟「丢了什么」：读者刚知道代价，接着就该知道**多数情况下
+    // 有更好的办法**。放在后面等于先推销工具、再承认它是次优选择。
+    const resumeCases = h("table", null,
+      h("thead", null, h("tr", null,
+        h("th", { text: g("sn.t.case") }), h("th", { text: g("sn.t.why") }))),
+      h("tbody", null, ...[1, 2, 3, 4, 5, 6, 7].map((i) => h("tr", null,
+        h("td", null, h("strong", { text: g(`sn.c${i}.a`) })),
+        rich("td", `sn.c${i}.b`)))));
+    sec("sn", "sn.h", [
+      h("div.note.stop", null, rich("p", "sn.p1")),
+      h("pre", null, h("code", {
+        // 注释跟着语言走：整份页面三语切换，只有这一段留着中文会很突兀。
+        text: lang === "en"
+          ? "claude --resume        # or claude --continue / in-session /resume\n"
+            + "codex resume           # or codex resume --last"
+          : lang === "zh-Hant"
+            ? "claude --resume        # 或 claude --continue / 工作階段內 /resume\n"
+              + "codex resume           # 或 codex resume --last"
+            : "claude --resume        # 或 claude --continue / 会话内 /resume\n"
+              + "codex resume           # 或 codex resume --last"
+      })),
+      rich("p", "sn.p2"),
+      h("div.tw", null, resumeCases),
+      h("h3", { text: g("sn.h2") }), rich("p", "sn.p3"),
+      h("div.grid.g2", null,
+        ...["sn.x1", "sn.x2", "sn.x3", "sn.x4", "sn.x5"].map((k) => h("div.card", null, rich("p", k))))
+    ]);
+
     const bandTable = h("table", null,
       h("thead", null, h("tr", null,
         h("th", { text: g("s2.t.size") }),
