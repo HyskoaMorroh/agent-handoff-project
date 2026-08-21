@@ -124,6 +124,24 @@ def test_all_three_backends_agree(repo: Path, monkeypatch):
     assert got["build_thing"] and got["ThingBuilder"] and not got["render_ui"]
 
 
+def test_backends_agree_on_untracked_files(repo: Path):
+    """交接的典型时刻是「刚写完、还没 commit」。
+
+    `git grep` 与 `git ls-files` 默认只看已跟踪文件，而 ripgrep 扫工作树。
+    不对齐的话，同一个仓库在装了 ripgrep 的机器上判「已定义」、没装的机器上
+    判「缺失」——完成度取决于工具链而不是代码。
+    """
+    (repo / "pkg" / "fresh.py").write_text("def just_written():\n    pass\n", encoding="utf-8")
+    syms = ["just_written"]
+    gg, ok = _git_grep_batch(repo, syms)
+    assert ok
+    assert gg == {"just_written"}, "git grep 漏了未跟踪文件"
+    assert _python_scan(repo, syms) == {"just_written"}, "python 兜底漏了未跟踪文件"
+    if shutil.which("rg"):
+        rg, ok = _rg_batch(repo, syms)
+        assert ok and rg == {"just_written"}
+
+
 def test_symbol_with_regex_metacharacters_is_escaped(repo: Path, monkeypatch):
     """符号名里出现正则元字符时不能把整条批量正则搞坏。"""
     src = "def normal_sym():\n    pass\n"

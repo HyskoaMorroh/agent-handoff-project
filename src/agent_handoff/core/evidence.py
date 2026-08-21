@@ -203,13 +203,16 @@ def _rg_batch(repo: Path, symbols: list[str], exclude: Iterable[str] = ()) -> tu
 def _git_grep_batch(repo: Path, symbols: list[str], exclude: Iterable[str] = ()) -> tuple[set[str], bool]:
     """ripgrep 缺席时的第一退路：git grep，同样批量化。
 
-    只搜 git 跟踪的文件，天然避开 node_modules 与构建产物。
+    加 `--untracked`：交接的典型时刻是「刚写完、还没 commit」，而 `git grep`
+    默认只搜已跟踪文件。不加的话，同一个仓库在装了 ripgrep 的机器上判
+    「已定义」、没装的机器上判「缺失」——完成度取决于工具链而不是代码。
+    `--exclude-standard` 仍然生效，所以 node_modules 与构建产物不会被卷进来。
     """
     found: set[str] = set()
     for i in range(0, len(symbols), SYMBOL_BATCH):
         chunk = symbols[i : i + SYMBOL_BATCH]
         # `--` 之后是路径规格：用 `:!` 排除计划文档自身。模式必须在它之前。
-        args = ["grep", "-hE", _symbol_pattern_ere(chunk)]
+        args = ["grep", "-hE", "--untracked", "--exclude-standard", _symbol_pattern_ere(chunk)]
         if exclude:
             args.append("--")
             args += [f":!{pat}" for pat in exclude]
@@ -223,17 +226,34 @@ def _git_grep_batch(repo: Path, symbols: list[str], exclude: Iterable[str] = ())
 
 
 def _python_scan(repo: Path, symbols: list[str], exclude: Iterable[str] = ()) -> set[str]:
-    """最后的兜底：只读 git 跟踪的源文件，一遍正则扫完。
+    """最后的兜底：读源文件，一遍正则扫完。
 
     比原版的"每符号一次全库遍历"快一个数量级，因为文件只读一遍，
     正则也只编译一次。
+
+    **必须包含未跟踪文件。** 交接的典型时刻正是「刚写完、还没 commit」，
+    实测：一个 `git add` 之前的新文件里定义的符号，`git ls-files` 看不见，
+    于是同一个仓库在装了 ripgrep 的机器上判「已定义」、没装的机器上判「缺失」——
+    完成度取决于工具链而不是代码。`git ls-files` 的输出后面补上
+    `--others --exclude-standard`（未跟踪且未被 .gitignore 忽略的文件），
+    与 ripgrep 的可见范围对齐。
     """
     wanted = set(symbols)
     skip = {norm_path(x) for x in exclude}
-    p = git_proc(repo, "ls-files", "-z", timeout=60)
-    if p.ok and p.out:
-        rels = [x for x in p.out.split("\0") if x]
-        files = [repo / r for r in rels if Path(r).suffix.lower() in TEXT_SUFFIXES]
+    tracked = git_proc(repo, "ls-files", "-z", timeout=60)
+    untracked = git_proc(repo, "ls-files", "-z", "--others", "--exclude-standard", timeout=60)
+    rels: list[str] = []
+    for p in (tracked, untracked):
+        if p.ok and p.out:
+            rels += [x for x in p.out.split("\0") if x]
+    if rels:
+        seen: set[str] = set()
+        files = []
+        for r in rels:
+            if r in seen or Path(r).suffix.lower() not in TEXT_SUFFIXES:
+                continue
+            seen.add(r)
+            files.append(repo / r)
     else:
         # 不是 git 仓库或 ls-files 失败：退回受限遍历。
         import os
