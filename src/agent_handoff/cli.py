@@ -11,9 +11,15 @@ from pathlib import Path
 
 from . import __version__
 from .core.handoff import EXIT_BAD_INPUT, EXIT_OK, Options, run_handoff
-from .core.vitals import SessionRow, find_sessions, group_by_agent, scan_session_vitals
+from .core.vitals import (
+    SessionRow,
+    find_sessions,
+    group_by_agent,
+    scan_session_vitals,
+    sessions_for_repo,
+)
 from .i18n import Translator, available, detect
-from .platform import force_utf8_io, norm_path
+from .platform import force_utf8_io
 
 
 def print_session_card(r: SessionRow, tr: Translator, index: int | None = None) -> None:
@@ -189,12 +195,11 @@ def pick_sessions(rows: list[SessionRow], repo: Path, tr: Translator) -> list[st
         print(tr.t("cli.pick.empty_list"))
         return []
 
-    target = norm_path(repo)
-
     def related(r: SessionRow) -> bool:
-        if norm_path(r.cwd).startswith(target):
-            return True
-        return any(norm_path(x) == target or norm_path(x).startswith(target + "/") for x in r.repos)
+        # 与 `sessions_for_repo` 同一套判据，直接复用而不是再写一遍：
+        # 两处各写一遍必然漂移，而它们回答的是同一个问题
+        #（这个转录在这个仓库上工作过吗）。
+        return bool(sessions_for_repo(repo, [r]))
 
     # 与这个仓库相关的排在前面：它们几乎总是用户要选的，放在需要翻屏的位置
     # 等于没有这个功能。组内按最近活动排。

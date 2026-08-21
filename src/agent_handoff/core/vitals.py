@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections import OrderedDict
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -573,7 +574,13 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
 
 # 转录是追加写的：同一个 (路径, 大小, mtime) 的扫描结果不会变。
 # 一次会话里 --vitals 和交接流程都要扫，缓存能省掉第二遍全量 I/O。
-_cache: dict[tuple[str, int, int, bool], SessionRow] = {}
+#
+# 必须有上限。键里含 mtime，而转录是**持续追加**的：网页界面长驻时每次
+# `/api/vitals` 都会因为 mtime 变化生成新键，旧条目永不失效——每个 SessionRow
+# 现在还带着完整的压缩摘要（实测单份可达 96 KB），一晚下来就是几百 MB。
+# 逐出最旧的：转录越新越可能被再次问到。
+_CACHE_MAX = 256
+_cache: OrderedDict[tuple[str, int, int, bool], SessionRow] = OrderedDict()
 
 
 def clear_cache() -> None:
@@ -588,10 +595,14 @@ def _cached_scan(agent: str, fp: Path, deep: bool) -> SessionRow | None:
     key = (str(fp), st.st_size, int(st.st_mtime), deep)
     hit = _cache.get(key)
     if hit is not None:
+        # 命中的挪到末尾：LRU 的「最近用过」语义，避免热点条目被冷条目挤掉。
+        _cache.move_to_end(key)
         return hit
     row = scan_one(agent, fp, deep)
     if row is not None:
         _cache[key] = row
+        while len(_cache) > _CACHE_MAX:
+            _cache.popitem(last=False)
     return row
 
 

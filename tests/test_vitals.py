@@ -728,6 +728,25 @@ def test_cache_reuses_unchanged_file(tmp_path: Path, monkeypatch):
     assert first is second, "未变动的转录应复用缓存结果"
 
 
+def test_cache_is_bounded(tmp_path: Path, monkeypatch):
+    """缓存必须有上限，否则网页界面长驻时会无限增长。
+
+    键里含 mtime，而转录是持续追加的：每次 `/api/vitals` 都会因 mtime 变化
+    生成新键，旧条目永不失效。每个 SessionRow 现在还带着完整压缩摘要
+    （实测单份可达 96 KB），不逐出就是几百 MB 的泄漏。
+    """
+    from agent_handoff.core.vitals import _CACHE_MAX, _cache, _cached_scan
+
+    clear_cache()
+    # 造出比上限更多的不同转录，逐个扫描。
+    for i in range(_CACHE_MAX + 20):
+        fp = tmp_path / f"s{i}.jsonl"
+        _write_jsonl(fp, [{"type": "system", "sessionId": f"x{i}", "cwd": "/p"}])
+        assert _cached_scan("Claude Code", fp, True) is not None
+    assert len(_cache) <= _CACHE_MAX, f"缓存无上限：{len(_cache)} 条"
+    clear_cache()
+
+
 def test_to_dict_is_json_serializable(tmp_path: Path):
     fp = tmp_path / "c.jsonl"
     _write_jsonl(fp, [{"type": "system", "sessionId": "s", "cwd": "/p"}])
