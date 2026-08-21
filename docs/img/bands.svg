@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 196" width="880" height="196" role="img"
+     aria-label="Measured fatal-error rate by transcript size: under 1 MB 0 percent, 1 MB and up 17 percent, 3 MB and up 30 percent, 8 MB and up 100 percent">
+<!--
+  README 首图。GitHub 把 SVG 当图片渲染，所以不能用 CSS 变量或
+  prefers-color-scheme——每个颜色都写死，且整块画在自己的深色面板上，
+  于是在 GitHub 浅色与深色两种页面底上表现一致。
+
+  横条而不是竖条：竖条把数值标签放在柱顶，而 100% 那根柱没有留白容纳它，
+  标签会压到表头与分隔线上。横条的标签各占一行，结构上不可能重叠。
+
+  柱长就是本机 108 份转录里该体积区间出现过致命错误的实测比例；
+  颜色顺序（绿→赭→橙→红）就是工具自己的四档判据。
+-->
+<rect width="880" height="196" rx="10" fill="#0E1416"/>
+
+<g font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="10.5" fill="#7D8D8F"
+   letter-spacing="1.5">
+  <text x="24" y="28" font-weight="600">54 CLAUDE + 54 CODEX TRANSCRIPTS, MEASURED</text>
+  <text x="856" y="28" text-anchor="end">SHARE THAT HIT A FATAL ERROR</text>
+</g>
+<line x1="24" y1="40" x2="856" y2="40" stroke="#263134"/>
+
+<!-- 轨道底色：0% 那行也要有轨道，否则整行是空的，读不出「这一档存在」 -->
+<g fill="#1B2427">
+  <rect x="230" y="58" width="500" height="16" rx="3"/>
+  <rect x="230" y="90" width="500" height="16" rx="3"/>
+  <rect x="230" y="122" width="500" height="16" rx="3"/>
+  <rect x="230" y="154" width="500" height="16" rx="3"/>
+</g>
+
+<!-- 柱：长度 = 失败率 × 500px -->
+<rect x="230" y="90"  width="85"  height="16" rx="3" fill="#D5B054"/>
+<rect x="230" y="122" width="150" height="16" rx="3" fill="#E38A50"/>
+<rect x="230" y="154" width="500" height="16" rx="3" fill="#E27A6E"/>
+<!-- 0%：画一段 3px 的起始记号，说明这一档有数据且为零 -->
+<rect x="230" y="58" width="3" height="16" rx="1.5" fill="#5CBE93"/>
+
+<!-- 左侧：档名 + 体积区间。同一行，档名粗体、区间等宽淡色 -->
+<g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif"
+   font-size="13.5" font-weight="600" fill="#E6EDEB">
+  <text x="24" y="70">Healthy</text>
+  <text x="24" y="102">Watch</text>
+  <text x="24" y="134">Hand off soon</text>
+  <text x="24" y="166">Hand off now</text>
+</g>
+<g font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="11.5" fill="#7D8D8F"
+   text-anchor="end">
+  <text x="214" y="70">&lt; 1 MB</text>
+  <text x="214" y="102">&#8805; 1 MB</text>
+  <text x="214" y="134">&#8805; 3 MB</text>
+  <text x="214" y="166">&#8805; 8 MB</text>
+</g>
+
+<!-- 右侧读数。右对齐到同一条竖线，四个数字可以直接比大小 -->
+<g font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="21" font-weight="700"
+   text-anchor="end">
+  <text x="856" y="72"  fill="#5CBE93">0%</text>
+  <text x="856" y="104" fill="#D5B054">17%</text>
+  <text x="856" y="136" fill="#E38A50">30%</text>
+  <text x="856" y="168" fill="#E27A6E">100%</text>
+</g>
+</svg>

@@ -1,68 +1,91 @@
-# agent-handoff
+<h1 align="center">agent-handoff</h1>
 
-**简体中文** · [繁體中文](README.zh-Hant.md) · [English](README.en.md)
+<p align="center"><b>会话卡死时，把进度从对话里搬进仓库</b></p>
 
-会话卡死时，把进度从对话里搬进仓库。
+<p align="center">
+  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.3.0-1F6B4F?style=flat-square"></a>
+  <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
+  <a href="tests/"><img alt="测试" src="https://img.shields.io/badge/tests-392%20passed-1F6B4F?style=flat-square"></a>
+  <a href="pyproject.toml"><img alt="运行时依赖" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
+  <a href="LICENSE"><img alt="许可" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
+</p>
+
+<p align="center">
+  简体中文 · <a href="README.zh-Hant.md">繁體中文</a> · <a href="README.en.md">English</a>
+</p>
 
 AI 编码会话会因为上游 400、供应商熔断、上下文超限而突然死掉。死掉的不是代码——代码在磁盘上——死掉的是**只存在于那段对话里的东西**：目标、已经排除的方案、红线约束、下一步该做什么。新会话从零开始，于是重做已完成的工作，或者改掉你明确说过不能碰的文件。
 
-这个工具在新会话开始前跑一次，把那些东西固化进仓库：
+<p align="center">
+  <img src="docs/img/bands.svg" alt="转录体积与实测致命错误率：1 MB 以下 0%，1 MB 起 17%，3 MB 起 30%，8 MB 起 100%" width="880">
+</p>
 
-1. **提交快照** —— 自动排除计划文档声明为"用户私有"的文件
-2. **回填计划** —— 按客观证据（文件是否存在、符号是否真被定义）勾选复选框
-3. **生成交接** —— 一份交接 Markdown + 一段可直接粘贴的新会话开场提示词
-4. **传承会话** —— 勾选相关会话，把它们自己写下的交接摘要带进新会话
+> **什么时候跑它**：上面这张图就是判据。体积越大，会话越可能已经出过致命错误——
+> 8 MB 以上的转录，本机 108 份样本里**无一例外**都撞过。
+
+## 它做四件事
+
+| | 做什么 | 凭什么 |
+|:--:|---|---|
+| **1** | **提交快照** | 自动排除计划文档声明为「用户私有」的文件 |
+| **2** | **回填计划** | 按客观证据勾选：文件是否存在、符号是否**真被定义** |
+| **3** | **传承会话** | 勾选相关会话，把它们**自己写下的**压缩摘要与你的原话带过去 |
+| **4** | **生成交接** | 一份交接 Markdown + 一段可直接粘贴的开场提示词 |
 
 它**不硬编码任何项目知识**：项目名、路径、任务名、测试命令全部从仓库自身推断。
 
 <p align="center">
-  <img src="docs/img/gui-light.png" alt="会话体检界面（浅色）" width="820">
+  <img src="docs/img/gui-light.png" alt="会话体检界面（浅色）" width="880">
+  <br><sub>会话体检 · 浅色</sub>
 </p>
+
 <details>
-<summary>深色模式</summary>
+<summary><b>深色（跟随系统）</b></summary>
 <p align="center">
-  <img src="docs/img/gui-dark.png" alt="会话体检界面（深色）" width="820">
+  <img src="docs/img/gui-dark.png" alt="会话体检界面（深色）" width="880">
 </p>
 </details>
 
 ---
 
-## 先读这一节：什么时候**不该**用它
+## ⚠ 先读这一节：什么时候**不该**用它
 
-同一个 APP、同一台机器、同一个供应商、上下文没满、会话文件完好时——
-**用原生续接，不要用这个工具**：
+> [!IMPORTANT]
+> 同一个 APP、同一台机器、同一个供应商、上下文没满、会话文件完好时——
+> **用原生续接，不要用这个工具。**
 
 ```bash
-claude --resume          # 或 claude --continue / 会话内 /resume
-codex resume             # 或 codex resume --last
+claude --resume        # 或 claude --continue / 会话内 /resume
+codex resume           # 或 codex resume --last
 ```
 
 原生续接恢复的是**完整对话历史**（Claude Code 官方文档：「the full history,
 including tool calls and results」），即原样重放 token，**无损**。
 本工具产出的是**有损摘要**，不可能等于无损重放。
 
-它的价值只在原生续接**结构性做不到**的场景：
+它的价值只在原生续接**结构性做不到**的七类场景：
 
 | 场景 | 为什么原生做不到 |
 |---|---|
-| 上下文已耗尽 | 官方自己的解法也是压缩摘要（闲置 1 小时 + 超 10 万 token 时弹「Resume from summary」，等于跑 `/compact`） |
-| 跨 APP（Claude Code ↔ Codex） | 两边格式与事件语义完全不同，**无任何官方导入机制** |
-| 换模型 / 换供应商 | 文档明列：模型在已退役、被 `--model` 覆盖、或 Bedrock 等部署 ID 供应商上**不恢复** |
-| 会话文件损坏 | `Failed to resume the conversation`，退出码 1 |
-| 要主动丢弃被污染的历史 | 原生只能全带或摘要；`/branch` 是复制而非裁剪 |
-| 跨机器 | 转录可以拷，但官方按 ID 查找只在「恰好一个项目持有该 ID」时才解析，手工副本会被判 not-found |
-| plan mode / bypassPermissions / 后台任务 / MCP / CLI 启动参数 | 文档明列**永不恢复**——写进交接文档反而更可靠 |
+| **上下文已耗尽** | 官方自己的解法也是压缩摘要——闲置 1 小时 + 超 10 万 token 时弹「Resume from summary」，等于跑 `/compact` |
+| **跨 APP**<br>Claude Code ↔ Codex | 两边格式与事件语义完全不同，**无任何官方导入机制** |
+| **换模型 / 换供应商** | 文档明列：模型在已退役、被 `--model` 覆盖、或 Bedrock 等部署 ID 供应商上**不恢复** |
+| **会话文件损坏** | `Failed to resume the conversation`，退出码 1 |
+| **要丢弃被污染的历史** | 原生只能全带或摘要；`/branch` 是复制而非裁剪 |
+| **跨机器** | 转录可以拷，但官方按 ID 查找只在「恰好一个项目持有该 ID」时才解析，手工副本会被判 not-found |
+| **plan mode / 后台任务**<br>**MCP / CLI 启动参数** | 文档明列**永不恢复**——写进交接文档反而更可靠 |
 
 ### 哪些东西原理上传不过去
 
-工具会把这句话写进生成的提示词，免得接续会话把「摘要里没有」当成「没发生过」：
+工具会把这一段写进生成的提示词，免得接续会话把「摘要里没有」当成「没发生过」：
 
-- 模型内部推理状态与 prompt 缓存（`encrypted_content` 是服务端加密串，换会话即失效）
-- 工具授权运行时态——新会话会重新弹权限确认
-- MCP 连接与认证令牌（转录只记工具**名字**，不记连接）
-- 后台进程、监听端口、已启动的服务
-- 被否决方案的推理过程——thinking 无签名不可回放，且多在子代理转录里
-  （实测子代理「过程:报告」= **124:1**，14.6 MB 过程 vs 118 KB 报告）
+| | 传不过去的东西 | 后果 |
+|:--:|---|---|
+| 🧠 | 模型内部推理状态与 prompt 缓存 | `encrypted_content` 是服务端加密串，换会话即失效 |
+| 🔑 | 工具授权运行时态 | 新会话会重新弹权限确认 |
+| 🔌 | MCP 连接与认证令牌 | 转录只记工具**名字**，不记连接 |
+| ⚙ | 后台进程、监听端口、已启动的服务 | 「服务已启动」的假设失效 |
+| 🚫 | 被否决方案的推理过程 | thinking 无签名不可回放，且多在子代理转录里——实测「过程:报告」= **124:1**（14.6 MB vs 118 KB） |
 
 ---
 
@@ -85,42 +108,44 @@ scripts\agent-handoff.cmd .
 
 ## 用
 
-### 网页界面（推荐）
+三种入口，功能等价，选顺手的。
+
+**🖥 网页界面**（推荐）——最好看，三语随时切换，浅色/深色/跟随系统。
 
 ```bash
 agent-handoff --gui
 ```
 
-浏览器自动打开。三种语言随时切换，浅色/深色/跟随系统。服务只绑定 `127.0.0.1`，并用一次性令牌校验每个请求——它能对任意路径跑 `git commit`，所以这不是可选项。
+只绑定 `127.0.0.1`，每个请求校验一次性令牌。它能对任意路径跑 `git commit`，所以这不是可选项。
 
-### 交互菜单（不想记参数）
+**📋 交互菜单**——不用记参数。把项目文件夹拖进窗口就能填路径。
 
 ```bash
 python -m agent_handoff.menu
-# 或者 Windows 上双击 scripts\双击运行.cmd，Linux 上 ./scripts/run.sh
+# Windows 双击 scripts\双击运行.cmd ；Linux / macOS 跑 ./scripts/run.sh
 ```
 
-### 命令行
+**⌨ 命令行**——适合写进脚本。加 `--json` 让输出被程序消费，退出码有语义（见下）。
 
 ```bash
-# 先看哪个会话该交接了（只读，不碰任何仓库）
+agent-handoff --vitals
+```
+
+### 典型流程
+
+```bash
+# 1. 先看哪个会话该交接了（只读，不碰任何仓库）
 agent-handoff --vitals
 
-# 截图对不上是哪段对话？按 ID 前几位 / 目录名 / 提问关键词找
+# 2. 截图对不上是哪段对话？按 ID 前几位 / 目录名 / 提问关键词找
 agent-handoff --find 01a00e83
 agent-handoff --find 工作流
 
-# 预演：只显示将要做什么
+# 3. 预演：只显示将要做什么，不写任何文件
 agent-handoff /path/to/project --dry-run
 
-# 真的执行
-agent-handoff /path/to/project
-
-# 勾选要传承的会话：列出本机会话后按编号选，它们的工作会被带进新会话
+# 4. 勾选要传承的会话，然后执行
 agent-handoff /path/to/project --pick-sessions
-
-# 急着开新会话，跳过测试
-agent-handoff /path/to/project --skip-tests
 ```
 
 ### 全部参数

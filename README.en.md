@@ -1,17 +1,35 @@
-# agent-handoff
+<h1 align="center">agent-handoff</h1>
 
-[简体中文](README.md) · [繁體中文](README.zh-Hant.md) · **English**
+<p align="center"><b>When a session dies, move the progress out of the chat and into the repository</b></p>
 
-When a session dies, move the progress out of the chat and into the repository.
+<p align="center">
+  <a href="CHANGELOG.md"><img alt="version" src="https://img.shields.io/badge/version-2.3.0-1F6B4F?style=flat-square"></a>
+  <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
+  <a href="tests/"><img alt="tests" src="https://img.shields.io/badge/tests-392%20passed-1F6B4F?style=flat-square"></a>
+  <a href="pyproject.toml"><img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
+</p>
+
+<p align="center">
+  <a href="README.md">简体中文</a> · <a href="README.zh-Hant.md">繁體中文</a> · English
+</p>
 
 AI coding sessions die suddenly — an upstream 400, a provider cutting you off, a context limit. What dies is not the code; the code is on disk. What dies is **everything that only existed in that conversation**: the goal, the approaches already ruled out, the hard limits, what to do next. A fresh session starts from nothing, so it redoes finished work, or edits the very file you said never to touch.
 
-Run this once before starting the new session and it freezes those things into the repository:
+<p align="center">
+  <img src="docs/img/bands.svg" alt="Measured fatal-error rate by transcript size: under 1 MB 0%, 1 MB and up 17%, 3 MB and up 30%, 8 MB and up 100%" width="880">
+</p>
 
-1. **Commit a snapshot** — automatically excluding files the plan declares user-owned
-2. **Backfill the plan** — tick checkboxes from objective evidence (files exist, symbols actually defined)
-3. **Write the handoff** — a handoff Markdown plus an opening prompt you paste straight into the new session
-4. **Carry over sessions** — tick the relevant sessions; the digests they wrote themselves travel into the new session
+> **When to run it**: the chart above *is* the criterion. The bigger the transcript, the likelier the session already hit a fatal error — and every single one of the 108 local samples above 8 MB did.
+
+## It does four things
+
+| | What | On what evidence |
+|:--:|---|---|
+| **1** | **Commit a snapshot** | Excluding files the plan declares user-owned |
+| **2** | **Backfill the plan** | Tick from objective evidence: files exist, symbols **actually defined** |
+| **3** | **Carry sessions over** | Tick the relevant sessions; the digests they wrote **themselves**, plus your verbatim asks |
+| **4** | **Write the handoff** | A handoff Markdown plus an opening prompt you paste straight in |
 
 It **hardcodes no project knowledge**: project name, paths, task names, and test commands are all inferred from the repository itself.
 

@@ -1,17 +1,36 @@
-# agent-handoff
+<h1 align="center">agent-handoff</h1>
 
-[简体中文](README.md) · **繁體中文** · [English](README.en.md)
+<p align="center"><b>工作階段卡死時，把進度從對話裡搬進儲存庫</b></p>
 
-工作階段卡死時，把進度從對話裡搬進儲存庫。
+<p align="center">
+  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.3.0-1F6B4F?style=flat-square"></a>
+  <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
+  <a href="tests/"><img alt="測試" src="https://img.shields.io/badge/tests-392%20passed-1F6B4F?style=flat-square"></a>
+  <a href="pyproject.toml"><img alt="執行時依賴" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
+  <a href="LICENSE"><img alt="授權" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
+</p>
+
+<p align="center">
+  <a href="README.md">简体中文</a> · 繁體中文 · <a href="README.en.md">English</a>
+</p>
 
 AI 編碼工作階段會因為上游 400、供應商熔斷、上下文超限而突然死掉。死掉的不是程式碼——程式碼在磁碟上——死掉的是**只存在於那段對話裡的東西**：目標、已經排除的方案、紅線約束、下一步該做什麼。新工作階段從零開始，於是重做已完成的工作，或者改掉你明確說過不能動的檔案。
 
-這個工具在新工作階段開始前跑一次，把那些東西固化進儲存庫：
+<p align="center">
+  <img src="docs/img/bands.svg" alt="記錄體積與實測致命錯誤率：1 MB 以下 0%、1 MB 起 17%、3 MB 起 30%、8 MB 起 100%" width="880">
+</p>
 
-1. **提交快照** —— 自動排除計畫文件宣告為「使用者私有」的檔案
-2. **回填計畫** —— 依客觀證據（檔案是否存在、符號是否真被定義）勾選核取方塊
-3. **產生交接** —— 一份交接 Markdown + 一段可直接貼上的新工作階段開場提示詞
-4. **傳承工作階段** —— 勾選相關工作階段，把它們自己寫下的交接摘要帶進新工作階段
+> **什麼時候跑它**：上面這張圖就是判據。體積越大，工作階段越可能已經出過致命錯誤——
+> 8 MB 以上的記錄，本機 108 份樣本裡**無一例外**都撞過。
+
+## 它做四件事
+
+| | 做什麼 | 憑什麼 |
+|:--:|---|---|
+| **1** | **提交快照** | 自動排除計畫文件宣告為「使用者私有」的檔案 |
+| **2** | **回填計畫** | 依客觀證據勾選：檔案是否存在、符號是否**真被定義** |
+| **3** | **傳承工作階段** | 勾選相關工作階段，把它們**自己寫下的**壓縮摘要與你的原話帶過去 |
+| **4** | **產生交接** | 一份交接 Markdown + 一段可直接貼上的開場提示詞 |
 
 它**不硬編碼任何專案知識**：專案名、路徑、任務名、測試命令全部從儲存庫自身推斷。
 
