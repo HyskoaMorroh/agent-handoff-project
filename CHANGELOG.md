@@ -225,4 +225,7 @@ git 现场，不知道前面几十轮讨论过什么，于是重新推导，甚�
 - 零第三方运行时依赖：这个工具在环境已经出问题之后才被运行，任何需要
   `pip install` 的东西都是一条新的失败路径。
 
-[2.0.0]: https://github.com/devin/agent-handoff/releases/tag/v2.0.0
+[2.3.0]: https://github.com/HyskoaMorroh/agent-handoff/releases/tag/v2.3.0
+[2.2.0]: https://github.com/HyskoaMorroh/agent-handoff/releases/tag/v2.2.0
+[2.1.0]: https://github.com/HyskoaMorroh/agent-handoff/releases/tag/v2.1.0
+[2.0.0]: https://github.com/HyskoaMorroh/agent-handoff/releases/tag/v2.0.0

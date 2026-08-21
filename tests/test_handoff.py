@@ -526,7 +526,7 @@ def test_redact_home_forms(label: str, value: str, must_keep: str):
 
 def test_redact_home_covers_claude_project_slug():
     """Claude Code 把 cwd 里的非字母数字换成 `-` 作项目目录名，于是
-    `C:\\Users\\devin` 变成 `C--Users-devin`——家目录前缀换掉后用户名仍在。"""
+    `C:\\Users\\alice` 变成 `C--Users-alice`——家目录前缀换掉后用户名仍在。"""
     home = os.path.expanduser("~")
     user = os.path.basename(home)
     slug = re.sub(r"[^A-Za-z0-9]", "-", home)

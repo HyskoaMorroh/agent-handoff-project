@@ -9,7 +9,7 @@ description = "Freeze an AI coding session into a lossless handoff: commit snaps
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [{ name = "devin" }]
+authors = [{ name = "HyskoaMorroh" }]
 keywords = ["claude-code", "codex", "handoff", "session", "context-limit"]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
@@ -32,8 +32,8 @@ dependencies = []
 dev = ["pytest>=7.0", "ruff>=0.4"]
 
 [project.urls]
-Homepage = "https://github.com/devin/agent-handoff"
-Issues = "https://github.com/devin/agent-handoff/issues"
+Homepage = "https://github.com/HyskoaMorroh/agent-handoff"
+Issues = "https://github.com/HyskoaMorroh/agent-handoff/issues"
 
 [project.scripts]
 agent-handoff = "agent_handoff.cli:main_entry"

@@ -11,7 +11,7 @@ from ..i18n import Translator
 
 
 # 家目录在交接**文档**里要脱敏。文档会被 git 提交、可能推送到公开仓库，
-# 而转录的绝对路径里带着操作系统用户名（`C:\Users\devin\.codex\…`）。
+# 而转录的绝对路径里带着操作系统用户名（`C:\Users\alice\.codex\…`）。
 # 那不是密钥，但也没有理由公开：接续会话读转录靠的是提示词，
 # 提示词是本机粘贴的、保留真实路径，两者的受众不同。
 #
@@ -22,7 +22,7 @@ def _home_variants() -> list[str]:
     """家目录的各种书写形态，长的在前，避免短的先替换把长的切碎。
 
     包含 Claude Code 的 slug 形态：它把 cwd 里的非字母数字换成 `-` 作项目
-    目录名，于是 `C:\\Users\\devin` 变成 `C--Users-devin`——只换路径前缀的话，
+    目录名，于是 `C:\\Users\\alice` 变成 `C--Users-alice`——只换路径前缀的话，
     用户名仍留在那一段里。
     """
     home = os.path.expanduser("~")
