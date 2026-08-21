@@ -15,9 +15,28 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-CHECKBOX = re.compile(r"^(?P<indent>\s*)- \[(?P<mark>[ xX])\] (?P<body>.*)$", re.M)
-TASK_HEAD = re.compile(r"^#{2,4}\s+(?P<title>(?:Task|任务|任務)\s*(?P<num>\d+)[^\n]*)$", re.M)
-FILE_LINE = re.compile(r"^\s*-\s*(?P<verb>Create|Modify|Add|Update|新建|修改|新增|更新)\s*[:：]\s*`?(?P<path>[^`\s]+)`?", re.I)
+CHECKBOX = re.compile(r"^(?P<indent>\s*)[-*+]\s+\[(?P<mark>[ xX~])\]\s*(?P<body>.*)$", re.M)
+# 任务标题：允许 1-6 级、允许行首缩进。原版卡死在 `#{2,4}` + 行首无空格，
+# `##### Task 5` 与缩进过的标题会被整段忽略，那个任务的全部步骤随之消失。
+TASK_HEAD = re.compile(
+    r"^[ \t]*#{1,6}\s+(?P<title>(?:Task|任务|任務|Phase|阶段|階段)\s*(?P<num>\d+)[^\n]*)$",
+    re.M,
+)
+# 文件行。三处放宽，每一处都对应真实 markdown 写法：
+#   · 动词可以被 `**` 包住——`- **Modify**: x` 是最常见的计划写法
+#   · 冒号可选——`- Modify \`a/b.ts\`` 同样明确
+#   · 动词整体可选——`- \`a/b.ts\` — 说明` 也是文件行
+# 动词表补 Delete/Remove/删除：计划里「要删掉某文件」也是产出。
+_FILE_VERB = r"Create|Modify|Add|Update|Delete|Remove|Rename|新建|修改|新增|更新|删除|刪除|重命名"
+FILE_LINE = re.compile(
+    rf"^\s*[-*+]\s*(?:\*\*)?(?:{_FILE_VERB})?(?:\*\*)?\s*[:：]?\s*(?P<rest>.+)$",
+    re.I,
+)
+# 一行里可能列多个路径（`- Create: \`a.ts\`, \`b.ts\``）。只取第一个会让
+# file_ratio 的分母偏小，缺失文件被漏报，完成度偏乐观。
+PATH_IN_LINE = re.compile(r"`(?P<path>[^`\s]{2,200})`")
+# 没有反引号时退回裸路径：必须含 `/` 或扩展名，否则整句散文都会被当路径。
+BARE_PATH = re.compile(r"(?<![\w`])(?P<path>[\w.\-]*(?:/[\w.\-]+)+|\w[\w.\-]*\.[A-Za-z0-9]{1,8})(?![\w`])")
 BACKTICK = re.compile(r"`([^`]+)`")
 IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 PROTECTED_HINT = re.compile(
@@ -25,7 +44,15 @@ PROTECTED_HINT = re.compile(
     r"(?:user-owned|用户私有|使用者私有|must not be[^\n]{0,80}?(?:staged|packaged|committed)|不得[^\n]{0,40}?(?:提交|打包))",
     re.I,
 )
-STEP_HEAD = re.compile(r"\*\*(?:Step|步骤|步驟)\s*(\d+)", re.I)
+# 步骤号。粗体可选：`- [ ] Step 1: x` 与 `- [ ] **Step 1** x` 都算。
+STEP_HEAD = re.compile(r"(?:\*\*)?(?:Step|步骤|步驟)\s*(\d+)", re.I)
+# Interfaces 段里哪些行在声明产出。原版只认 Produces/产出，
+# `- Exports: \`undo\`` / `- 提供 \`undo\`` / `- \`undo()\` — 撤销` 全部漏掉，
+# 于是那个任务符号证据为空，落进「没有符号就不算完成」的死角。
+INTERFACE_DECL = re.compile(
+    r"Produces|Exports?|Provides|Returns|Adds|产出|產出|提供|导出|導出|新增|返回",
+    re.I,
+)
 
 INTENT_RX = re.compile(
     r"^(?:\*\*(?P<bold>Goal|Objective|目标|目標|Architecture|架构|架構|Background|背景)[:：]?\*\*|"
@@ -163,16 +190,29 @@ def parse_plan(text: str) -> tuple[list[Task], list[str]]:
         if section == "files":
             fm = FILE_LINE.match(raw)
             if fm:
-                path = fm.group("path").strip().strip("`,;")
-                if path:
-                    current.files.append(path)
+                rest = fm.group("rest")
+                # 一行可以列多个路径。优先取反引号里的（明确标注），没有反引号
+                # 时才退回裸路径识别，避免把散文里的词当成文件。
+                found = [m.group("path") for m in PATH_IN_LINE.finditer(rest)]
+                if not found:
+                    found = [m.group("path") for m in BARE_PATH.finditer(rest)]
+                for path in found:
+                    path = path.strip().strip("`,;、")
+                    # 计划里的路径偶尔写成 `/webui/src/x.ts` 或绝对路径；
+                    # 直接 `repo / path` 会逃出仓库（PureWindowsPath 会跳到盘符根），
+                    # 于是文件判定跑到仓库外，永远判缺失。归一化成仓库内相对路径。
+                    path = path.replace("\\", "/").lstrip("/")
+                    if path and path not in current.files:
+                        current.files.append(path)
             continue
 
-        if section == "interfaces" and ("Produces" in raw or "产出" in raw or "產出" in raw):
+        if section == "interfaces" and INTERFACE_DECL.search(raw):
             for token in BACKTICK.findall(raw):
                 base = token.split("(")[0].split("[")[0].strip()
                 base = base.split(".")[-1] if "." in base and " " not in base else base
-                if IDENT.fullmatch(base) and len(base) > 3:
+                # 原版要求 len > 3，于是 `run` `add` `get` `fn` `id` 这些真实接口名
+                # 被静默丢弃。真正要挡的是单字母占位符，2 个字符起就够。
+                if IDENT.fullmatch(base) and len(base) >= 2 and base not in current.symbols:
                     current.symbols.append(base)
             continue
 
@@ -187,6 +227,7 @@ def parse_plan(text: str) -> tuple[list[Task], list[str]]:
                         number=int(sm.group(1)),
                         line_index=idx,
                         text=re.sub(r"\*\*", "", body)[:160],
+                        # `[~]` 是「部分完成」，不是完成——按未完成算才安全。
                         done=cb.group("mark").lower() == "x",
                     )
                 )

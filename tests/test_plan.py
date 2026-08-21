@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from agent_handoff.core.plan import (
+    CHECKBOX,
     find_intent_sections,
     find_plan,
     parse_plan,
@@ -158,3 +161,118 @@ def test_full_width_colon_in_file_line():
     text = "### Task 1: x\n\n**Files:**\n- 新建：`a.py`\n"
     tasks, _ = parse_plan(text)
     assert tasks[0].files == ["a.py"]
+
+
+# --- 真实 markdown 写法 -----------------------------------------------------
+# 下面每一条都对应一种在真实计划文档里常见、而原版解析器整条丢弃的写法。
+# 丢弃的后果不是报错，是静默判成「该任务没有文件/没有符号/没有步骤」，
+# 于是完成度失真，接续会话按错误的地图行动。
+
+
+@pytest.mark.parametrize(
+    ("label", "line", "expected"),
+    [
+        ("动词加冒号", "- Create: `a/b.ts`", ["a/b.ts"]),
+        ("粗体动词", "- **Modify**: `a/b.ts`", ["a/b.ts"]),
+        ("无冒号", "- Modify `a/b.ts`", ["a/b.ts"]),
+        ("无动词", "- `a/b.ts` — 加 undo", ["a/b.ts"]),
+        ("Delete 动词", "- Delete: `x.ts`", ["x.ts"]),
+        ("一行多路径", "- Create: `a.ts`, `b.ts`", ["a.ts", "b.ts"]),
+        ("星号列表", "* Create: `c.ts`", ["c.ts"]),
+        ("加号列表", "+ Create: `d.ts`", ["d.ts"]),
+    ],
+)
+def test_file_line_forms(label: str, line: str, expected: list[str]):
+    tasks, _ = parse_plan(f"### Task 1: x\n\n**Files:**\n{line}\n")
+    assert tasks[0].files == expected, label
+
+
+def test_leading_slash_path_stays_inside_repo():
+    """`- Modify: /webui/src/x.ts` 不能逃出仓库。
+
+    `PureWindowsPath("E:/repo") / "/webui/x.ts"` 会跳到 `E:\\webui\\x.ts`——
+    盘符根，仓库之外。文件判定于是跑到错误位置，永远判缺失。
+    """
+    tasks, _ = parse_plan("### Task 1: x\n\n**Files:**\n- Modify: /webui/src/x.ts\n")
+    assert tasks[0].files == ["webui/src/x.ts"]
+
+
+@pytest.mark.parametrize(
+    ("label", "line"),
+    [
+        ("中文散文", "- 这一步不涉及任何文件"),
+        ("英文散文", "- Note: be careful here"),
+        ("无路径的说明", "- Produces something"),
+    ],
+)
+def test_file_section_ignores_prose(label: str, line: str):
+    """放宽文件行匹配之后，散文不能被当成路径——否则 file_ratio 的分母被污染。"""
+    tasks, _ = parse_plan(f"### Task 1: x\n\n**Files:**\n{line}\n")
+    assert tasks[0].files == [], label
+
+
+@pytest.mark.parametrize(
+    ("label", "line", "mark"),
+    [
+        ("短横线", "- [ ] **Step 1** x", " "),
+        ("星号", "* [ ] **Step 1** x", " "),
+        ("加号", "+ [ ] **Step 1** x", " "),
+        ("双空格", "-  [ ] **Step 1** x", " "),
+        ("已完成", "- [x] **Step 1** x", "x"),
+        ("部分完成", "- [~] **Step 1** x", "~"),
+    ],
+)
+def test_checkbox_list_markers(label: str, line: str, mark: str):
+    """CommonMark 的三种列表符都合法。只认 `-` 会让整份计划的复选框全部消失，
+    连 find_plan 都会因为「复选框少于 3 个」而拒绝该文档。"""
+    m = CHECKBOX.match(line)
+    assert m is not None, label
+    assert m.group("mark") == mark
+
+
+def test_partial_mark_is_not_done():
+    """`[~]` 是部分完成，按未完成算——勾选是不可逆的，宁可少勾。"""
+    tasks, _ = parse_plan("### Task 1: x\n\n**Steps:**\n- [~] **Step 1** x\n")
+    assert tasks[0].steps[0].done is False
+
+
+def test_step_without_bold():
+    """`- [ ] Step 1: x` 没有粗体，原版不生成 Step，进度显示成 0 / 0。"""
+    tasks, _ = parse_plan("### Task 1: x\n\n**Steps:**\n- [ ] Step 1: plain\n")
+    assert [s.number for s in tasks[0].steps] == [1]
+
+
+@pytest.mark.parametrize(
+    ("label", "line", "num"),
+    [
+        ("一级", "# Task 9: x", 9),
+        ("五级", "##### Task 5: x", 5),
+        ("缩进", "  ### Task 6: x", 6),
+        ("Phase 组织", "## Phase 1: x", 1),
+        ("中文阶段", "## 阶段 2: x", 2),
+    ],
+)
+def test_task_heading_forms(label: str, line: str, num: int):
+    tasks, _ = parse_plan(f"{line}\n\n**Steps:**\n- [ ] **Step 1** x\n")
+    assert tasks and tasks[0].num == num, label
+
+
+@pytest.mark.parametrize(
+    ("label", "line", "expected"),
+    [
+        ("Produces", "- Produces `undo()`", ["undo"]),
+        ("Exports", "- Exports: `undo`", ["undo"]),
+        ("中文提供", "- 提供 `undo`", ["undo"]),
+        ("Provides 多个", "- Provides `run()`, `add()`", ["run", "add"]),
+    ],
+)
+def test_interface_declaration_verbs(label: str, line: str, expected: list[str]):
+    """原版只认 Produces/产出，其余写法整行跳过，该任务符号证据为空。"""
+    tasks, _ = parse_plan(f"### Task 1: x\n\n**Interfaces:**\n{line}\n")
+    assert tasks[0].symbols == expected, label
+
+
+def test_short_symbols_are_kept():
+    """原版 `len(base) > 3` 丢掉 run / add / get / fn / id 这些真实接口名。"""
+    tasks, _ = parse_plan("### Task 1: x\n\n**Interfaces:**\n- Produces `run()`, `add()`, `id`\n")
+    assert tasks[0].symbols == ["run", "add", "id"]

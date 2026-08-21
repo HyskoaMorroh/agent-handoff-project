@@ -4,7 +4,6 @@
   "title": "Session Salvage · Illustrated guide",
   "tagline": "When a session dies, move the progress out of the chat and into the repository",
   "nav": "Contents",
-
   "s1.h": "When a session dies, what dies with it",
   "s1.p1": "The code does not die. The code is on disk, and in git. What dies is <strong>everything that only existed inside that conversation</strong>:",
   "s1.li1": "The goal — what you were actually trying to build",
@@ -12,7 +11,6 @@
   "s1.li3": "The hard limits — which file must never be touched",
   "s1.li4": "The next step — what the last session was about to do",
   "s1.p2": "A fresh session gets none of it, so it redoes finished work, or edits the very file you said never to touch. This tool freezes those four things into files in the repository and lets the new session read them itself.",
-
   "s2.h": "When to run it",
   "s2.p1": "Three triggers — run it if any one appears:",
   "s2.li1": "The conversation slows down, tool calls start failing, upstream returns 400 or a provider cutoff notice",
@@ -28,7 +26,6 @@
   "s2.r3": "About 17% did",
   "s2.r4": "Nothing under 250 KB did",
   "s2.p3": "\"Fatal error\" means a signature that actually killed a session: content-blocked, provider cutoff, no available channel, image dimension exceeded. Errors that were merely annoying do not count.",
-
   "s3.h": "How to run it",
   "s3.p1": "Three entry points, equivalent features. Pick whichever fits your hands:",
   "s3.gui.h": "Web interface",
@@ -37,7 +34,6 @@
   "s3.menu.p": "No flags to remember. Double-click <code>双击运行.cmd</code> on Windows, run <code>./scripts/run.sh</code> on Linux and macOS. Drag the project folder into the window to fill the path.",
   "s3.cli.h": "Command line",
   "s3.cli.p": "Best for scripts. Add <code>--json</code> to make the output machine-consumable.",
-
   "s4.h": "What the three steps do",
   "s4.step1.h": "Step 1 · Commit snapshot",
   "s4.step1.p": "Commits everything in the worktree, <strong>except files the plan document declares user-owned</strong>. How it recognizes them: the plan says something like \"`docs/LOGO.jpg` is a user-owned file and must not be committed\", and that path is added to the exclusion list automatically.",
@@ -46,7 +42,9 @@
   "s4.step2.p": "Ticks checkboxes from <strong>objective evidence</strong>, never from anyone's self-report. Only when every file of a task exists and every symbol is genuinely defined by a <code>def</code> / <code>class</code> / <code>function</code> does it tick that task's steps.",
   "s4.step3.h": "Step 3 · Write the handoff",
   "s4.step3.p": "Produces a handoff Markdown (state, completion, gaps, test results, environment traps) and an opening prompt you can paste straight in.",
-
+  "s4.step4.note": "The prompt carries only topic, session id and transcript path; full digests stay in the handoff file - two multi-MB transcripts run to a million characters, which no prompt can hold. Use <code>--pick-sessions</code> to tick interactively, or <code>--sessions PATH</code> to name them directly.",
+  "s4.step4.p": "After the scan lists your sessions, tick the ones related to this repo. The digest <strong>each session wrote itself</strong> goes into the handoff document, and the opening prompt names their topic, session id and transcript path, telling the next session to treat those conclusions as established facts rather than re-deriving them. Digests come from Codex compaction records and Claude Code topic titles - primary records, not this tool inferring anything.",
+  "s4.step4.h": "Step 4 - Carry over prior sessions",
   "s5.h": "How it decides something is done",
   "s5.p1": "Two kinds of evidence, both independently checkable:",
   "s5.e1.h": "File existence",
@@ -55,7 +53,6 @@
   "s5.e2.p": "The <code>**Interfaces:**</code> block lists which symbols should exist, and one composed regex sweeps the whole repository in a single pass — not \"the word appears in a file\" but \"the word actually follows def / class / function / const\".",
   "s5.p2": "File present but symbol undefined means partial — no tick. That single rule catches the most common false completion: the file was created but it is empty, or it holds one <code>pass</code>.",
   "s5.diagram.title": "Verdict flow",
-
   "s6.h": "It stops concurrent writes by itself",
   "s6.p1": "Two sessions writing one worktree is the <strong>single failure mode that genuinely loses work</strong>: our <code>git add</code> buries what they staged, or their <code>commit --amend</code> rewrites the commit we just made.",
   "s6.block.h": "Blocking signals — stop by default, exit code 3",
@@ -70,7 +67,6 @@
   "s6.after.h": "It checks again afterwards",
   "s6.after.p": "If <strong>someone else's</strong> commit moved HEAD while it ran, a second session is racing you and the HEAD in the prompt is already stale. The tool warns explicitly and suggests rerunning. Our own two commits are expected and never trigger it — the commit subjects are recognized in all three languages, so switching language does not cause a false alarm.",
   "s6.diagram.title": "Concurrency protection flow",
-
   "s7.h": "What is in the prompt, and why",
   "s7.p1": "Five blocks. Missing any one of them sends the next session down the wrong path:",
   "s7.b1.h": "Coordinates",
@@ -84,15 +80,12 @@
   "s7.b5.h": "Expiry statement",
   "s7.b5.p": "Generation time plus the matching HEAD. Without it an old prompt gets reused, pointing at a state that no longer exists.",
   "s7.diagram.title": "The prompt's five blocks",
-
   "s8.h": "Prompts expire — do not reuse an old one",
   "s8.p1": "The prompt ends with its generation time and HEAD. Once the repository takes new commits, the state it describes is wrong: the \"priority\" and \"gaps\" it names may already be resolved, and the HEAD it cites may have been rebased away.",
   "s8.p2": "Rerunning takes seconds. The cost of reusing an old prompt is a new session acting on an out-of-date map.",
-
   "s9.h": "What a plan document looks like",
   "s9.p1": "Auto-detected: the newest markdown within depth 5 that has task headings and at least three checkboxes. You can also name one with <code>--plan</code>.",
   "s9.p2": "Both of Task 1's files must exist and both symbols must genuinely be defined before the two steps get ticked.",
-
   "s10.h": "Flags",
   "s10.t.flag": "Flag",
   "s10.t.what": "What it does",
@@ -101,7 +94,6 @@
   "s10.exit.1": "No session matched the <code>--find</code> keyword",
   "s10.exit.2": "Bad argument or environment (path missing, not a git repository, git not found)",
   "s10.exit.3": "Stopped because a concurrent write was detected; nothing was changed",
-
   "s11.h": "Three design constraints",
   "s11.c1.h": "Hardcode nothing",
   "s11.c1.p": "Project name, paths, task names, and test commands are all inferred from the repository. Point it at another project and not one line changes.",
@@ -109,10 +101,8 @@
   "s11.c2.p": "When a step fails — no ripgrep, a test timeout, an unreadable submodule — it degrades and writes out what it did get, rather than leaving the whole handoff empty-handed.",
   "s11.c3.h": "The prompt stays short",
   "s11.c3.p": "The prompt is pasted into the new session, so it consumes context by existing. Long material goes into the handoff file for the agent to read itself.",
-
   "s12.h": "One thing it cannot do",
   "s12.p": "With no plan document in the project, <strong>the original intent cannot be transmitted</strong>. File existence and symbol definitions can say how far the work got, but not what it was for. The tool tells you plainly to add a goal by hand. That is not a bug; the information simply is not there.",
-
   "s13.h": "What is in the folder",
   "s13.t.path": "Path",
   "s13.t.what": "What it is"

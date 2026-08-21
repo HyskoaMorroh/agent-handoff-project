@@ -132,6 +132,10 @@
     return t("gui.ago.now");
   }
 
+  /* 勾选要传承的会话。键是转录路径——它在本机唯一，而会话 ID 在
+     Claude 的子代理转录里会与父会话重复。 */
+  const picked = new Set();
+
   function sessionCard(r, opts) {
     const card = el("div.srow", { "data-band": r.band });
     const top = el("div.srow-top");
@@ -143,9 +147,18 @@
     const m = el("div.metrics");
     m.appendChild(el("span", null, el("b", { text: r.mb.toFixed(1) }), " MB"));
     m.appendChild(el("span", { class: r.fatal ? "hot" : "" }, t("gui.label.fatal") + " ", el("b", { text: String(r.fatal) })));
+    // 中断轮次只在真的发生过时才占位置：半成品看起来和完成品一样，
+    // 按「已完成」继续做下去就会把没做完的工作当成做完的。
+    if (r.aborted) {
+      m.appendChild(el("span.hot", null, t("gui.label.aborted") + " ", el("b", { text: String(r.aborted) })));
+    }
     m.appendChild(el("span", null, t("gui.label.errors") + " ", el("b", { text: String(r.errors) })));
     top.appendChild(m);
     card.appendChild(top);
+
+    // 话题放在最显眼处：会话 ID 前八位对人没有意义，而开场提问在斜杠命令
+    // 回显时对所有会话都一样。话题来自 AI 标题或会话自己写的压缩摘要。
+    if (r.label) card.appendChild(el("p.stopic", { text: r.label, title: r.label }));
 
     const kv = el("dl.kv");
     const row = (k, v, cls) => {
@@ -159,7 +172,8 @@
     row(t("gui.label.mtime"), r.mtime_text);
     row(t("gui.label.cwd"), r.cwd);
     row(t("gui.label.client"), [r.version, r.origin].filter(Boolean).join(" "));
-    row(t("gui.label.first_prompt"), r.first_prompt, "prose clamp");
+    row(t("gui.label.last_prompt"), r.last_prompt, "prose clamp");
+    if (!r.last_prompt) row(t("gui.label.first_prompt"), r.first_prompt, "prose clamp");
     if (r.repos && r.repos.length) {
       const extra = r.repos.length > 1 ? t("cli.card.repos_more", { count: r.repos.length - 1 }) : "";
       row(t("gui.label.repos"), r.repos[0] + extra);
@@ -167,14 +181,31 @@
     row(t("gui.label.file"), r.path);
     card.appendChild(kv);
 
+    const act = el("div.srow-act");
+    // 只有带摘要或带话题的会话才值得传承：没有这两样时，能传下去的只有
+    // 一个文件路径，对新会话没有信息量。
+    if ((r.digest || r.label) && !(opts && opts.noPick)) {
+      const box = el("label.pick");
+      const cb = el("input", { type: "checkbox" });
+      cb.checked = picked.has(r.path);
+      cb.onchange = () => {
+        if (cb.checked) picked.add(r.path); else picked.delete(r.path);
+        const n = $("#pick-count");
+        if (n) n.textContent = t("cli.sessions.picked", { count: picked.size }).trim();
+      };
+      box.appendChild(cb);
+      box.appendChild(el("span", { text: r.digest
+        ? t("cli.card.digest", { chars: r.digest.length }).trim()
+        : t("gui.sessions.pick") }));
+      act.appendChild(box);
+    }
     if (r.repo && !(opts && opts.noAction)) {
-      const act = el("div.srow-act");
       act.appendChild(el("button.link", {
         text: t("gui.find.use"),
         onclick: () => { $("#repo").value = r.repo; showView("handoff"); $("#repo").focus(); }
       }));
-      card.appendChild(act);
     }
+    if (act.childNodes.length) card.appendChild(act);
     return card;
   }
 
@@ -305,7 +336,9 @@
           skip_tests: $("#o-skip-tests").checked,
           no_commit: $("#o-no-commit").checked,
           no_vitals: $("#o-no-vitals").checked,
-          force: $("#o-force").checked
+          force: $("#o-force").checked,
+          // 体检视图里勾选的会话。它们的摘要会写进交接文件，提示词会点名它们。
+          sessions: Array.from(picked)
         }
       });
     } catch (e) {

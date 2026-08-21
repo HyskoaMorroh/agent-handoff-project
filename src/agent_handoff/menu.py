@@ -140,7 +140,9 @@ def menu_handoff(tr: Translator) -> None:
     print(f"\n  {tr.t('menu.handoff.run_title')}\n  {LINE}")
     print(tr.t("menu.handoff.run_lead"))
     print(f"  {LINE}\n")
-    code = run_tool(tr, str(repo))
+    # --pick-sessions：让用户勾选要传承的会话。预演那一遍不带它——预演的目的是
+    # 看清将要发生什么，中间插一个需要输入的问答会打断阅读。
+    code = run_tool(tr, str(repo), "--pick-sessions")
     print(f"\n  {LINE}")
     if code == 0:
         print(tr.t("menu.handoff.ok1"))
@@ -162,7 +164,7 @@ def menu_quick(tr: Translator) -> None:
         pause(tr)
         return
     print()
-    code = run_tool(tr, str(repo), "--skip-tests")
+    code = run_tool(tr, str(repo), "--skip-tests", "--pick-sessions")
     print(f"\n  {LINE}")
     print(tr.t("menu.quick.ok") if code == 0 else tr.t("menu.quick.fail", code=code))
     print(f"  {LINE}")

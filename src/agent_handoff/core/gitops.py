@@ -151,6 +151,24 @@ def repo_meta(repo: Path) -> dict[str, str]:
             if git_proc(repo, "rev-parse", "--verify", "--quiet", ref, timeout=15).ok:
                 ahead = git(repo, "rev-list", "--count", f"{ref}..HEAD")
                 break
+
+    # 仓库的**身份**是 remote URL + 完整 sha，不是它在这台机器上的路径。
+    # 提示词只写 `E:/output/...` 时，新会话在别的机器、容器、WSL 或 Codespaces
+    # 里打开就无从定位；而同一个 remote 下的两个工作副本（a5 与 b8）也只能靠
+    # 路径区分，路径一失效就分不清该用哪个状态。
+    remote = git(repo, "remote", "get-url", "origin")
+    # 未推送的提交对「在别处 clone 之后接续」等于不存在。
+    # 用 `--not --remotes` 而不是 `@{u}..HEAD` 的计数：后者依赖远程跟踪引用是否
+    # 新鲜，FETCH_HEAD 过期时会偏小——实测项目 A 的 ahead 显示 0，而它的 HEAD
+    # 在任何远程上都不存在。
+    # 没有任何远程时 `--not --remotes` 排除不掉东西，返回全部提交，那恰好是
+    # 正确答案：一个提交都传不出去。但要显式分支，否则空仓库会算出负数。
+    if remote or git_proc(repo, "remote", timeout=15).out.strip():
+        unpushed = git(repo, "rev-list", "--count", "HEAD", "--not", "--remotes")
+    else:
+        unpushed = git(repo, "rev-list", "--count", "HEAD")
+    unpushed_n = int(unpushed) if unpushed.strip().isdigit() else 0
+
     return {
         "branch": branch,
         "head": head_line,
@@ -158,6 +176,8 @@ def repo_meta(repo: Path) -> dict[str, str]:
         "head_full": sha,
         "upstream": upstream,
         "ahead": ahead if ahead and ahead != "0" else "",
+        "remote": remote,
+        "unpushed": str(unpushed_n) if unpushed_n else "",
     }
 
 

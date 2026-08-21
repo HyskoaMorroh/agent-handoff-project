@@ -355,7 +355,8 @@ figcaption{margin-top:7px;font-size:12.5px;color:var(--ink-3);text-align:center}
       h("div.steps", null,
         step(1, "s4.step1.h", "s4.step1.p", h("div.note.warn", null, rich("p", "s4.step1.note"))),
         step(2, "s4.step2.h", "s4.step2.p"),
-        step(3, "s4.step3.h", "s4.step3.p"))
+        step(3, "s4.step3.h", "s4.step3.p"),
+        step(4, "s4.step4.h", "s4.step4.p", h("div.note", null, rich("p", "s4.step4.note"))))
     ]);
 
     sec("s5", "s5.h", [
@@ -403,6 +404,7 @@ figcaption{margin-top:7px;font-size:12.5px;color:var(--ink-3);text-align:center}
       ["--skip-tests", "cli.arg.skip_tests"], ["--test-timeout N", "cli.arg.test_timeout"],
       ["--vitals", "cli.arg.vitals"], ["--no-vitals", "cli.arg.no_vitals"], ["--find KEYWORD", "cli.arg.find"],
       ["--limit N", "cli.arg.limit"], ["--force", "cli.arg.force"], ["--dry-run", "cli.arg.dry_run"],
+      ["--pick-sessions", "cli.arg.pick_sessions"], ["--sessions PATH", "cli.arg.sessions"],
       ["--lang LANG", "cli.arg.lang"], ["--gui", "cli.arg.gui"], ["--port N", "cli.arg.port"],
       ["--no-browser", "cli.arg.no_browser"], ["--jobs N", "cli.arg.jobs"], ["--json", "cli.arg.json"]
     ];

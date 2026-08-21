@@ -11,6 +11,7 @@ Run this once before starting the new session and it freezes those things into t
 1. **Commit a snapshot** — automatically excluding files the plan declares user-owned
 2. **Backfill the plan** — tick checkboxes from objective evidence (files exist, symbols actually defined)
 3. **Write the handoff** — a handoff Markdown plus an opening prompt you paste straight into the new session
+4. **Carry over sessions** — tick the relevant sessions; the digests they wrote themselves travel into the new session
 
 It **hardcodes no project knowledge**: project name, paths, task names, and test commands are all inferred from the repository itself.
 
@@ -23,6 +24,49 @@ It **hardcodes no project knowledge**: project name, paths, task names, and test
   <img src="docs/img/gui-dark.png" alt="Session vitals (dark)" width="820">
 </p>
 </details>
+
+---
+
+## Read this first: when *not* to use it
+
+Same app, same machine, same provider, context not exhausted, session file intact —
+**use native resume, not this tool**:
+
+```bash
+claude --resume          # or claude --continue / /resume in-session
+codex resume             # or codex resume --last
+```
+
+Native resume restores the **full conversation history** (Claude Code docs:
+"the full history, including tool calls and results") — a verbatim token replay,
+**lossless**. What this tool produces is a **lossy digest**. A digest cannot equal
+a verbatim replay, and no amount of engineering changes that.
+
+Its value is confined to what native resume **structurally cannot** do:
+
+| Situation | Why native cannot |
+|---|---|
+| Context already exhausted | The official answer is also a digest — idle 1h + over 100k tokens offers "Resume from summary", which is `/compact` |
+| Across apps (Claude Code ↔ Codex) | Different formats and event semantics; **no official import mechanism** |
+| Different model / provider | Docs state the model is not restored when retired, overridden by `--model`, or on deployment-ID providers such as Bedrock |
+| Corrupted session file | `Failed to resume the conversation`, exit 1 |
+| Deliberately discarding poisoned history | Native gives all-or-digest; `/branch` copies rather than trims |
+| Across machines | Transcripts copy, but the official ID lookup resolves only when exactly one project holds that ID; a hand-copied file reads as not-found |
+| plan mode / bypassPermissions / background tasks / MCP / CLI startup flags | Docs list these as **never restored** — a written handoff is actually more reliable |
+
+### What cannot travel, in principle
+
+The tool writes this into the generated prompt so the next session does not read
+"absent from the digest" as "did not happen":
+
+- Model-internal reasoning state and prompt cache (`encrypted_content` is
+  server-side encrypted and dies with the session)
+- Tool-approval runtime state — the new session will prompt again
+- MCP connections and auth tokens (transcripts record tool *names*, not connections)
+- Background processes, listening ports, already-started services
+- The reasoning behind rejected approaches — thinking carries no signature and
+  cannot be replayed, and most of it lives in subagent transcripts
+  (measured process:report ratio **124:1** — 14.6 MB of process, 118 KB of reports)
 
 ---
 
@@ -77,6 +121,9 @@ agent-handoff /path/to/project --dry-run
 # For real
 agent-handoff /path/to/project
 
+# Tick which sessions to carry over: lists local sessions, you pick by number
+agent-handoff /path/to/project --pick-sessions
+
 # In a hurry for a new session; skip the tests
 agent-handoff /path/to/project --skip-tests
 ```
@@ -94,8 +141,10 @@ agent-handoff /path/to/project --skip-tests
 | `--test-timeout N` | Timeout in seconds per test command; default 900 |
 | `--vitals` | Only check local session transcripts and exit; never touches the repository |
 | `--no-vitals` | Skip the session check (no vitals table in the handoff file) |
-| `--find KEYWORD` | Locate a session by id, directory, or opening-prompt keyword |
+| `--find KEYWORD` | Locate a session by id, directory, or topic keyword |
 | `--limit N` | Maximum transcripts to scan per agent; default 12 |
+| `--pick-sessions` | Interactively tick which sessions to carry over |
+| `--sessions PATH` | Name transcripts to carry over; repeatable or comma-separated |
 | `--force` | Ignore concurrent-write warnings and continue |
 | `--dry-run` | Print what would happen without writing any file |
 | `--lang {zh-Hans,zh-Hant,en}` | Interface and output language; omit to follow the system locale |
@@ -141,7 +190,52 @@ Plan document format (it auto-detects the newest checkbox-bearing task document)
 - [ ] **Step 2** Write the migration script
 ```
 
-Both files must exist *and* both symbols must actually be defined by a `def`/`class` before it ticks the two steps. Files present but symbols undefined means "partial" — no ticks.
+Both files must exist *and* both symbols must actually be defined before it ticks the two steps. Files present but symbols undefined means "partial" — no ticks.
+
+The parser accommodates how real markdown is written, because failing to
+recognise a form does not raise — it silently distorts completion:
+the verb may be bold (`- **Modify**: x`), the colon optional (`- Modify x`),
+the verb absent (`- \`x\` — note`), several paths may share a line,
+`-` `*` `+` all count as list markers, headings may be levels 1–6 and indented,
+`Task` and `Phase` both count, and `Exports`/`Provides` join `Produces`.
+
+### How a symbol counts as "actually defined"
+
+Not "the word appears in the file". Three definition forms count, and
+**references do not**:
+
+```ts
+interface Intent {
+  undo: () => void          // ✅ interface member
+}
+const intent = {
+  undo: () => { step() }    // ✅ object-literal property
+}
+class M {
+  performAction(a: () => void) {   // ✅ method shorthand, no keyword prefix
+  }
+}
+
+intent.undo()               // ❌ a call is not a definition
+// interface undo comes from the store   ❌ a comment reference is not a definition
+```
+
+The last two forms are the mainstream in TS / Vue / modern JS, and **none of them
+carries a keyword prefix**. A detector that only accepts "keyword + space + name"
+judges a repository full of `undo: () => void` as "all symbols missing", so the
+next session redoes finished work — a real misjudgement this tool hit.
+Comments are blanked before matching (replaced with equal-length whitespace so
+line and column offsets survive), because **false positives are worse than false
+negatives**: they let the backfill tick steps that were never implemented, and the
+to-do disappears for good.
+
+The plan document itself is excluded from the symbol search. Otherwise
+``- Produces `undo` `` inside it becomes evidence that `undo` exists — the plan
+satisfying itself.
+
+A failed search (all three backends down) is not the same as "searched, absent":
+the former is never allowed to mark a task complete, because ticking writes to the
+plan document and is irreversible.
 
 ## Where the vitals thresholds come from
 
@@ -153,6 +247,70 @@ The size bands come from the measured distribution of 54 Claude and 54 Codex tra
 | ≥ 3 MB | hand off soon | about a third did |
 | ≥ 1 MB | watch | about 17% did |
 | < 1 MB | healthy | nothing under 250 KB did |
+
+Size only answers "how much longer can it last". A session that already hit a
+fatal error or was interrupted is raised one band — a 0.9 MB session that really
+tripped a provider breaker should not read as "healthy".
+
+**Fatal** means a signature that genuinely killed sessions (`content-blocked`,
+provider breaker, no channel available, image dimensions exceeded) — and it must
+appear in an **error payload field**. Matching raw lines counts *discussion* of
+those words as *occurrences*: of 239 raw matches across 14 main transcripts,
+94 came from assistant prose and 83 from user prose (your own CLAUDE.md saying
+"when you see content-blocked…" gets counted too).
+
+**Aborted turns** (`turn_aborted`) are counted separately: `is_error` fired only
+3 times across 40 Codex rollouts while `turn_aborted` fired 6. Treating
+half-finished work as finished is the most expensive misread in a handoff.
+
+## How session content travels
+
+Once you tick sessions, the tool extracts **what the sessions wrote about
+themselves** rather than guessing:
+
+| Source | Content | Why it matters |
+|---|---|---|
+| Codex `compacted` events | the handoff digest the model wrote at compaction — **every window** | carries repo path, real HEAD, documents read, task scope |
+| `compacted.replacement_history` | the **user's own words**, verbatim | a digest is a paraphrase, and paraphrase drops constraints in the wording |
+| Claude `ai-title` | one-line topic | this is how a human recognises a session, not by eight hex digits |
+| Claude `last-prompt` | last user input | says where the session stopped |
+
+**Every compaction window must be kept.** Across 70 rollouts with compaction
+(52 multi-window, up to 19 windows): `window_number` increments,
+`previous_window_id` forms a chain, each window summarises only its own stretch,
+and **no sample's last window contains its first verbatim**. Keeping only the last
+loses a median of **78%** (p90 96%) of concrete facts — commit shas, file paths,
+test counts — and in 11 rollouts the *user's goal and hard limits* appear only in
+an early window, which is precisely what must not be lost. With every window kept,
+measured loss is **0%** (70/70).
+
+Digests are also no longer truncated: 62 of 70 final windows exceeded 4000
+characters, with a median of 2925 and up to 13241 characters cut — and what gets
+cut is usually the conclusions and the to-do list. The full digest goes into the
+handoff **document** (a file can afford tens of KB); the prompt carries only
+topics and paths.
+
+## Repo identity vs local path
+
+The prompt states both:
+
+```text
+Resume myproject. Repo E:/output/myproject, branch main, HEAD 1edd107840d5.
+Repo identity (use this on another machine, not the local path above):
+  https://github.com/you/myproject.git @ 1edd107840d564691f92470e4d99e2b283f1a8f5
+```
+
+A path is "where it sits on this machine"; the remote URL plus full sha is the
+**identity**. On another machine, in a container, under WSL, or in Codespaces the
+path does not exist — and two working copies of the same remote (`proj-a5` and
+`proj-b8`) can only be told apart by path. With no remote, the tool says plainly
+that the repo exists only on this machine.
+
+**Unpushed commits are declared separately**, because they do not travel — a fresh
+clone gets only what the remote has. The count comes from
+`rev-list --count HEAD --not --remotes` rather than `@{u}..HEAD`: the latter
+depends on how fresh the remote-tracking ref is and undercounts when FETCH_HEAD is
+stale (one measured repo reported `ahead` 0 while its HEAD existed on no remote).
 
 ## Concurrent-write protection
 

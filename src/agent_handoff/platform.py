@@ -22,7 +22,16 @@ IS_MACOS = sys.platform == "darwin"
 # guess_repos 在非 Windows 上等于永远返回空。两种形态都要认。
 WIN_PATH_RX = re.compile(r'[A-Za-z]:[\\/][^\s"\'<>|*?\n]{3,140}')
 POSIX_PATH_RX = re.compile(r'(?:/[\w.\-+@]+){2,12}/?')
-PATH_TRIM = '\\/",。、）)]}>;:'
+# 路径尾部要削掉的半角标点。
+PATH_TRIM = '\\/",。、）)]}>;:='
+# 全角标点是句子里的分隔符，不可能出现在路径中间——出现即意味着路径已经结束。
+# 用户几乎总是写「仓库 E:/output/proj，分支 main」，而全角逗号不是空白字符，
+# WIN_PATH_RX 的 `[^\s...]` 会把它连同后面的「分支」一起吃进候选路径，于是
+# `nearest_repo` 去找 `E:/output/proj，分支` 这个不存在的目录，仓库推断静默
+# 失败——实测本机 5/6 个最新 Codex 转录的 repos 因此为空。
+# 只在这里截断而不是把所有中日韩字符都排除：中文目录名（`E:/项目/前端`）是
+# 合法路径，一并排除会引入新的漏检。
+_FULLWIDTH_CUT = re.compile(r"[，。、：；！？（）【】《》「」“”…]")
 
 
 def iter_path_candidates(text: str):
@@ -30,11 +39,17 @@ def iter_path_candidates(text: str):
 
     先扫盘符形态，再扫 POSIX 形态。跨平台捞取而不是按当前系统二选一：
     转录可能是在另一台机器上产生的（WSL 写的记录在 Windows 上读，或反之）。
+
+    命中片段先在第一个全角标点处截断，再削尾部标点——见 `_FULLWIDTH_CUT`。
     """
     seen = set()
     for rx in (WIN_PATH_RX, POSIX_PATH_RX):
         for m in rx.finditer(text):
-            cand = m.group(0).rstrip(PATH_TRIM)
+            cand = m.group(0)
+            cut = _FULLWIDTH_CUT.search(cand)
+            if cut:
+                cand = cand[: cut.start()]
+            cand = cand.rstrip(PATH_TRIM)
             if len(cand) < 4 or cand in seen:
                 continue
             seen.add(cand)

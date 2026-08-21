@@ -11,6 +11,7 @@ import pytest
 from agent_handoff.platform import (
     IS_WINDOWS,
     agent_session_roots,
+    iter_path_candidates,
     nearest_repo,
     norm_path,
     normalize_shell_paths,
@@ -22,6 +23,31 @@ from agent_handoff.platform import (
 def test_norm_path_ignores_slash_direction_and_case():
     assert norm_path(r"C:\Users\Me\Proj\\") == norm_path("c:/users/me/proj")
     assert norm_path("/home/me/proj/") == "/home/me/proj"
+
+
+@pytest.mark.parametrize(
+    ("label", "text"),
+    [
+        ("全角逗号", "仓库 E:/output/proj，分支 main"),
+        ("全角冒号", "项目在 E:/output/proj：请检查"),
+        ("全角句号", "路径是 E:/output/proj。"),
+        ("引号包裹后接中文", '"E:/output/proj"为项目B。'),
+        ("顿号", "E:/output/proj、E:/other"),
+    ],
+)
+def test_path_candidates_stop_at_fullwidth_punctuation(label: str, text: str):
+    """全角标点是句子分隔符，不是路径的一部分。
+
+    它不是空白字符，所以 `[^\\s...]` 会把它连同后面的中文一起吃进候选路径，
+    `nearest_repo` 于是去找一个不存在的目录，仓库推断静默失败。
+    """
+    assert "E:/output/proj" in list(iter_path_candidates(text)), label
+
+
+def test_path_candidates_keep_chinese_directory_names():
+    """中文目录名是合法路径，不能因为切全角标点而把它们一起切掉。"""
+    got = list(iter_path_candidates("代码在 E:/项目/前端 目录"))
+    assert "E:/项目/前端" in got
 
 
 def test_nearest_repo_walks_up(tmp_path: Path):

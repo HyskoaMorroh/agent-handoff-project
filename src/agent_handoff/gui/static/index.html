@@ -70,6 +70,9 @@
           <input type="checkbox" id="scan-deep" checked>
           <span data-i18n="gui.vitals.deep"></span>
         </label>
+        <!-- 勾选计数：勾在体检视图，交接在另一个视图，中间要有个东西
+             告诉用户「你已经选了几个」，否则切过去就不记得选没选。 -->
+        <span class="pick-count" id="pick-count"></span>
       </div>
 
       <div class="stats" id="vitals-stats" hidden>

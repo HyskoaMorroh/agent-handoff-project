@@ -280,7 +280,25 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round
   overflow: hidden; cursor: help;
 }
 
-.srow-act { margin-top: 12px; }
+/* 话题：卡片上唯一一眼能认出「这是哪段对话」的东西，所以给它正文级字号
+ * 和最强的字重，排在指标行下面、键值表上面。一行放不下就截断——两行以上
+ * 会把卡片撑高，长列表就没法扫读了。 */
+.stopic {
+  margin: 9px 0 0; font-size: 13.5px; font-weight: 550; line-height: 1.45;
+  color: var(--ink-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  cursor: help;
+}
+
+.srow-act { margin-top: 12px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+/* 勾选框：和 .check 同一套视觉，但排在卡片操作行里，所以不重复 .check 的
+ * 上边距。选中后整行变强调色，让「已选」在长列表里一眼可见。 */
+.pick { display: flex; gap: 7px; align-items: center; font-size: 12.5px; color: var(--ink-2); cursor: pointer; }
+.pick input { margin: 0; accent-color: var(--accent); flex: none; }
+.pick:has(input:checked) { color: var(--accent); font-weight: 550; }
+/* 勾选计数停在工具栏右侧。勾在体检视图、交接在另一个视图，中间必须有个
+ * 常驻提示，否则切过去就不记得选没选。 */
+.pick-count { margin-left: auto; font-size: 12.5px; font-weight: 550; color: var(--accent); }
+
 .link {
   border: 0; background: transparent; padding: 0;
   color: var(--accent); font-size: 12.5px; font-weight: 550;

@@ -398,6 +398,195 @@ def test_skip_tests_records_the_skip(repo: Path, tr):
     assert tr.t("doc.step3.skipped") in res.body
 
 
+# ── 会话传承 ──────────────────────────────────────────────────────────
+
+def _transcript(tmp_path: Path, name: str = "rollout-2026-08-21T00-00-00-abc123.jsonl") -> Path:
+    """一份带压缩摘要的 Codex 转录。摘要是会话自己写的，正是要传承的东西。
+
+    文件名里的 id 必须与 session_meta 里的一致——真实的 rollout 就是这样命名的，
+    两者不一致时工具会把文件名当会话 ID、把 meta 里的当源线程 ID。
+    """
+    fp = tmp_path / "codexlogs" / name
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"type": "session_meta", "payload": {"session_id": "abc123", "cwd": str(tmp_path)}},
+        {"type": "compacted", "payload": {"message": "# 交接摘要\n\n实测后端 557 passed，Task 5 已完成"}},
+    ]
+    with fp.open("w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    return fp
+
+
+def test_selected_session_digest_lands_in_handoff_document(repo: Path, tr, tmp_path: Path):
+    """勾选的会话摘要必须整段进交接文档——这是「无损传承」的落点。
+
+    提示词装不下多 MB 转录，所以完整内容只能落在文档里，提示词负责指路。
+    """
+    fp = _transcript(tmp_path)
+    res = _run(repo, tr, sessions=[str(fp)])
+    assert res.code == EXIT_OK
+    assert "实测后端 557 passed，Task 5 已完成" in res.body
+    assert "abc123" in res.body
+    assert tr.t("doc.h.sessions") in res.body
+
+
+def test_selected_session_named_in_prompt_without_full_text(repo: Path, tr, tmp_path: Path):
+    """提示词点名会话（话题 / ID / 转录路径），但不内联整份摘要。
+
+    话题本身取自摘要首句，所以会与摘要有重叠——这是有意的（话题就是给人认的）。
+    要断言的是「整份摘要没被塞进提示词」，用长度衡量而不是找某个词。
+    """
+    fp = _transcript(tmp_path)
+    res = _run(repo, tr, sessions=[str(fp)])
+    assert "abc123" in res.prompt
+    assert fp.name in res.prompt
+    # 摘要正文留在交接文档里；提示词只负责指向那份文档。
+    digest = res.ctx["sessions"][0]["digest"]
+    assert digest in res.body
+    assert digest not in res.prompt
+    assert res.ctx["handoff_rel"] in res.prompt
+
+
+def test_no_selection_keeps_original_output(repo: Path, tr):
+    """不选任何会话时行为与原版一致：文档里没有「前序会话」一节。"""
+    res = _run(repo, tr)
+    assert res.ctx["sessions"] == []
+    assert tr.t("doc.h.sessions") not in res.body
+
+
+def test_selected_session_outside_scan_is_still_read(repo: Path, tr, tmp_path: Path):
+    """勾了却没传下去是最坏的结果：用户以为交接了，实际丢了。
+
+    no_vitals=True 时根本没有扫描列表，勾选的转录仍然必须被单独读进来。
+    """
+    fp = _transcript(tmp_path)
+    res = _run(repo, tr, sessions=[str(fp)], no_vitals=True)
+    assert len(res.ctx["sessions"]) == 1
+    assert "557 passed" in res.body
+
+
+def test_missing_selected_session_is_reported_not_silent(repo: Path, tr, tmp_path: Path):
+    """指定的转录不存在时要说出来，不能静默跳过。"""
+    lines: list[str] = []
+    opts = Options(repo=repo, skip_tests=True, no_vitals=True,
+                   sessions=[str(tmp_path / "nope.jsonl")])
+    res = run_handoff(opts, tr, log=lines.append)
+    assert res.code == EXIT_OK
+    assert res.ctx["sessions"] == []
+    assert any("nope.jsonl" in ln for ln in lines), lines
+
+
+def test_prompt_carries_portable_repo_identity(repo: Path, tr):
+    """路径是「这台机器上的位置」，不是仓库身份。
+
+    换机器 / 容器 / WSL / Codespaces 后 `E:/output/...` 不存在，新会话就无从
+    定位；而同一个 remote 下的两个工作副本也只能靠路径区分。有 remote 时必须
+    给出 remote URL + 完整 sha；没有 remote 时必须说清楚「只在本机」。
+    """
+    res = _run(repo, tr)
+    # conftest 造的仓库没有远程，所以应当出现「只存在于本机」的声明。
+    assert tr.t("prompt.no_remote") in res.prompt
+    assert res.ctx["remote"] == ""
+
+
+def test_prompt_reports_unpushed_commits(repo: Path, tr):
+    """未推送的提交在别处 clone 拿不到——不声明，新会话会以为远程已有。"""
+    res = _run(repo, tr)
+    # conftest 的仓库有提交但没有任何远程，所以全部提交都算未推送。
+    assert res.ctx["unpushed"], res.ctx
+    assert tr.t("prompt.unpushed", count=res.ctx["unpushed"]) in res.prompt
+
+
+def test_prompt_declares_handoff_is_lossy(repo: Path, tr, tmp_path: Path):
+    """交接是有损的。不说明这一点，新会话会把「摘要里没有」当成「没发生过」，
+    于是把上一个会话已经排除的方案重新试一遍。"""
+    fp = _transcript(tmp_path)
+    res = _run(repo, tr, sessions=[str(fp)])
+    assert tr.t("prompt.sessions.lossy") in res.prompt
+
+
+def test_user_asks_land_in_document_verbatim(repo: Path, tr, tmp_path: Path):
+    """用户原话优先于任何转述——摘要会丢措辞里的约束。"""
+    fp = tmp_path / "codexlogs" / "rollout-2026-08-21T00-00-00-ask1.jsonl"
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"type": "session_meta", "payload": {"session_id": "ask1", "cwd": str(tmp_path)}},
+        {"type": "compacted", "payload": {
+            "message": "摘要：用户要求发布",
+            "window_number": 1,
+            "replacement_history": [
+                {"role": "user", "content": [{"text": "不要删除项目 A，也不要强制推送"}]},
+            ],
+        }},
+    ]
+    with fp.open("w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    res = _run(repo, tr, sessions=[str(fp)])
+    assert tr.t("doc.sessions.asks") in res.body
+    assert "不要删除项目 A，也不要强制推送" in res.body
+
+
+def test_all_compaction_windows_reach_the_document(repo: Path, tr, tmp_path: Path):
+    """多窗口摘要必须整段进文档，且标注窗口数，让人能判断覆盖范围。"""
+    fp = tmp_path / "codexlogs" / "rollout-2026-08-21T00-00-00-multi.jsonl"
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"type": "session_meta", "payload": {"session_id": "multi", "cwd": str(tmp_path)}},
+        {"type": "compacted", "payload": {"message": "第一阶段：定目标", "window_number": 1}},
+        {"type": "compacted", "payload": {"message": "第二阶段：改代码", "window_number": 2}},
+    ]
+    with fp.open("w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    res = _run(repo, tr, sessions=[str(fp)])
+    assert "第一阶段：定目标" in res.body
+    assert "第二阶段：改代码" in res.body
+    assert tr.t("doc.sessions.windows", count=2) in res.body
+
+
+@pytest.mark.parametrize("lang", ["zh-Hans", "zh-Hant", "en"])
+def test_session_section_translated_in_all_languages(repo: Path, tmp_path: Path, lang: str):
+    fp = _transcript(tmp_path)
+    t2 = Translator(lang)
+    res = _run(repo, t2, sessions=[str(fp)], no_commit=True)
+    assert "??" not in res.body, "文案缺键"
+    assert "??" not in res.prompt
+    assert t2.t("doc.h.sessions") in res.body
+
+
+def test_digest_with_code_fences_does_not_break_document(repo: Path, tr, tmp_path: Path):
+    """摘要是模型写的 Markdown，几乎一定自带 ``` 代码块。
+
+    用三个反引号包它会被内层的第一个 ``` 提前闭合，摘要后半段就漏进文档结构
+    ——实测摘要里的 `### 测试修复` 变成了交接文档自己的三级标题。
+    """
+    fp = tmp_path / "codexlogs" / "rollout-2026-08-21T00-00-00-fence1.jsonl"
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    digest = "# 交接摘要\n\n```bash\npytest -q\n```\n\n### 测试修复\n\n改了三处"
+    rows = [
+        {"type": "session_meta", "payload": {"session_id": "fence1", "cwd": str(tmp_path)}},
+        {"type": "compacted", "payload": {"message": digest}},
+    ]
+    with fp.open("w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    res = _run(repo, tr, sessions=[str(fp)])
+    body = res.body
+    # 外层围栏必须比内层长，否则内层的 ``` 会提前闭合。
+    assert "````text" in body
+    # 摘要内容完整保留。
+    assert "改了三处" in body
+    # 关键：那个三级标题必须待在代码围栏**内部**，不能成为文档自己的结构。
+    # 用围栏配对判断，而不是找字符串——它在围栏里出现是正确的。
+    inside = re.findall(r"^(`{3,})text\n(.*?)^\1$", body, re.S | re.M)
+    assert any("### 测试修复" in blk for _f, blk in inside), "标题应当在代码块内"
+    outside = re.sub(r"^(`{3,})text\n.*?^\1$", "", body, flags=re.S | re.M)
+    assert "### 测试修复" not in outside, outside
+
+
 # ── 日志回调 ──────────────────────────────────────────────────────────
 
 def test_log_callback_receives_all_six_steps(repo: Path, tr):

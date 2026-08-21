@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..i18n import Translator
+from ..platform import norm_path
 from .evidence import score_tasks
 from .gitops import (
     commit_paths,
@@ -56,6 +57,9 @@ class Options:
     dry_run: bool = False
     limit: int = 12
     jobs: int = 0
+    # 用户勾选要传承的会话（转录文件的绝对路径）。空表示不带任何会话内容——
+    # 与原版行为一致。非空时，这些会话的摘要写进交接文档，提示词点名它们。
+    sessions: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -104,6 +108,7 @@ class Result:
             "gap_hints": c.get("gap_hints", []),
             "intent_sections": c.get("intent_sections", []),
             "vitals": c.get("vitals", []),
+            "sessions": c.get("sessions", []),
             "recent_commits": c.get("recent_commits", ""),
             "dry_run": c.get("dry_run", False),
         }
@@ -129,6 +134,31 @@ def _our_commit_prefixes(tr: Translator) -> tuple[str, ...]:
         out.append(msg.rstrip().rstrip("{stamp}").strip())
         out.append(t2.t("cli.commit.docs_msg"))
     return tuple(dict.fromkeys(x for x in out if x))
+
+
+def _scan_selected(key: str, originals: list[str]) -> dict[str, Any] | None:
+    """扫一个不在体检列表里的转录。
+
+    用户勾选的会话可能落在 `--limit` 之外，也可能是子代理转录（体检默认不列
+    它们）。这时按原始路径直接扫，而不是当作「找不到」跳过——勾了却没传下去
+    是最坏的结果：用户以为内容已经交接，实际上丢了。
+    """
+    from .vitals import scan_one
+
+    for raw in originals:
+        if norm_path(raw) != key:
+            continue
+        fp = Path(raw)
+        if not fp.is_file():
+            return None
+        # Codex 的转录文件名形如 `rollout-<时间戳>-<id>.jsonl`，这是它自己的命名
+        # 契约；`.codex` 目录名只是默认位置，用户拷走一份转录就不成立了。
+        # 判错只影响卡片上的 APP 名字与身份字段的解析路径，不影响摘要提取。
+        name = fp.name.lower()
+        agent = "Codex" if name.startswith("rollout-") or ".codex" in norm_path(fp) else "Claude Code"
+        row = scan_one(agent, fp)
+        return row.to_dict() if row is not None else None
+    return None
 
 
 def run_handoff(
@@ -165,6 +195,7 @@ def run_handoff(
     tasks: list[Task] = []
     protected: list[str] = []
     intent_sections: list[str] = []
+    plan_rel = ""
     if plan_path:
         text = plan_path.read_text(encoding="utf-8", errors="replace")
         tasks, protected = parse_plan(text)
@@ -190,7 +221,9 @@ def run_handoff(
         say(tr.t("cli.plan.missing"))
 
     say(tr.t("cli.step.score"))
-    report = score_tasks(repo, tasks)
+    # 计划文档要排除在符号检索之外：它自己写着 ``- Produces `undo` ``，
+    # 搜全库会搜到它，于是「宣称要做」变成「已经做完」的证据。
+    report = score_tasks(repo, tasks, plan_rel)
 
     # 输出路径要在并发检测之前算出来：它和计划文档都要从"最近被改动"的
     # 信号里排除，否则上一次运行留下的它们会被当成"别人在写"。
@@ -288,6 +321,7 @@ def run_handoff(
             gap_hints.append(tr.t("prompt.gap.symbol", task=n, name=s))
 
     vitals: list[dict[str, Any]] = []
+    picked: list[dict[str, Any]] = []
     if not opts.no_vitals:
         rows = scan_session_vitals(limit=opts.limit, jobs=opts.jobs)
         vitals = [r.to_dict() for r in rows]
@@ -303,6 +337,27 @@ def run_handoff(
                     band=worst["band"],
                 )
             )
+
+    if opts.sessions:
+        # 勾选的会话按路径匹配。用 norm_path 比较：用户可能从卡片上抄的是
+        # 反斜杠路径，而扫描结果里是 Path 的字符串形态。
+        want = {norm_path(s) for s in opts.sessions}
+        by_path = {norm_path(v["path"]): v for v in vitals}
+        for key in want:
+            hit = by_path.get(key)
+            if hit is not None:
+                picked.append(hit)
+            else:
+                # 勾选的会话不在本次扫描范围内（--limit 太小，或它是子代理
+                # 转录）。单独扫它一次，而不是静默丢掉——静默丢掉会让用户
+                # 以为内容传下去了，那正是这个功能要解决的问题。
+                extra = _scan_selected(key, opts.sessions)
+                if extra is not None:
+                    picked.append(extra)
+                else:
+                    say(tr.t("cli.sessions.not_found", path=key))
+        picked.sort(key=lambda v: v["mtime"], reverse=True)
+        say(tr.t("cli.sessions.picked", count=len(picked)))
 
     say(tr.t("cli.step.write"))
     try:
@@ -321,6 +376,10 @@ def run_handoff(
         "head": meta["head"],
         "head_sha": meta["head_sha"],
         "ahead": meta["ahead"],
+        # 仓库身份（可移植）与未推送状态（传不过去的部分）。
+        "remote": meta.get("remote", ""),
+        "head_full": meta.get("head_full", ""),
+        "unpushed": meta.get("unpushed", ""),
         "plan_rel": plan_rel,
         "handoff_rel": handoff_rel,
         "date": stamp_day,
@@ -340,6 +399,7 @@ def run_handoff(
         "gap_hints": gap_hints,
         "intent_sections": intent_sections,
         "vitals": vitals,
+        "sessions": picked,
         "recent_commits": recent_commits(repo),
         "dry_run": opts.dry_run,
     }

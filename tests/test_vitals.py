@@ -160,20 +160,69 @@ def test_scan_one_session_id_falls_back_to_filename(tmp_path: Path):
 
 
 def test_scan_one_counts_fatal_and_errors(tmp_path: Path):
+    """致命签名必须锚定在错误载荷上，不能在整行原文里裸匹配。
+
+    实测本机 14 个主转录：239 个裸匹配命中里 94 个来自 assistant 正文、
+    83 个来自 user 正文——那是人和模型在**讨论**这些词，不是会话真的死了。
+    """
     fp = tmp_path / "c.jsonl"
-    _write_jsonl(fp, [
-        {"type": "x", "note": "content-blocked by upstream"},
-        {"type": "x", "note": "熔断了"},
-        {"type": "x", "note": "IMAGE_DIMENSION_EXCEEDED"},
-        {"type": "result", "is_error": True},
-    ])
-    # is_error 的判据是原始子串 `"is_error":true`，json.dumps 会加空格，手写一行。
-    with fp.open("a", encoding="utf-8") as fh:
+    with fp.open("w", encoding="utf-8") as fh:
+        # 真的错误载荷：字段值里出现签名。
+        fh.write('{"type":"event_msg","error":{"message":"503: 所有供应商已熔断，无可用渠道"}}\n')
+        fh.write('{"type":"event_msg","error_message":"content-blocked by upstream"}\n')
+        fh.write('{"type":"event_msg","reason":"IMAGE_DIMENSION_EXCEEDED"}\n')
+        # 只是在讨论这些词：不能计数。
+        fh.write('{"type":"user","message":{"content":"遇到 content-blocked 时要重试"}}\n')
+        fh.write('{"type":"assistant","message":{"content":"熔断 是一种保护机制"}}\n')
         fh.write('{"type":"tool_result","is_error":true}\n')
         fh.write('{"type":"tool_result","isError":true}\n')
     row = scan_one("Claude Code", fp)
-    assert row.fatal == 3
+    assert row.fatal == 3, "只数真的错误载荷"
     assert row.errors == 2
+
+
+def test_fatal_signature_ignores_discussion(tmp_path: Path):
+    """整份转录只是在讨论这些词时，fatal 必须为 0。
+
+    否则 17/24 个转录被标 fatal>0（其中 16 个体积完全健康），风险列变成噪声，
+    用户照徽章决策就会漏掉真正出事的会话。
+    """
+    fp = tmp_path / "talk.jsonl"
+    with fp.open("w", encoding="utf-8") as fh:
+        fh.write('{"type":"user","message":{"content":"出现 content-blocked、所有供应商已熔断 时怎么办"}}\n')
+        fh.write('{"type":"assistant","message":{"content":"无可用渠道 一般是配额问题"}}\n')
+    row = scan_one("Claude Code", fp)
+    assert row.fatal == 0
+
+
+def test_scan_one_counts_aborted_turns(tmp_path: Path):
+    """被用户打断的轮次要单独计数。
+
+    实测 Codex 侧 `is_error` 在 40 个 rollout 里只有 3 次，而 `turn_aborted`
+    有 6 次——后者才是「这轮没做完」的真实信号，而把半成品当成已完成是
+    交接里最贵的误判。
+    """
+    fp = tmp_path / "rollout-2026-08-21T00-00-00-ab.jsonl"
+    with fp.open("w", encoding="utf-8") as fh:
+        fh.write('{"type":"session_meta","payload":{"session_id":"ab","cwd":"/p"}}\n')
+        fh.write('{"type":"event_msg","payload":{"type":"turn_aborted"}}\n')
+        fh.write('{"type":"event_msg","payload":{"reason":"interrupted"}}\n')
+    row = scan_one("Codex", fp)
+    assert row.aborted == 2
+
+
+def test_band_accounts_for_failures():
+    """体积衡量「还能撑多久」，fatal/aborted 衡量「已经出事了没有」。
+
+    原版只看体积，于是 0.9 MB 但撞过熔断的会话被标「健康」，
+    而 1.7 MB 一切正常的被标「留意」——用户照徽章决策会看错优先级。
+    """
+    assert band_for(900_000) == "ok"
+    assert band_for(900_000, fatal=1) == "watch"
+    assert band_for(900_000, fatal=7) == "high"
+    assert band_for(100_000, aborted=4) == "high"
+    # 体积已经更严重时不能被往下拉。
+    assert band_for(9_000_000, fatal=1) == "critical"
 
 
 def test_scan_one_counts_fatal_past_early_exit_budget(tmp_path: Path):
@@ -183,8 +232,10 @@ def test_scan_one_counts_fatal_past_early_exit_budget(tmp_path: Path):
     rows = [{"type": "system", "sessionId": "s1", "cwd": "/p"},
             {"type": "user", "message": {"content": "q"}}]
     rows += [{"type": "noise", "i": i} for i in range(500)]
-    rows += [{"type": "x", "note": "content-blocked"}]  # 第 503 行，远超 400 行预算
     _write_jsonl(fp, rows)
+    # 第 503 行，远超 400 行的身份预算；必须仍被数到。
+    with fp.open("a", encoding="utf-8") as fh:
+        fh.write('{"type":"event_msg","error":{"message":"content-blocked"}}\n')
     row = scan_one("Claude Code", fp)
     assert row.session_id == "s1"
     assert row.fatal == 1, "提前退出后仍要数完致命签名"
@@ -397,6 +448,204 @@ def test_sessions_for_repo_ignores_case_and_slashes():
     a = _row(1000, cwd=r"C:\Users\Me\Proj")
     got = sessions_for_repo(Path("c:/users/me/proj"), [a])
     assert got == [a]
+
+
+def test_sessions_for_repo_matches_via_repos_not_only_cwd():
+    """Codex 的 cwd 是任务沙箱，只比 cwd 会让这个函数对所有 Codex 会话恒返回空。
+
+    实测 20/20 个 rollout 的 cwd 都落在 Documents/Codex/<日期>/<slug> 下，
+    解析不到任何 git 仓库；真正的仓库只出现在会话正文里。
+    """
+    sandbox = _row(1000, cwd=r"C:\Users\Me\Documents\Codex\2026-08-21\slug",
+                   repos=[r"E:\output\proj"])
+    got = sessions_for_repo(Path("E:/output/proj"), [sandbox])
+    assert got == [sandbox]
+
+
+# ── 会话内容提取 ──────────────────────────────────────────────────────
+
+def test_extracts_claude_title_and_last_prompt(tmp_path: Path):
+    """ai-title 与 last-prompt 出现在文件末尾，早停之后才轮到它们。"""
+    fp = tmp_path / "c.jsonl"
+    _write_jsonl(fp, [
+        {"type": "system", "sessionId": "s1", "cwd": "/p"},
+        {"type": "user", "message": {"content": "开场提问"}},
+        {"type": "ai-title", "sessionId": "s1", "aiTitle": "工作流撤销重做验证"},
+        {"type": "last-prompt", "sessionId": "s1", "lastPrompt": "继续修 undo"},
+    ])
+    row = scan_one("Claude Code", fp)
+    assert row.title == "工作流撤销重做验证"
+    assert row.last_prompt == "继续修 undo"
+    # 话题优先用 AI 标题：会话 ID 前八位对人没有意义。
+    assert row.label == "工作流撤销重做验证"
+
+
+def test_extracts_codex_compaction_digest(tmp_path: Path):
+    """Codex 的 compacted 事件带着模型自己写的交接摘要——最有价值的一段。"""
+    fp = tmp_path / "rollout-2026-08-21T00-00-00-abc.jsonl"
+    _write_jsonl(fp, [
+        {"type": "session_meta", "payload": {"session_id": "abc", "cwd": "/p"}},
+        {"type": "compacted", "payload": {"message": "# 交接摘要\n\n## 当前进度\n\n已完成 Task 5"}},
+    ])
+    row = scan_one("Codex", fp)
+    assert "已完成 Task 5" in row.digest
+    # 标题行本身没有信息量，话题要取第一句实质内容。
+    assert row.label == "已完成 Task 5"
+
+
+def test_digest_strips_codex_boilerplate_preamble(tmp_path: Path):
+    """压缩摘要前面那段固定英文说明对每个会话都一样，留着会挤掉正文。"""
+    fp = tmp_path / "rollout-2026-08-21T00-00-00-abc.jsonl"
+    preamble = (
+        "Another language model started to solve this problem and produced a summary "
+        "of its thinking process. Here is the summary produced by the other language "
+        "model, use the information in this summary to assist with your own analysis:"
+    )
+    _write_jsonl(fp, [
+        {"type": "session_meta", "payload": {"session_id": "abc", "cwd": "/p"}},
+        {"type": "compacted", "payload": {"message": preamble + "\n# 交接摘要\n\n真正的内容"}},
+    ])
+    row = scan_one("Codex", fp)
+    assert not row.digest.startswith("Another language model")
+    assert row.digest.startswith("# 交接摘要")
+
+
+def test_all_compaction_windows_are_kept(tmp_path: Path):
+    """每个压缩窗口只总结它自己那一段，后一个**不**包含前一个。
+
+    实测本机 70 个带压缩的 rollout（52 个多窗口，最多 19 个）：`window_number`
+    递增、`previous_window_id` 串链，且没有任何样本的末窗逐字包含首窗。
+    只留最后一个会丢掉中位 78% 的具体事实，其中 11 个 rollout 的「用户目标 /
+    红线」只出现在早期窗口——恰恰最不能丢。
+    """
+    fp = tmp_path / "rollout-2026-08-21T00-00-00-abc.jsonl"
+    _write_jsonl(fp, [
+        {"type": "session_meta", "payload": {"session_id": "abc", "cwd": "/p"}},
+        {"type": "compacted", "payload": {"message": "用户目标：迁移预设", "window_number": 1}},
+        {"type": "compacted", "payload": {"message": "已完成 Task 5", "window_number": 2}},
+        {"type": "compacted", "payload": {"message": "已推送并打 tag", "window_number": 3}},
+    ])
+    row = scan_one("Codex", fp)
+    assert row.digest_windows == 3
+    # 三段内容都在，一段都不能少。
+    for expected in ("用户目标：迁移预设", "已完成 Task 5", "已推送并打 tag"):
+        assert expected in row.digest, expected
+    # 顺序必须是时间顺序，否则「当前进度」会互相矛盾。
+    assert row.digest.index("用户目标") < row.digest.index("已完成 Task 5")
+    assert row.digest.index("已完成 Task 5") < row.digest.index("已推送并打 tag")
+
+
+def test_single_window_needs_no_separator(tmp_path: Path):
+    """只有一个窗口时不加分隔标题——那是噪声。"""
+    fp = tmp_path / "rollout-2026-08-21T00-00-00-one.jsonl"
+    _write_jsonl(fp, [
+        {"type": "session_meta", "payload": {"session_id": "one", "cwd": "/p"}},
+        {"type": "compacted", "payload": {"message": "唯一的摘要", "window_number": 1}},
+    ])
+    row = scan_one("Codex", fp)
+    assert row.digest == "唯一的摘要"
+    assert row.digest_windows == 1
+
+
+def test_digest_is_not_truncated(tmp_path: Path):
+    """摘要不再截断：实测 62/70 个末窗超过 4000 字符，中位被切掉 2925 字符。
+
+    截断点落在哪完全取决于模型当时怎么分段，切掉的往往正是结论与待办。
+    """
+    long_msg = "开头结论\n" + ("详细过程 " * 3000) + "\n结尾的待办事项"
+    fp = tmp_path / "rollout-2026-08-21T00-00-00-long.jsonl"
+    _write_jsonl(fp, [
+        {"type": "session_meta", "payload": {"session_id": "long", "cwd": "/p"}},
+        {"type": "compacted", "payload": {"message": long_msg, "window_number": 1}},
+    ])
+    row = scan_one("Codex", fp)
+    assert len(row.digest) > 10000
+    assert "结尾的待办事项" in row.digest
+
+
+def test_user_asks_are_kept_verbatim(tmp_path: Path):
+    """压缩摘要是模型的转述；转述会丢措辞里的约束。
+
+    `replacement_history` 里保留着被摘要替换掉的原始 user 消息——实测本机
+    一个 rollout 的「将项目B推送到 GitHub 并创建 tag」只存在于这里，
+    任何摘要都没有逐字保留它。
+    """
+    fp = tmp_path / "rollout-2026-08-21T00-00-00-ask.jsonl"
+    _write_jsonl(fp, [
+        {"type": "session_meta", "payload": {"session_id": "ask", "cwd": "/p"}},
+        {"type": "compacted", "payload": {
+            "message": "摘要：用户要求发布",
+            "window_number": 1,
+            "replacement_history": [
+                {"role": "user", "content": [{"text": "不要删除项目 A，也不要强制推送"}]},
+                {"role": "developer", "content": [{"text": "<app-context>忽略我</app-context>"}]},
+                {"role": "user", "content": [{"text": "# Files mentioned by the user: 忽略我"}]},
+            ],
+        }},
+    ])
+    row = scan_one("Codex", fp)
+    assert row.asks == ["不要删除项目 A，也不要强制推送"]
+
+
+def test_label_falls_back_to_first_prompt(tmp_path: Path):
+    """没有标题也没有摘要时才退回开场提问。"""
+    fp = tmp_path / "c.jsonl"
+    _write_jsonl(fp, [
+        {"type": "system", "sessionId": "s", "cwd": "/p"},
+        {"type": "user", "message": {"content": "帮我看看这个 bug"}},
+    ])
+    row = scan_one("Claude Code", fp)
+    assert row.label == "帮我看看这个 bug"
+
+
+def test_skips_slash_command_boilerplate_prompt(tmp_path: Path):
+    """斜杠命令回显对所有会话都一样，认成开场提问会让卡片失去辨识度。"""
+    fp = tmp_path / "c.jsonl"
+    _write_jsonl(fp, [
+        {"type": "system", "sessionId": "s", "cwd": "/p"},
+        {"type": "user", "message": {"content": "<local-command-caveat>Caveat: the messages below…"}},
+        {"type": "user", "message": {"content": "这才是真正的提问"}},
+    ])
+    row = scan_one("Claude Code", fp)
+    assert row.first_prompt == "这才是真正的提问"
+
+
+def test_find_sessions_matches_topic_and_digest():
+    """用户记得的是「那次改撤销的对话」，不是 ID 前缀。"""
+    a = _row(1000, session_id="aaa", title="工作流撤销重做")
+    b = _row(1000, session_id="bbb", digest="修了模型目录的竞态")
+    assert find_sessions("撤销", [a, b]) == [a]
+    assert find_sessions("竞态", [a, b]) == [b]
+
+
+# ── 子代理转录 ────────────────────────────────────────────────────────
+
+def test_newest_files_excludes_subagent_transcripts(tmp_path: Path):
+    """子代理数量远超主会话，混排时几乎总在前面，会把 limit 吃满。
+
+    实测本机最新 12 个 Claude 文件里 7 个是子代理转录。
+    """
+    root = tmp_path / "projects" / "proj"
+    (root / "sess" / "subagents").mkdir(parents=True)
+    main = root / "main.jsonl"
+    main.write_text("{}\n", encoding="utf-8")
+    sub = root / "sess" / "subagents" / "agent-abc.jsonl"
+    sub.write_text("{}\n", encoding="utf-8")
+    # 让子代理更新，确保它按 mtime 会排在前面。
+    os.utime(main, (1_700_000_000, 1_700_000_000))
+    os.utime(sub, (1_700_009_999, 1_700_009_999))
+
+    assert [p.name for p in _newest_files(root, 10)] == ["main.jsonl"]
+    both = {p.name for p in _newest_files(root, 10, include_subagents=True)}
+    assert both == {"main.jsonl", "agent-abc.jsonl"}
+
+
+def test_scan_one_flags_subagent(tmp_path: Path):
+    d = tmp_path / "sess" / "subagents"
+    d.mkdir(parents=True)
+    fp = d / "agent-x.jsonl"
+    _write_jsonl(fp, [{"type": "system", "sessionId": "s", "cwd": "/p"}])
+    assert scan_one("Claude Code", fp).is_subagent is True
 
 
 # ── 目录扫描与并行 ────────────────────────────────────────────────────

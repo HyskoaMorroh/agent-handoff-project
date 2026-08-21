@@ -329,6 +329,16 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             timeout = 900
 
+        # 勾选要传承的会话。只接受字符串列表，逐项去空白——请求体来自浏览器，
+        # 不能假设结构正确；非列表当作没选，而不是抛异常让整个请求 500。
+        raw_sessions = body.get("sessions")
+        sessions: list[str] = []
+        if isinstance(raw_sessions, list):
+            for item in raw_sessions:
+                text = str(item).strip()
+                if text and text not in sessions:
+                    sessions.append(text)
+
         opts = Options(
             repo=repo,
             plan=(str(body["plan"]).strip() or None) if body.get("plan") else None,
@@ -340,6 +350,7 @@ class Handler(BaseHTTPRequestHandler):
             no_vitals=flag("no_vitals"),
             force=flag("force"),
             dry_run=flag("dry_run"),
+            sessions=sessions,
         )
         jid = _new_job()
         threading.Thread(target=_run_job, args=(jid, opts, tr), daemon=True).start()

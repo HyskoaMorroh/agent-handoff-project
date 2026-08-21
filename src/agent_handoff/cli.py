@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -12,11 +13,15 @@ from . import __version__
 from .core.handoff import EXIT_BAD_INPUT, EXIT_OK, Options, run_handoff
 from .core.vitals import SessionRow, find_sessions, group_by_agent, scan_session_vitals
 from .i18n import Translator, available, detect
-from .platform import force_utf8_io
+from .platform import force_utf8_io, norm_path
 
 
 def print_session_card(r: SessionRow, tr: Translator, index: int | None = None) -> None:
-    """一个转录，渲染成人能认出"这是哪个会话"的形态。"""
+    """一个转录，渲染成人能认出"这是哪个会话"的形态。
+
+    卡片上必须有「话题」：会话 ID 前八位对人没有意义，而开场提问在斜杠命令
+    回显时对所有会话都一样。话题来自 AI 标题或压缩摘要，是会话内容的提炼。
+    """
     label = tr.t(f"band.{r.band}")
     num = f"[{index}] " if index is not None else ""
     print(
@@ -30,6 +35,12 @@ def print_session_card(r: SessionRow, tr: Translator, index: int | None = None) 
             errors=r.errors,
         )
     )
+    if r.label:
+        print(tr.t("cli.card.topic", value=r.label[:110]))
+    # 被打断的轮次要显式说出来：半成品看起来和完成品一样，而按「已完成」
+    # 继续做下去，代价是把没做完的工作当成做完的。
+    if r.aborted:
+        print(tr.t("cli.card.aborted", count=r.aborted))
     print(tr.t("cli.card.session_id", value=r.session_id or tr.t("cli.card.unknown")))
     if r.thread_id:
         print(tr.t("cli.card.thread_id", value=r.thread_id))
@@ -39,7 +50,9 @@ def print_session_card(r: SessionRow, tr: Translator, index: int | None = None) 
     extra = " ".join(x for x in (r.version, r.origin) if x)
     if extra:
         print(tr.t("cli.card.client", value=extra))
-    if r.first_prompt:
+    if r.last_prompt:
+        print(tr.t("cli.card.last_prompt", value=r.last_prompt[:110]))
+    elif r.first_prompt:
         print(tr.t("cli.card.prompt", value=r.first_prompt[:150]))
     if r.repos:
         more = tr.t("cli.card.repos_more", count=len(r.repos) - 1) if len(r.repos) > 1 else ""
@@ -49,6 +62,10 @@ def print_session_card(r: SessionRow, tr: Translator, index: int | None = None) 
         for other in r.repos[1:3]:
             print(f"                {other}")
     print(tr.t("cli.card.file", value=str(r.path)))
+    if r.digest:
+        # 摘要存在意味着这个会话有一份模型自己写的交接记录，可以被提取进
+        # 新会话的提示词。不显示全文（几千字），只说明它存在、有多长。
+        print(tr.t("cli.card.digest", chars=len(r.digest)))
 
 
 def cmd_find(args: argparse.Namespace, tr: Translator) -> int:
@@ -138,6 +155,80 @@ def cmd_vitals(args: argparse.Namespace, tr: Translator) -> int:
     return 0
 
 
+def _parse_pick(raw: str, total: int) -> list[int]:
+    """把用户输入的编号串解析成下标列表（0 起）。
+
+    容错优先：这是给人用的输入框，写 `1,3 4`、`1、3`、`a` 都该work。
+    非法编号静默丢弃而不是报错重问——用户已经看着列表在选，越界通常是手误，
+    重问一遍比忽略更烦人。返回顺序去重后保持用户输入的顺序。
+    """
+    text = raw.strip().lower()
+    if not text:
+        return []
+    if text in ("a", "all", "全部", "全选"):
+        return list(range(total))
+    out: list[int] = []
+    for token in re.split(r"[\s,，、;；]+", text):
+        if not token.isdigit():
+            continue
+        n = int(token)
+        if 1 <= n <= total and (n - 1) not in out:
+            out.append(n - 1)
+    return out
+
+
+def pick_sessions(rows: list[SessionRow], repo: Path, tr: Translator) -> list[str]:
+    """让用户从列表里勾选要传承的会话。返回选中转录的路径。
+
+    为什么需要这一步：工具没法可靠判断「哪些会话属于这个仓库」——Codex 的 cwd
+    是任务沙箱，从正文捞出来的路径也可能是顺带提到的别的项目。人看一眼话题
+    就知道，所以把最终决定权交给人，但把认会话所需的信息（话题、时间、仓库、
+    转录路径）都摆在卡片上，而不是只给一串 ID 让人猜。
+    """
+    if not rows:
+        print(tr.t("cli.pick.empty_list"))
+        return []
+
+    target = norm_path(repo)
+
+    def related(r: SessionRow) -> bool:
+        if norm_path(r.cwd).startswith(target):
+            return True
+        return any(norm_path(x) == target or norm_path(x).startswith(target + "/") for x in r.repos)
+
+    # 与这个仓库相关的排在前面：它们几乎总是用户要选的，放在需要翻屏的位置
+    # 等于没有这个功能。组内按最近活动排。
+    ordered = sorted(rows, key=lambda r: (not related(r), -r.mtime.timestamp()))
+
+    print()
+    print(tr.t("cli.pick.head"))
+    print(tr.t("cli.pick.related"))
+    print(tr.t("cli.pick.hint"))
+    print()
+    for i, r in enumerate(ordered, 1):
+        mark = "★ " if related(r) else "  "
+        print(f"  {mark}", end="")
+        print_session_card(r, tr, i)
+        print()
+
+    try:
+        raw = input(tr.t("cli.pick.prompt"))
+    except (EOFError, KeyboardInterrupt):
+        # 管道里跑（无 tty）或用户按了 Ctrl-C：当作"不选"，不要中断整个交接。
+        print()
+        print(tr.t("cli.pick.none"))
+        return []
+
+    idx = _parse_pick(raw, len(ordered))
+    if not idx:
+        print(tr.t("cli.pick.none"))
+        return []
+    chosen = [ordered[i] for i in idx]
+    titles = "；".join((r.label or r.session_id)[:40] for r in chosen)
+    print(tr.t("cli.pick.chosen", count=len(chosen), titles=titles))
+    return [str(r.path) for r in chosen]
+
+
 def build_parser(tr: Translator) -> argparse.ArgumentParser:
     """构造参数解析器。参数名与语义与原版完全一致，只新增了几个可选开关。"""
     ap = argparse.ArgumentParser(prog="agent-handoff", description=tr.t("cli.desc"))
@@ -161,6 +252,10 @@ def build_parser(tr: Translator) -> argparse.ArgumentParser:
     ap.add_argument("--no-browser", action="store_true", help=tr.t("cli.arg.no_browser"))
     ap.add_argument("--jobs", type=int, default=0, help=tr.t("cli.arg.jobs"))
     ap.add_argument("--json", action="store_true", help=tr.t("cli.arg.json"))
+    # 会话传承。--sessions 给脚本用（可重复、可逗号分隔），--pick-sessions 给人用。
+    ap.add_argument("--sessions", action="append", default=[], metavar="PATH",
+                    help=tr.t("cli.arg.sessions"))
+    ap.add_argument("--pick-sessions", action="store_true", help=tr.t("cli.arg.pick_sessions"))
     ap.add_argument("--version", action="version", version=f"agent-handoff {__version__}")
     return ap
 
@@ -197,6 +292,22 @@ def main(argv: list[str] | None = None) -> int:
         print(tr.t("cli.err.no_git"), file=sys.stderr)
         return EXIT_BAD_INPUT
 
+    # --sessions 支持逗号分隔，也支持重复传参；两种写法合并后去重。
+    sessions: list[str] = []
+    for item in args.sessions:
+        for part in re.split(r"[,，;；]+", item):
+            part = part.strip().strip('"').strip("'")
+            if part and part not in sessions:
+                sessions.append(part)
+
+    if args.pick_sessions:
+        # 勾选要在交接开始前完成：它决定交接文件里写什么，而交接文件一旦写出
+        # 就可能被提交。跑完再问等于要重跑一遍。
+        rows = scan_session_vitals(limit=max(args.limit, 20), jobs=args.jobs)
+        for path in pick_sessions(rows, Path(args.repo).resolve(), tr):
+            if path not in sessions:
+                sessions.append(path)
+
     opts = Options(
         repo=Path(args.repo),
         plan=args.plan,
@@ -210,6 +321,7 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
         limit=args.limit,
         jobs=args.jobs,
+        sessions=sessions,
     )
     quiet = args.json
     res = run_handoff(opts, tr, log=None if quiet else print)

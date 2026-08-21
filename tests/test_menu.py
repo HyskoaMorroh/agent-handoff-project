@@ -122,7 +122,19 @@ def test_menu_vitals_passes_vitals_flag(calls, monkeypatch):
 def test_menu_quick_passes_skip_tests(repo: Path, calls, monkeypatch):
     _stdin(monkeypatch, str(repo), "")
     menu.menu_quick(Translator("en"))
-    assert calls == [(str(repo), "--skip-tests")]
+    assert calls == [(str(repo), "--skip-tests", "--pick-sessions")]
+
+
+def test_menu_handoff_offers_session_picking(repo: Path, calls, monkeypatch):
+    """真正执行那一遍要带 --pick-sessions：不问就等于会话内容永远传不下去。
+
+    预演那一遍不带它——预演是给人看「将要发生什么」的，中间插一个需要输入的
+    问答会打断阅读。
+    """
+    _stdin(monkeypatch, str(repo), "", "")
+    menu.menu_handoff(Translator("en"))
+    assert "--pick-sessions" not in calls[0]
+    assert "--pick-sessions" in calls[1]
 
 
 def test_menu_handoff_dry_runs_before_real_run(repo: Path, calls, monkeypatch):

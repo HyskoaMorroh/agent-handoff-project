@@ -9,19 +9,49 @@ from typing import Any
 from ..i18n import Translator
 
 
+def _vitals_id(r: dict[str, Any]) -> str:
+    """体征表里用什么标识一个转录。
+
+    原版用 `file[:14]`。Codex 的文件名都以 `rollout-2026-0…` 开头，实测 12 行
+    全部截成同一个字符串，读者无法把任何一行对应到具体文件；
+    `doc.vitals.worst` 也用同一截断，「最紧迫的是 rollout-2026-0」指不到任何东西。
+    会话 ID 的前 8 位才是有区分度的，退回文件名尾部。
+    """
+    sid = (r.get("session_id") or "").strip()
+    if sid:
+        return sid[:8]
+    name = r.get("file") or ""
+    return name[-18:] if len(name) > 18 else name
+
+
 def build_prompt(ctx: dict[str, Any], tr: Translator) -> str:
     """新会话的开场提示词。
 
-    五块内容，缺任何一块都会让接续会话走错路：
+    六块内容，缺任何一块都会让接续会话走错路：
       1. 现场坐标（仓库 / 分支 / HEAD）——否则它不知道在哪
       2. 先读计划文档，并点名意图段落——否则它把计划当待办清单，漏掉红线
       3. 已完成任务的名字——否则它重做已完成的工作
       4. 具体缺口（缺哪个文件、哪个符号）——否则它从头找
-      5. 过期声明（生成时间 + HEAD）——否则旧提示词被复用，指向已不存在的提交
+      5. 前序会话：话题、结论、转录路径——否则前面几十轮的判断全部丢失，
+         新会话从零重新推导，还可能推出相反的结论
+      6. 过期声明（生成时间 + HEAD）——否则旧提示词被复用，指向已不存在的提交
+
+    第 5 块为什么只放摘要与路径、不放全文：两份多 MB 的转录合计上百万字符，
+    任何提示词都装不下。完整摘要写进交接文档（新会话被要求读它），提示词里
+    放的是「有哪些会话、各自结论是什么、原始转录在哪」——够它自己去取。
     """
     L: list[str] = []
     a = L.append
     a(tr.t("prompt.resume", repo_name=ctx["repo_name"], repo=ctx["repo"], branch=ctx["branch"], head=ctx["head_sha"]))
+    # 仓库身份与「这台机器上的位置」是两件事。远程 URL + 完整 sha 在任何机器上
+    # 都能定位到同一个状态；路径不能。未推送的提交则根本传不过去——新会话在别处
+    # clone 只会拿到远程有的东西，不说清楚它会以为自己看到的是全部。
+    if ctx.get("remote"):
+        a(tr.t("prompt.identity", remote=ctx["remote"], sha=ctx.get("head_full") or ctx["head_sha"]))
+    else:
+        a(tr.t("prompt.no_remote"))
+    if ctx.get("unpushed"):
+        a(tr.t("prompt.unpushed", count=ctx["unpushed"]))
     a("")
 
     if ctx["plan_rel"]:
@@ -63,6 +93,25 @@ def build_prompt(ctx: dict[str, Any], tr: Translator) -> str:
             a(f"  {f}")
     a("")
 
+    sessions = ctx.get("sessions") or []
+    if sessions:
+        a(tr.t("prompt.sessions.head", count=len(sessions)))
+        for s in sessions:
+            a(tr.t(
+                "prompt.sessions.item",
+                agent=s.get("agent", ""),
+                topic=(s.get("label") or "").strip()[:120] or "-",
+                mtime=s.get("mtime_text", ""),
+            ))
+            a(tr.t("prompt.sessions.path", path=s.get("path", "")))
+            if s.get("session_id"):
+                a(tr.t("prompt.sessions.id", value=s["session_id"]))
+        a(tr.t("prompt.sessions.howto", handoff=ctx["handoff_rel"]))
+        # 交接是有损的。不说明这一点，新会话会把「摘要里没有」当成「没发生过」，
+        # 于是把上一个会话已经排除的方案重新试一遍。
+        a(tr.t("prompt.sessions.lossy"))
+        a("")
+
     if ctx["pitfalls"]:
         a(tr.t("prompt.env"))
         for p in ctx["pitfalls"][:5]:
@@ -73,6 +122,27 @@ def build_prompt(ctx: dict[str, Any], tr: Translator) -> str:
     a("")
     a(tr.t("prompt.expiry", now=ctx["now"], head=ctx["head_sha"]))
     return "\n".join(x for x in L if x is not None)
+
+
+def _fence(text: str) -> tuple[str, str]:
+    """给一段可能自带代码围栏的文本挑一条更长的围栏。
+
+    摘要是模型写的 Markdown，里面几乎一定有 ``` 代码块（贴命令、贴测试输出）。
+    用三个反引号包它会被内层的第一个 ``` 提前闭合，后面的内容就漏进文档结构里
+    ——实测摘要里的 `### 测试修复` 因此变成了交接文档自己的三级标题。
+    CommonMark 允许围栏用更多的反引号，只要比内层最长的连续反引号更长。
+    """
+    longest = max((len(m) for m in re.findall(r"`+", text)), default=0)
+    ticks = "`" * max(3, longest + 1)
+    return ticks + "text", ticks
+
+
+def _block(add, text: str) -> None:
+    """把一段外来文本作为代码块写进文档，不让它破坏文档结构。"""
+    open_fence, close_fence = _fence(text)
+    add(open_fence)
+    add(text)
+    add(close_fence)
 
 
 def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
@@ -181,7 +251,7 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
             label = tr.t(f"band.{r['band']}")
             if r["band"] == "critical":
                 label = f"**{label}**"
-            a(f"| {r['agent']} | `{r['file'][:14]}` | {r['mb']:.1f} MB | {r['fatal']} | {r['errors']} | {label} |")
+            a(f"| {r['agent']} | `{_vitals_id(r)}` | {r['mb']:.1f} MB | {r['fatal']} | {r.get('aborted', 0)} | {r['errors']} | {label} |")
         worst = ctx["vitals"][0]
         if worst["band"] in ("critical", "high"):
             a(
@@ -189,17 +259,52 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
                 + tr.t(
                     "doc.vitals.worst",
                     agent=worst["agent"],
-                    file=worst["file"][:14],
+                    file=_vitals_id(worst),
                     mb=f"{worst['mb']:.1f}",
                     advice=tr.t(f"band.advice.{worst['band']}"),
                 )
             )
         a("")
 
+    sessions = ctx.get("sessions") or []
+    if sessions:
+        a(tr.t("doc.h.sessions") + "\n")
+        a(tr.t("doc.sessions.intro") + "\n")
+        for s in sessions:
+            title = (s.get("label") or "").strip() or s.get("session_id", "")
+            a(f"### {s.get('agent', '')} — {title}\n")
+            a(tr.t("doc.sessions.id", value=s.get("session_id", "") or "-"))
+            if s.get("thread_id"):
+                a(tr.t("doc.sessions.thread", value=s["thread_id"]))
+            a(tr.t("doc.sessions.mtime", value=s.get("mtime_text", "")))
+            if s.get("cwd"):
+                a(tr.t("doc.sessions.cwd", value=s["cwd"]))
+            for rp in (s.get("repos") or [])[:3]:
+                a(tr.t("doc.sessions.repo", value=rp))
+            a(tr.t("doc.sessions.file", value=s.get("path", "")))
+            if s.get("digest_windows", 0) > 1:
+                a(tr.t("doc.sessions.windows", count=s["digest_windows"]))
+            asks = s.get("asks") or []
+            if asks:
+                a("")
+                a(tr.t("doc.sessions.asks"))
+                for one in asks:
+                    _block(a, one)
+            if s.get("last_prompt"):
+                a("")
+                a(tr.t("doc.sessions.last_prompt"))
+                _block(a, s["last_prompt"])
+            if s.get("digest"):
+                a("")
+                a(tr.t("doc.sessions.digest"))
+                # 摘要是 Markdown（带 # 标题与代码块），整段放进代码围栏，
+                # 避免它的标题层级与本文档打架、列表被当成本文档的结构。
+                _block(a, s["digest"])
+            a("")
+
     a(tr.t("doc.h.prompt") + "\n")
     a(tr.t("doc.prompt.howto"))
     a(tr.t("doc.prompt.howto2") + "\n")
-    a("```text")
-    a(ctx["prompt"])
-    a("```")
+    # 提示词里含会话话题，话题可能带反引号（`E:\path` 这类），同样要挑更长的围栏。
+    _block(a, ctx["prompt"])
     return "\n".join(L) + "\n"
