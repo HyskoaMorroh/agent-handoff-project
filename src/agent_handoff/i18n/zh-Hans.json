@@ -204,6 +204,7 @@
   "doc.vitals.worst": "最紧迫：{agent} 的 `{file}`——上下文 {context}，转录 {mb} MB。{advice}",
   "doc.h.sessions": "## 前序会话",
   "doc.sessions.intro": "下面是用户勾选要传承的会话。摘要由会话自己在上下文压缩时写下，属于原始记录而非本工具的推断。新会话应当把这些结论当作既有事实，不要重新推导。",
+  "doc.sessions.verbatim_note": "> 下面引用的话题、原话与摘要一律保留会话当时的语言，不翻译——它们是原始记录，译过就不再是那个会话说过的话了。",
   "doc.sessions.id": "- 会话 ID：`{value}`",
   "doc.sessions.thread": "- 源线程 ID：`{value}`（本会话由它派生 / 续接）",
   "doc.sessions.mtime": "- 最后活动：{value}",

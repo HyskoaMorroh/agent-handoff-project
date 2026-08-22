@@ -807,6 +807,73 @@ def test_session_section_translated_in_all_languages(repo: Path, tmp_path: Path,
     assert t2.t("doc.h.sessions") in res.body
 
 
+def test_english_output_carries_no_chinese_of_our_own(tmp_path: Path):
+    """英文产出里不能有**我们自己写的**中文。
+
+    英国人切到 EN 之后看到中英混排会认为软件坏了。工具自己生成的每一句都
+    必须跟随语言。仓库内容（任务标题、文件名）与前序会话的引用不算——那些
+    是输入，照抄是对的；引用段另有一句说明为什么会出现别的语言。
+
+    所以这里用一个**全英文**的仓库：产出里出现任何中文都只可能来自工具自己。
+    """
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    for cmd in (["git", "init", "-q"], ["git", "config", "user.email", "t@e"],
+                ["git", "config", "user.name", "t"]):
+        subprocess.run(cmd, cwd=str(repo), capture_output=True, check=False)
+    (repo / "docs").mkdir()
+    (repo / "docs" / "plan.md").write_text(
+        "**Goal:** ship the thing.\n\n"
+        "## Global Constraints\n- `docs/LOGO.jpg` is user-owned and must not be committed.\n\n"
+        "### Task 1: build the core\n\n"
+        "**Files:**\n- Create: `pkg/core.py`\n\n"
+        "**Interfaces:**\n- Produces `build_thing()`\n\n"
+        "**Steps:**\n- [ ] **Step 1** write core\n- [ ] **Step 2** wire it up\n",
+        encoding="utf-8",
+    )
+    (repo / "pkg").mkdir()
+    (repo / "pkg" / "core.py").write_text("def build_thing():\n    return 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=str(repo), capture_output=True, check=False)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=str(repo), capture_output=True, check=False)
+
+    en = Translator("en")
+    res = _run(repo, en, no_commit=True)
+    leaked = re.findall(r"[一-鿿]", res.prompt)
+    assert not leaked, f"英文提示词里有我们自己的中文：{''.join(leaked[:20])}"
+    doc_leaked = re.findall(r"[一-鿿]", res.body)
+    assert not doc_leaked, f"英文交接文档里有我们自己的中文：{''.join(doc_leaked[:20])}"
+
+
+def test_quoted_session_material_keeps_its_language(repo: Path, tmp_path: Path):
+    """引用保留原语言，且文档要说明这一点。
+
+    否则读者会把中文引用当成本地化没做完，而它是刻意的：那些是原始记录。
+    """
+    fp = tmp_path / "codexlogs" / "rollout-2026-08-21T00-00-00-cjk1.jsonl"
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"type": "session_meta", "payload": {"session_id": "cjk1", "cwd": str(tmp_path)}},
+        {"type": "compacted", "payload": {
+            "message": "# 交接摘要\n\n## 目标\n\n审计四个项目",
+            "window_number": 1,
+            "replacement_history": [
+                {"role": "user", "content": [{"text": "不要删除项目 A"}]},
+            ],
+        }},
+    ]
+    with fp.open("w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    en = Translator("en")
+    res = _run(repo, en, sessions=[str(fp)], no_commit=True)
+    # 引用逐字保留。
+    assert "不要删除项目 A" in res.body
+    assert "审计四个项目" in res.body
+    # 并且用英文说明了为什么这里会出现别的语言。
+    assert en.t("doc.sessions.verbatim_note") in res.body
+    assert "primary records" in res.body
+
+
 def test_digest_with_code_fences_does_not_break_document(repo: Path, tr, tmp_path: Path):
     """摘要是模型写的 Markdown，几乎一定自带 ``` 代码块。
 

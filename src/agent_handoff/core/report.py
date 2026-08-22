@@ -427,6 +427,9 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
     if sessions:
         a(tr.t("doc.h.sessions") + "\n")
         a(tr.t("doc.sessions.intro") + "\n")
+        # 引用的内容保留原语言。不说这一句，切到 EN 的读者会把中文引用当成
+        # 本地化没做完，而它其实是刻意的——译过就不再是那个会话说过的话。
+        a(tr.t("doc.sessions.verbatim_note") + "\n")
         for s in sessions:
             # 标题来自 label，label 可能取自摘要的第一句实质内容——而摘要里
             # 照抄了大量绝对路径。标题同样要脱敏，否则用户名从这里漏出去。

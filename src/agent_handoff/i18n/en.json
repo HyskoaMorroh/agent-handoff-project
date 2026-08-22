@@ -204,6 +204,7 @@
   "doc.vitals.worst": "Most urgent: {agent}'s `{file}` - context {context}, transcript {mb} MB. {advice}",
   "doc.h.sessions": "## Prior sessions",
   "doc.sessions.intro": "Sessions the user chose to carry over. Each digest was written by that session itself during context compaction — it is a primary record, not this tool's inference. Treat the conclusions as established facts.",
+  "doc.sessions.verbatim_note": "> Topics, verbatim asks and digests below stay in the language that session was held in. They are primary records — translating them would stop them being what that session actually said.",
   "doc.sessions.id": "- Session id: `{value}`",
   "doc.sessions.thread": "- Origin thread id: `{value}` (this session forked from / resumed it)",
   "doc.sessions.mtime": "- Last activity: {value}",
