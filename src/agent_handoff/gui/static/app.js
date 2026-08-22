@@ -402,6 +402,9 @@
   let lastDry = false;
   let polling = null;
   let lastLog = "";   // 切语言要原地重绘，日志只存在于 DOM 里会被重绘丢掉
+  // 上一次运行的请求（不含 lang）。切语言时带着它重跑，让服务端用新语言重新
+  // 渲染提示词与环境陷阱——那些是服务端字符串，重绘界面标签改不动它们。
+  let lastRunReq = null;
 
   function errPanel(msg) {
     return el("div.panel.is-danger", null,
@@ -456,9 +459,10 @@
     }, 450);
   }
 
-  async function startHandoff(dry) {
+  async function startHandoff(dry, opts) {
     if (polling) return;
-    const repo = $("#repo").value.trim();
+    const rerun = !!(opts && opts.rerun);
+    const repo = rerun && lastRunReq ? lastRunReq.repo : $("#repo").value.trim();
     const out = clear($("#handoff-out"));
     if (!repo) { out.appendChild(errPanel(t("gui.err.no_input"))); return; }
 
@@ -473,19 +477,26 @@
         el("span", { text: t("gui.handoff.running") })),
       el("div.panel-b", null, el("div.progress", null, el("span")), logPre)));
 
-    let job;
-    try {
-      job = await api("/api/handoff", {
-        body: {
-          lang: LANG, repo: repo, dry_run: dry,
+    // 换语言重跑时不再动仓库：用户要的只是同一份结果换个语言，
+    // 不该因此多出一个提交，也不该再回填一次计划文档。
+    const req = rerun
+      ? Object.assign({}, lastRunReq, { no_commit: true })
+      : {
+          repo: repo, dry_run: dry,
           skip_tests: $("#o-skip-tests").checked,
           no_commit: $("#o-no-commit").checked,
           no_vitals: $("#o-no-vitals").checked,
           force: $("#o-force").checked,
           // 体检视图里勾选的会话。它们的摘要会写进交接文件，提示词会点名它们。
           sessions: Array.from(picked)
-        }
-      });
+        };
+    lastRunReq = req;
+
+    let job;
+    try {
+      // lang 每次都取当前值，不进 lastRunReq——它是「用什么语言渲染」，
+      // 不是「对哪个仓库做什么」，把它存进请求会在下次重跑时用回旧语言。
+      job = await api("/api/handoff", { body: Object.assign({ lang: LANG }, req) });
     } catch (e) {
       clear(out).appendChild(errPanel(e.message));
       $("#run-btn").disabled = false; $("#dry-btn").disabled = false;
@@ -636,11 +647,25 @@
     }
   }
 
-  /* 切语言后原地重绘已有结果，不丢状态 */
-  function rerender() {
+  /* 切语言后原地重绘已有结果，不丢状态。
+
+     界面标签可以直接重绘，但**产出**不行：提示词、环境陷阱、交接文档正文
+     都是服务端在运行那一刻按当时语言渲染好的字符串，存在 lastResult 里。
+     只重绘会得到中英混排——切到 EN 之后「Environment」标题下面仍然是
+     「可用解释器：」，提示词整段还是中文。那不是英国人能用的东西。
+
+     所以带着同一份请求重跑，让服务端用新语言重新渲染。重跑是安全的：
+     这次刻意 no_commit + 不回填计划（rerun 标记），用户要的只是换语言看
+     同一份结果，不该因为切语言而多出一个提交。 */
+  async function rerender() {
     if (lastVitals) renderVitals();
     if (lastFind) renderFind();
-    if (lastResult) renderResult(lastResult.error ? "error" : "done", lastLog);
+    if (!lastResult) return;
+    if (lastResult.error || !lastRunReq) {
+      renderResult(lastResult.error ? "error" : "done", lastLog);
+      return;
+    }
+    await startHandoff(lastDry, { rerun: true });
   }
 
   /* ── 启动 ──────────────────────────────────────────────── */
