@@ -32,7 +32,7 @@ from .gitops import (
 )
 from .plan import Task, find_intent_sections, find_plan, parse_plan, update_plan
 from .probe import detect_env_pitfalls, detect_test_commands, run_tests
-from .report import build_handoff, build_prompt
+from .report import _fullness_cell, _vitals_id, build_handoff, build_prompt
 from .vitals import scan_session_vitals
 
 # 退出码：0 成功，2 参数/环境错误，3 检测到并发写入而停止。与原版一致。
@@ -347,10 +347,14 @@ def run_handoff(
                 tr.t(
                     "cli.vitals.worst",
                     agent=worst["agent"],
-                    file=worst["file"][:14],
+                    # 会话 ID 前 8 位才有区分度。`file[:14]` 会把所有 Codex
+                    # 转录截成同一个 `rollout-2026-0`，指不到任何具体文件。
+                    file=_vitals_id(worst),
                     mb=f"{worst['mb']:.1f}",
+                    # 判据是占用而不是体积，那就得把占用说出来。
+                    context=_fullness_cell(worst, tr),
                     fatal=worst["fatal"],
-                    band=worst["band"],
+                    band=tr.t(f"band.{worst['band']}"),
                 )
             )
 

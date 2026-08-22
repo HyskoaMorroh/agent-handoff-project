@@ -16,11 +16,12 @@
 
 AI coding sessions die suddenly — an upstream 400, a provider cutting you off, a context limit. What dies is not the code; the code is on disk. What dies is **everything that only existed in that conversation**: the goal, the approaches already ruled out, the hard limits, what to do next. A fresh session starts from nothing, so it redoes finished work, or edits the very file you said never to touch.
 
-<p align="center">
-  <img src="docs/img/bands.svg" alt="Measured fatal-error rate by transcript size: under 1 MB 0%, 1 MB and up 17%, 3 MB and up 30%, 8 MB and up 100%" width="880">
-</p>
-
-> **When to run it**: the chart above *is* the criterion. The bigger the transcript, the likelier the session already hit a fatal error — and every single one of the 108 local samples above 8 MB did.
+> **When to run it**: when a session's context is filling up. The tool reads the
+> token counts straight out of the transcript (Claude's `message.usage`, Codex's
+> `token_count` events) rather than guessing — and a session that has already
+> compacted is treated as having hit the limit, because automatic compaction only
+> fires when things no longer fit. See
+> [where the vitals thresholds come from](#where-the-vitals-thresholds-come-from).
 
 ## It does four things
 
@@ -155,6 +156,12 @@ agent-handoff /path/to/project --pick-sessions
 
 # In a hurry for a new session; skip the tests
 agent-handoff /path/to/project --skip-tests
+
+# How much disk do the transcripts use? What is safe to throw away?
+# Metadata only, so it finishes in milliseconds. It never deletes anything.
+agent-handoff --sweep
+agent-handoff --sweep --by-repo        # also group by repository (reads transcripts, much slower)
+agent-handoff --sweep --out disk.md   # export a markdown report
 ```
 
 ### Every flag
@@ -170,6 +177,8 @@ agent-handoff /path/to/project --skip-tests
 | `--test-timeout N` | Timeout in seconds per test command; default 900 |
 | `--vitals` | Only check local session transcripts and exit; never touches the repository |
 | `--no-vitals` | Skip the session check (no vitals table in the handoff file) |
+| `--sweep` | Report transcript disk usage and what is safe to reclaim, then exit; **never deletes anything** |
+| `--by-repo` | With `--sweep`: also group usage by repository (reads transcripts, much slower) |
 | `--find KEYWORD` | Locate a session by id, directory, or topic keyword |
 | `--limit N` | Maximum transcripts to scan per agent; default 12 |
 | `--pick-sessions` | Interactively tick which sessions to carry over |
@@ -268,18 +277,51 @@ plan document and is irreversible.
 
 ## Where the vitals thresholds come from
 
-The size bands come from the measured distribution of 54 Claude and 54 Codex transcripts on one machine, not from guessing:
+**The verdict is based on context fullness, not file size.** The token counts are
+written in the transcript itself, so there is nothing to guess:
 
-| Transcript size | Verdict | Measured |
+| Source | Usage | Limit |
 |---|---|---|
-| ≥ 8 MB | **hand off now** | 100% of this band hit a fatal error |
-| ≥ 3 MB | hand off soon | about a third did |
-| ≥ 1 MB | watch | about 17% did |
-| < 1 MB | healthy | nothing under 250 KB did |
+| Claude Code | `message.usage`: `input_tokens` + both cache-read fields | **not recorded**; absolute thresholds are used instead |
+| Codex | `payload.info.last_token_usage.input_tokens` | `payload.info.model_context_window` (121600 measured) |
 
-Size only answers "how much longer can it last". A session that already hit a
-fatal error or was interrupted is raised one band — a 0.9 MB session that really
-tripped a provider breaker should not read as "healthy".
+With a limit, the real percentage is used (≥90% hand off now, ≥75% soon,
+≥55% watch). Without one, the usage figure is compared against thresholds scaled
+for a 200k window — deliberately conservative for larger windows, because warning
+early costs less than missing a session that is about to fill.
+
+**Compaction means the context already filled up.** Automatic compaction only
+fires when the context can no longer fit, which makes it the hardest evidence
+available — harder than any percentage. One compaction reads as "hand off soon",
+two or more as "hand off now", because every compaction drops older history.
+
+| Source | Compaction event |
+|---|---|
+| Claude Code | `type:"system"` + `subtype:"compact_boundary"`, carrying `compactMetadata.preTokens` |
+| Codex | `type:"compacted"` records |
+
+### Why not size
+
+Size and real usage come apart badly. Four transcripts measured on one machine:
+
+| Transcript | Size | Actual usage | Compactions | Size would say | Actually |
+|---|---|---|---|---|---|
+| A | 1.0 MB | 194,183 tokens | 0 | healthy | **hand off now** |
+| B | 2.0 MB | 172,490 tokens | **10** | watch | **hand off now** |
+| C | 27.4 MB | 710,340 tokens | 0 | hand off now | hand off now |
+| D (Codex) | 6.4 MB | 121,407 / 121,600 = **99.8%** | 1 | hand off soon | **hand off now** |
+
+B makes the point: **it is small precisely because compaction kept discarding
+history.** Smaller can mean more was lost, and the size heuristic labels exactly
+this kind of session "watch".
+
+Size is kept as the **fallback** for transcripts that record no token counts
+(older formats, truncated files) — there it is the only signal available. The
+chart below is the measured basis for those fallback thresholds:
+
+<p align="center">
+  <img src="docs/img/bands.svg" alt="Transcript size vs measured fatal-error rate: 0% under 1 MB, 17% from 1 MB, 30% from 3 MB, 100% from 8 MB" width="880">
+</p>
 
 **Fatal** means a signature that genuinely killed sessions (`content-blocked`,
 provider breaker, no channel available, image dimensions exceeded) — and it must
@@ -318,6 +360,105 @@ characters, with a median of 2925 and up to 13241 characters cut — and what ge
 cut is usually the conclusions and the to-do list. The full digest goes into the
 handoff **document** (a file can afford tens of KB); the prompt carries only
 topics and paths.
+
+## Where transcripts live, and how much they use
+
+**Transcripts do not follow a project onto another drive.** Measured here: a
+project on `E:` still has its transcripts under the home directory on `C:` — the
+drive letter only shows up in the `cwd` recorded *inside* the transcript.
+
+| App | Default location | Env var to move it |
+|---|---|---|
+| Claude Code | `~/.claude/projects/<cwd slug>/*.jsonl` | `CLAUDE_CONFIG_DIR` |
+| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | `CODEX_HOME` |
+| Codex (archived) | `~/.codex/archived_sessions/rollout-*.jsonl` | same |
+
+What *does* move is the **data directory itself**: both apps let you relocate it
+wholesale, and pointing it at a second drive is common on laptops with a small
+system disk. Those two variables take priority; the home directory is still
+scanned as a fallback, because history can exist in both places and reading only
+one of them loses sessions. Under WSL it also looks in `/mnt/c/Users/<name>` for
+the host's records.
+
+`--sweep` reports usage and **deletes nothing**:
+
+```bash
+agent-handoff --sweep
+```
+
+It reads file metadata only, never contents — that is the whole reason it is
+fast. Measured on 423 transcripts totalling 1.09 GB:
+
+| Approach | Time |
+|---|---|
+| Directory walk only | 8 ms |
+| Walk + `stat` (what `--sweep` does) | **10 ms** |
+| Reading the first 64 KB of each file | 219 ms (22x slower) |
+
+**Ranked by size, not by age.** Measured here, "older than 30 days" is 0 files,
+while a single 90 MB file accounts for 8% of the total. The disk is always eaten
+by a handful of files.
+
+Three categories are reported as safe to reclaim, each with its reason:
+
+| Category | Why it is safe |
+|---|---|
+| Subagent transcripts | A subagent's own working log, not a conversation you had — you can never resume one |
+| Archived sessions | Already archived in Codex, so it cannot be resumed; the text is still there |
+| Empty sessions | Under 32 KB, too small to hold a turn with any content |
+
+The categories are mutually exclusive: a transcript that is both small and a
+subagent's is counted once, so "reclaimable" is never double-counted.
+
+Add `--by-repo` to group by repository (it has to read transcripts to get the
+cwd — 24 s versus 12 ms — hence a separate flag). What it shows is blunt: on this
+machine two kirara-ai projects on `E:` account for 828 MB, 76% of the total.
+
+> **Why it does not delete for you.** A transcript may hold the only record of
+> that work, and deletion cannot be undone. Deciding what is genuinely
+> disposable needs a human to look, so the tool produces a reviewable list and
+> leaves the choice to you — the same stance as the rest of it: give evidence,
+> take no irreversible action.
+
+## Moving to a new machine
+
+Transcripts are ordinary files: copy them across and the tool reads them. It
+recognises that they were not produced here, and adjusts.
+
+**Detection is structural, not a guess at usernames.** A hardcoded list of names
+breaks on the next machine, so the test is the shape of the home-directory
+segment in the path: `<drive>:\Users\<name>`, `/home/<name>`, `/Users/<name>`,
+`/mnt/<drive>/Users/<name>`. If the name in there is not one of this machine's
+(the basename of `~`, plus `USERNAME` / `USER` / `LOGNAME` — under WSL the two
+sides can differ and both count as local), the transcript is foreign.
+
+Three things then change:
+
+| | Local session | Foreign session |
+|---|---|---|
+| Context verdict | normal | **equally normal** — token counts do not depend on the machine |
+| Native resume command | offered | **withheld** — the app indexes only its own data directory, so the command would always fail |
+| Paths | directly usable | labelled as belonging to that machine, so you do not go looking for files that are not here |
+| Carrying content over | tickable | **equally tickable** — that is exactly what you want when moving machines |
+
+**Other people's usernames are redacted too.** In the handoff document
+`D:\Users\bob\myproj` becomes `D:\Users\_USER_\myproj` — only the name segment,
+the rest of the path stays (you still need it to work out where that project sat
+on that machine). Claude's slug directory name `D--Users-bob-myproj` is handled
+as well: the username is embedded in a `-`-separated segment there, and missing
+it leaks the name through the transcript path.
+
+**To actually continue the work on the new machine, use the repo identity in the
+prompt** — that part was portable all along:
+
+```
+Repo identity (use this on another machine, not the local path above):
+  https://github.com/you/proj.git @ eb8a6aa2217a
+```
+
+With no remote it says so plainly — this repo exists only on that machine, so
+continue there — and reports how many commits are unpushed, so you do not assume
+a fresh clone will carry them.
 
 ## Repo identity vs local path
 

@@ -173,12 +173,64 @@ def test_menu_find_empty_keyword_skips(calls, monkeypatch):
     assert calls == []
 
 
+def test_menu_sweep_defaults_to_metadata_only(calls, monkeypatch):
+    """默认不带 --by-repo：那一档要读转录内容，慢几个数量级。
+
+    「占了多少、哪些能扔」只需要 stat，实测 1 GB 十几毫秒；按仓库聚合要把
+    几百个转录读一遍，实测 24 秒。默认走快的那条。
+    """
+    _stdin(monkeypatch, "", "")
+    menu.menu_sweep(Translator("en"))
+    assert calls == [("--sweep",)]
+
+
+@pytest.mark.parametrize("yes", ["y", "Y", "yes", "是", "好"])
+def test_menu_sweep_by_repo_on_request(yes: str, calls, monkeypatch):
+    """答应了才聚合。中文界面下用户会打「是」，不能只认 y。"""
+    _stdin(monkeypatch, yes, "")
+    menu.menu_sweep(Translator("zh-Hans"))
+    assert calls == [("--sweep", "--by-repo")]
+
+
+def test_menu_sweep_handles_eof(calls, monkeypatch):
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    menu.menu_sweep(Translator("en"))
+    assert calls == []
+
+
 # ── 主循环 ────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("key", ["0", "q", "Q", ""])
 def test_main_quits_cleanly(key: str, monkeypatch):
     _stdin(monkeypatch, key)
     assert menu.main() == 0
+
+
+@pytest.mark.parametrize("lang", ["zh-Hans", "zh-Hant", "en"])
+def test_every_menu_number_has_a_label(lang: str):
+    """插入新项时最容易漏的就是文案：编号在循环里写死，缺文案就打印 ??menu.8??。"""
+    tr = Translator(lang)
+    for n in ("1", "2", "3", "4", "5", "6", "7", "8", "0"):
+        label = tr.t(f"menu.{n}")
+        assert not label.startswith("??"), (lang, n, label)
+        assert label.strip(), (lang, n)
+
+
+def test_main_dispatches_each_number_to_its_own_screen(monkeypatch):
+    """编号改过一次（插入磁盘占用后 5/6/7 全部后移），必须钉住映射。
+
+    错位的后果很具体：用户想看说明书，点开的是网页界面。
+    """
+    seen: list[str] = []
+    for name in ("menu_vitals", "menu_handoff", "menu_quick", "menu_find",
+                 "menu_sweep", "menu_help", "menu_gui"):
+        monkeypatch.setattr(menu, name, (lambda n: lambda tr: seen.append(n))(name))
+    # menu_lang 要返回 Translator，主循环拿它的返回值继续用。
+    monkeypatch.setattr(menu, "menu_lang", lambda tr: (seen.append("menu_lang"), tr)[1])
+    _stdin(monkeypatch, "1", "2", "3", "4", "5", "6", "7", "8", "0")
+    assert menu.main() == 0
+    assert seen == ["menu_vitals", "menu_handoff", "menu_quick", "menu_find",
+                    "menu_sweep", "menu_help", "menu_gui", "menu_lang"]
 
 
 def test_main_handles_eof(monkeypatch):

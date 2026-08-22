@@ -25,13 +25,19 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .. import __version__
+from ..core.disk import TOP_N, by_repo, scan_disk
 from ..core.gitops import git_available, is_repo
 from ..core.handoff import EXIT_CONCURRENT, Options, run_handoff
+from ..core.report import _redact_home
 from ..core.vitals import find_sessions, group_by_agent, scan_session_vitals
-from ..i18n import LANG_NAMES, Translator, available, normalize
-from ..platform import open_in_browser
+from ..i18n import LANG_NAMES, LANG_SHORT, Translator, available, normalize
+from ..platform import norm_path, open_in_browser
 
 STATIC = Path(__file__).resolve().parent / "static"
+# 图文说明。它不在打包的 static 里（那是网页界面自己的资源），而在仓库的
+# docs/ 下，所以单独一条路由送它，而不是把文件系统暴露给 _serve_static。
+# 从安装好的包里跑时 docs/ 可能不存在——那种情况返回 404，前端据此隐藏入口。
+GUIDE = Path(__file__).resolve().parent.parent.parent.parent / "docs" / "guide.html"
 # 一次运行只发一个令牌。页面从注入的 bootstrap 里读它，不落盘、不进 URL。
 TOKEN = secrets.token_urlsafe(24)
 # 交接任务在后台线程跑，页面轮询进度。以任务 id 为键，保留最近若干个。
@@ -115,14 +121,23 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         # 界面是本地生成的；禁掉外链与内联事件之外的一切，降低误引入远程资源的风险。
-        self.send_header(
-            "Content-Security-Policy",
-            "default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'; "
-            "img-src 'self' data:; connect-src 'self'; font-src 'self'",
-        )
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
-        for k, v in (extra or {}).items():
+        #
+        # `extra` 里同名的头**覆盖**这里的默认值，不叠加：HTTP 允许同一个响应带
+        # 多条 Content-Security-Policy，而浏览器会强制执行它们的**交集**——
+        # 两条策略并存时更宽松的那条毫无作用。实测图文说明页因此白屏：
+        # 它自带内联脚本，需要 'unsafe-inline'，但默认这条的 script-src 是
+        # 'self'，交集等于什么都不许跑。
+        extra = dict(extra or {})
+        default_headers = {
+            "Content-Security-Policy":
+                "default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'; "
+                "img-src 'self' data:; connect-src 'self'; font-src 'self'",
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer",
+        }
+        for name, value in default_headers.items():
+            self.send_header(name, extra.pop(name, value))
+        for k, v in extra.items():
             self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
@@ -159,6 +174,9 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             self._serve_index(params)
             return
+        if path == "/guide.html":
+            self._serve_guide()
+            return
         if path.startswith("/api/"):
             if not self._auth_ok(params):
                 self._err(HTTPStatus.UNAUTHORIZED, "bad token")
@@ -184,7 +202,11 @@ class Handler(BaseHTTPRequestHandler):
     # --- 页面与静态资源 ---------------------------------------------------
 
     def _serve_index(self, params: dict[str, list[str]]) -> None:
-        lang = normalize((params.get("lang") or [getattr(self.server, "lang", "")])[0])
+        # 语言可能来自 ?lang=、也可能来自启动时的 --lang，两者都是用户显式指定的；
+        # 都没有时才落到系统区域设置。前端要靠 langExplicit 判断该不该让
+        # localStorage 里记住的旧选择覆盖本次的显式要求。
+        asked = (params.get("lang") or [""])[0] or getattr(self.server, "lang", "")
+        lang = normalize(asked)
         tr = Translator(lang)
         try:
             html = (STATIC / "index.html").read_text(encoding="utf-8")
@@ -194,17 +216,47 @@ class Handler(BaseHTTPRequestHandler):
         boot = {
             "token": TOKEN,
             "lang": lang,
-            "langs": [{"code": c, "name": LANG_NAMES.get(c, c)} for c in available()],
+            "langExplicit": bool(asked),
+            "langs": [
+                {"code": c, "name": LANG_NAMES.get(c, c), "short": LANG_SHORT.get(c, c[:2].upper())}
+                for c in available()
+            ],
             "strings": tr.table(),
             "version": __version__,
             "defaultRepo": getattr(self.server, "default_repo", ""),
             "gitAvailable": git_available(),
+            # 图文说明只在仓库里跑时才有（装好的包不带 docs/）。前端据此决定
+            # 显不显示入口——给一个点开是 404 的按钮比没有按钮更糟。
+            "guideAvailable": GUIDE.is_file(),
             "sep": os.sep,
         }
         # </script> 在 JSON 字符串里出现会提前关闭标签；转义掉。
         blob = json.dumps(boot, ensure_ascii=False).replace("</", "<\\/")
         html = html.replace("__BOOTSTRAP__", blob)
         self._send(200, html.encode("utf-8"), "text/html; charset=utf-8", {"Cache-Control": "no-store"})
+
+    def _serve_guide(self) -> None:
+        """送图文说明。不带令牌校验：它是纯静态文档，没有任何本机数据。
+
+        单独一条路由而不是塞进 static/：guide.html 是仓库文档，会随三份 JSON
+        重新生成，复制一份进包只会让两边漂移。装好的包里没有 docs/ 时返回 404，
+        前端据此隐藏入口，而不是给一个点开是空白的按钮。
+        """
+        try:
+            body = GUIDE.read_bytes()
+        except OSError:
+            self._err(HTTPStatus.NOT_FOUND, "guide not available")
+            return
+        # 说明文档自己带完整的 <script>（三语文案与渲染逻辑都在里面），
+        # 所以这一份不能套用首页那条 script-src 'self' 的 CSP——那会把内联脚本
+        # 拦掉，页面渲染出一片空白。它不读任何本机数据、也不发请求，
+        # 允许内联脚本与样式就够，其余一律禁掉。
+        self._send(
+            200, body, "text/html; charset=utf-8",
+            {"Cache-Control": "no-store", "Content-Security-Policy":
+             "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+             "img-src data:; font-src 'none'; connect-src 'none'"},
+        )
 
     def _serve_static(self, path: str) -> None:
         rel = path.lstrip("/")
@@ -256,6 +308,38 @@ class Handler(BaseHTTPRequestHandler):
                     ],
                 }
             )
+            return
+
+        if path == "/api/disk":
+            # 磁盘报告只 stat 不读内容，所以同步执行也就十几毫秒——不需要像
+            # 交接那样起后台任务。按仓库聚合要读内容（慢几个数量级），
+            # 所以由前端显式请求，不默认做。
+            report = scan_disk()
+            want_repo = (params.get("by_repo") or ["0"])[0] not in ("0", "false", "no")
+            repos: list[dict[str, object]] = []
+            if want_repo:
+                vit = scan_session_vitals(limit=max(len(report.rows), 12))
+                cwd_of = {norm_path(str(v.path)): (v.repo or v.cwd or "") for v in vit}
+                repos = [
+                    {"repo": name, "count": n, "bytes": size}
+                    for name, n, size in by_repo(report, cwd_of)[:TOP_N]
+                ]
+            self._json({
+                "total_bytes": report.total_bytes,
+                "count": len(report.rows),
+                "elapsed_ms": round(report.elapsed_ms, 1),
+                "roots": [{"agent": a, "path": _redact_home(str(p))} for a, p in report.roots],
+                "reclaimable": [
+                    {
+                        "kind": kind,
+                        "count": len(rows),
+                        "bytes": sum(r.size for r in rows),
+                    }
+                    for kind, rows in report.reclaimable()
+                ],
+                "biggest": [r.to_dict() for r in report.biggest],
+                "by_repo": repos,
+            })
             return
 
         if path == "/api/find":

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_handoff.cli import build_parser, main
+from agent_handoff.cli import _parse_pick, build_parser, main
 from agent_handoff.i18n import Translator
 
 ORIGINAL_FLAGS = [
@@ -73,6 +73,46 @@ def test_lang_choices_are_the_three():
     ap = build_parser(Translator("en"))
     action = next(a for a in ap._actions if "--lang" in a.option_strings)
     assert set(action.choices) == {"zh-Hans", "zh-Hant", "en"}
+
+
+# ── 勾选输入解析 ──────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(("raw", "want"), [
+    ("1,3 4", [0, 2, 3]),
+    ("1、3", [0, 2]),
+    ("1，2", [0, 1]),
+    ("2;1", [1, 0]),          # 保持用户输入的顺序，不排序
+    ("3 3 3", [2]),           # 去重
+    ("", []),                 # 空 = 不选
+    ("   ", []),
+    ("9 1", [0]),             # 越界静默丢弃，剩下的仍然生效
+    ("x", []),
+    ("a", [0, 1, 2, 3, 4]),
+    ("ALL", [0, 1, 2, 3, 4]),
+])
+def test_parse_pick_tolerates_human_input(raw, want):
+    assert _parse_pick(raw, 5) == want
+
+
+@pytest.mark.parametrize("lang", ["zh-Hans", "zh-Hant", "en"])
+def test_parse_pick_all_words_come_from_i18n(lang):
+    """「全选」的说法必须跟随语言，不能写死简体。
+
+    原先 `("a", "all", "全部", "全选")` 写在代码里：英文用户会莫名接受
+    CJK 输入，而任何新语言都拿不到自己的说法。
+    """
+    tr = Translator(lang)
+    words = tr.t("cli.pick.all_words").split("|")
+    assert words and all(w.strip() for w in words), words
+    for w in words:
+        assert _parse_pick(w, 4, tuple(words)) == [0, 1, 2, 3], (lang, w)
+    # a / all 与语言无关，提示语里写的就是它们。
+    assert _parse_pick("a", 4, tuple(words)) == [0, 1, 2, 3]
+
+
+def test_parse_pick_ignores_other_languages_all_words():
+    """只认当前语言的说法：传进来的才算，没传的不算。"""
+    assert _parse_pick("全部", 3, ("all", "every")) == []
 
 
 # ── 退出码 ────────────────────────────────────────────────────────────
@@ -211,6 +251,63 @@ def test_gui_index_injects_bootstrap(gui_server):
     assert "__BOOTSTRAP__" not in body, "bootstrap 占位符必须被替换"
     assert token in body
     assert "Session Salvage" in body
+
+
+def test_gui_bootstrap_marks_whether_language_was_explicit(gui_server):
+    """前端要靠这个标志决定该不该让记住的语言覆盖本次指定的语言。
+
+    没有它就只能无条件套用 localStorage，于是 `?lang=` 指定的语言会被上一次
+    的选择顶掉——主题早就是「显式优先」，语言原先不是。
+    """
+    base, _ = gui_server
+    _, asked = _get(f"{base}/?lang=zh-Hant")
+    assert '"langExplicit": true' in asked
+    assert '"lang": "zh-Hant"' in asked
+
+
+def test_gui_bootstrap_ships_short_language_labels(gui_server):
+    """语言钮的短标签由服务端给出。
+
+    原先写死在前端的三元判断里，新增语言会静默显示成 EN。
+    这些标签按设计各用自己的语言写，不该翻译。
+    """
+    base, _ = gui_server
+    _, body = _get(f"{base}/")
+    for short in ("简", "繁", "EN"):
+        assert f'"{short}"' in body, short
+
+
+def test_gui_static_assets_are_served(gui_server):
+    """样式与脚本必须真的取得到——引文标注、判定色都在里面。"""
+    base, _ = gui_server
+    for path, must in (
+        ("/style.css", ".stopic.is-quote"),
+        ("/app.js", "data-verbatim"),
+    ):
+        code, body = _get(f"{base}{path}")
+        assert code == 200, path
+        assert must in body, f"{path} 缺少 {must}"
+
+
+def test_gui_serves_the_guide_without_a_token(gui_server):
+    """图文说明是纯静态文档，不含任何本机数据，所以不该要令牌。
+
+    它不在打包的 static/ 里（那是界面自己的资源），而在仓库 docs/ 下，
+    由单独一条路由送——否则要么把文件系统暴露给 _serve_static，
+    要么复制一份进包让两边漂移。
+    """
+    base, _ = gui_server
+    code, body = _get(f"{base}/guide.html")
+    assert code == 200
+    assert "__GUIDE_I18N__" not in body, "占位符必须已被 build_guide.py 替换"
+    assert "<html" in body.lower()
+
+
+def test_gui_bootstrap_says_whether_the_guide_exists(gui_server):
+    """装好的包里没有 docs/。前端据此隐藏入口——给一个点开 404 的按钮更糟。"""
+    base, _ = gui_server
+    _, body = _get(f"{base}/")
+    assert '"guideAvailable":' in body
 
 
 def test_gui_api_requires_token(gui_server):

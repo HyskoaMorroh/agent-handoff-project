@@ -93,6 +93,32 @@ def menu_vitals(tr: Translator) -> None:
     pause(tr)
 
 
+def menu_sweep(tr: Translator) -> None:
+    """磁盘占用报告。这一屏只看不改，所以不问任何问题，直接跑。
+
+    按仓库聚合要读转录内容（慢得多），所以做成一个问句而不是默认打开——
+    多数时候用户只想知道「占了多少、哪些能扔」，那只需要 stat。
+    """
+    clear_screen()
+    print(f"\n  {tr.t('menu.sweep.title')}\n  {LINE}")
+    print(tr.t("menu.sweep.lead"))
+    print(tr.t("menu.sweep.lead2"))
+    print(f"  {LINE}\n")
+    try:
+        want = input(tr.t("menu.sweep.ask_repo")).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return
+    print()
+    if want in ("y", "yes", "是", "好"):
+        run_tool(tr, "--sweep", "--by-repo")
+    else:
+        run_tool(tr, "--sweep")
+    print(f"\n  {LINE}")
+    print(tr.t("menu.sweep.after"))
+    print(f"  {LINE}")
+    pause(tr)
+
+
 def menu_find(tr: Translator) -> None:
     clear_screen()
     print(f"\n  {tr.t('menu.find.title')}\n  {LINE}")
@@ -175,13 +201,16 @@ def menu_quick(tr: Translator) -> None:
 def menu_help(tr: Translator) -> None:
     clear_screen()
     print(f"\n  {tr.t('menu.help.title')}\n  {LINE}")
-    # 说明文档按语言优先挑；找不到就退回项目根的任意一份。
+    # 指南只有一份 guide.html，三种语言的文案都在里面，靠 #lang= 挑。
+    # 原先按 guide.{lang}.html 找文件：build_guide.py 从不产出这种文件名，
+    # 于是英文和繁中用户必然落到简体那一档。
     root = Path(__file__).resolve().parent.parent.parent
-    names = [f"docs/guide.{tr.lang}.html", "docs/guide.zh-Hans.html", "docs/guide.html", "使用说明.html"]
+    names = ["docs/guide.html", "使用说明.html"]
     guide = next((root / n for n in names if (root / n).is_file()), None)
     if guide:
         print(f"  {guide}")
-        print("\n" + (tr.t("menu.help.opened") if open_in_browser(str(guide)) else tr.t("menu.help.failed")))
+        target = f"{guide.as_uri()}#lang={tr.lang}"
+        print("\n" + (tr.t("menu.help.opened") if open_in_browser(target) else tr.t("menu.help.failed")))
     else:
         print(tr.t("menu.help.missing"))
     print(f"  {LINE}")
@@ -238,7 +267,7 @@ def main() -> int:
         print(f"     {tr.t('gui.subtitle')}")
         print(f"  {'═' * 62}")
         print()
-        for n in ("1", "2", "3", "4", "5", "6", "7"):
+        for n in ("1", "2", "3", "4", "5", "6", "7", "8"):
             print(f"     {n}    {tr.t('menu.' + n)}")
         print(f"     0    {tr.t('menu.0')}")
         print()
@@ -261,10 +290,14 @@ def main() -> int:
         elif choice == "4":
             menu_find(tr)
         elif choice == "5":
-            menu_help(tr)
+            # 磁盘报告插在「找会话」之后：两者都是只读的查看类操作，
+            # 排在一起比夹在「说明」和「网页界面」之间好找。
+            menu_sweep(tr)
         elif choice == "6":
-            menu_gui(tr)
+            menu_help(tr)
         elif choice == "7":
+            menu_gui(tr)
+        elif choice == "8":
             tr = menu_lang(tr)
         elif choice in ("0", "q", "Q", ""):
             return 0

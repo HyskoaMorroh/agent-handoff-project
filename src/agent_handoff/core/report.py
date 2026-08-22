@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from ..i18n import Translator
+from ..platform import local_home_names
 
 
 # 家目录在交接**文档**里要脱敏。文档会被 git 提交、可能推送到公开仓库，
@@ -54,6 +55,59 @@ def _redact_home(text: str) -> str:
     return out
 
 
+def _redact_foreign_users(text: str) -> str:
+    """把**别人机器**上的用户名也脱掉。
+
+    `_redact_home` 只认本机家目录。转录从另一台电脑搬过来时，里面记的是
+    `D:\\Users\\bob\\...` 这类路径，本机脱敏规则一条也匹配不上——于是交接文档
+    反而把别人的用户名写了进去。迁机恰恰是这个工具该支持的场景，不能在这里漏。
+
+    两种形态都要处理，实测漏掉后者会让用户名从转录路径里漏出去：
+      · 真实路径 `D:\\Users\\bob\\proj`、`/home/bob/proj`
+      · Claude 的 slug 目录名 `D--Users-bob-myproj`——它把 cwd 里的非字母数字
+        全换成 `-`，用户名嵌在其中一段里，认不出真实分隔符
+
+    只替换用户名那一段，保留其余路径：读者仍要靠路径判断「那台机器上的项目在
+    哪」，抹掉整条路径等于把有用信息一起丢了。本机用户名交给 `_redact_home`
+    处理（它还负责 slug 形态），这里跳过，免得同一个名字被换两次。
+    """
+    if not text:
+        return text
+    local = local_home_names()
+
+    def sub(m: re.Match[str]) -> str:
+        name = m.group(2)
+        if name.lower() in local:
+            return m.group(0)
+        return m.group(1) + "_USER_"
+
+    # 分组 1 是家目录前缀（含分隔符），分组 2 是紧随其后的那一段名字。
+    out = re.sub(
+        r"((?:[A-Za-z]:[\\/]+Users[\\/]+|/home/|/Users/|/mnt/[a-z]/Users/))"
+        r"([^\\/\s\"'`,;:)\]}]+)",
+        sub,
+        text,
+        flags=re.I,
+    )
+    # slug 形态：`<盘符>--Users-<名字>-<其余>`。用户名是 `Users-` 之后、
+    # 下一个 `-` 之前的那一段。
+    return re.sub(
+        r"((?:^|[\s\"'`(=\\/])[A-Za-z]--+Users-+)([^\\/\s\"'`,;:)\]}-]+)",
+        sub,
+        out,
+        flags=re.I,
+    )
+
+
+def _redact(text: str) -> str:
+    """文档里所有外来文本都过这一道：先脱本机家目录，再脱别人的用户名。
+
+    两者顺序要紧：`_redact_home` 会把本机家目录变成 `~`，之后
+    `_redact_foreign_users` 就不会再碰它——本机名字只被处理一次。
+    """
+    return _redact_foreign_users(_redact_home(text))
+
+
 def _vitals_id(r: dict[str, Any]) -> str:
     """体征表里用什么标识一个转录。
 
@@ -67,6 +121,24 @@ def _vitals_id(r: dict[str, Any]) -> str:
         return sid[:8]
     name = r.get("file") or ""
     return name[-18:] if len(name) > 18 else name
+
+
+def _fullness_cell(r: dict[str, Any], tr: Translator) -> str:
+    """体征表里的占用格。判定的主依据，所以排在体积之前。
+
+    三种写法对应三种可信程度：压缩次数最硬（自动压缩只在快装不下时触发），
+    占用率次之（分母来自转录自己写的上限），只有占用量时不编分母。
+    读不到就写破折号——空着会让人以为是 0。
+    """
+    if r.get("compactions"):
+        return tr.t("doc.vitals.cell.compacted", count=r["compactions"])
+    tokens = r.get("tokens") or 0
+    if not tokens:
+        return "—"
+    window = r.get("context_window") or 0
+    if window:
+        return f"{round(tokens * 100 / window)}%"
+    return f"{tokens:,}"
 
 
 def build_prompt(ctx: dict[str, Any], tr: Translator) -> str:
@@ -206,6 +278,16 @@ def _block(add, text: str) -> None:
     add(close_fence)
 
 
+def _rule(head: str) -> str:
+    """按表头的实际列数生成分隔行。
+
+    分隔行的 cell 数必须与表头一致，否则 Markdown 根本不把它当表格渲染。
+    表头来自各语言的 i18n 文案，写死列数会在文案改列时静默失配，所以从表头数。
+    """
+    cells = head.strip().strip("|").split("|")
+    return "|" + "|".join(["---"] * len(cells)) + "|"
+
+
 def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
     """渲染交接 Markdown。"""
     L: list[str] = []
@@ -220,7 +302,10 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
         a("\n")
 
     a(tr.t("doc.h.scene") + "\n")
-    a(tr.t("doc.scene.repo", repo=ctx["repo"]))
+    # 仓库路径也要脱敏。它是本机路径，读者就在本机用，但这份文档会进 git、
+    # 可能推到公开仓库——受众不同。`~/proj` 在 shell 与两个 APP 里都会展开，
+    # 脱敏后仍然可直接使用。
+    a(tr.t("doc.scene.repo", repo=_redact(ctx["repo"])))
     # 分支 / HEAD / 领先数都只在有 git 时才有意义。渲染空值会让读者
     # 分不清「没有版本控制」和「读 git 失败」。
     if ctx.get("has_git", True):
@@ -252,7 +337,7 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
         if ctx.get("intent_sections"):
             a(tr.t("doc.step2.note", sections=" / ".join(ctx["intent_sections"][:4])) + "\n")
         a(tr.t("doc.table.head"))
-        a("|---|---|---|---|---|")
+        a(_rule(tr.t("doc.table.head")))
         for num in sorted(ctx["report"]):
             r = ctx["report"][num]
             done = ctx["done_by_task"].get(num, 0)
@@ -312,12 +397,15 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
         a(tr.t("doc.h.vitals") + "\n")
         a(tr.t("doc.vitals.basis") + "\n")
         a(tr.t("doc.vitals.head"))
-        a("|---|---|---|---|---|---|")
+        a(_rule(tr.t("doc.vitals.head")))
         for r in ctx["vitals"][:8]:
             label = tr.t(f"band.{r['band']}")
             if r["band"] == "critical":
                 label = f"**{label}**"
-            a(f"| {r['agent']} | `{_vitals_id(r)}` | {r['mb']:.1f} MB | {r['fatal']} | {r.get('aborted', 0)} | {r['errors']} | {label} |")
+            a(
+                f"| {r['agent']} | `{_vitals_id(r)}` | {_fullness_cell(r, tr)} | "
+                f"{r['mb']:.1f} MB | {r['fatal']} | {r.get('aborted', 0)} | {r['errors']} | {label} |"
+            )
         worst = ctx["vitals"][0]
         if worst["band"] in ("critical", "high"):
             a(
@@ -327,6 +415,9 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
                     agent=worst["agent"],
                     file=_vitals_id(worst),
                     mb=f"{worst['mb']:.1f}",
+                    # 最紧迫的那个要说清凭什么紧迫。只报体积会让读者以为判据是
+                    # 文件大小——而那正是这次改掉的东西。
+                    context=_fullness_cell(worst, tr),
                     advice=tr.t(f"band.advice.{worst['band']}"),
                 )
             )
@@ -339,17 +430,21 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
         for s in sessions:
             # 标题来自 label，label 可能取自摘要的第一句实质内容——而摘要里
             # 照抄了大量绝对路径。标题同样要脱敏，否则用户名从这里漏出去。
-            title = _redact_home((s.get("label") or "").strip()) or s.get("session_id", "")
+            title = _redact((s.get("label") or "").strip()) or s.get("session_id", "")
             a(f"### {s.get('agent', '')} — {title}\n")
             a(tr.t("doc.sessions.id", value=s.get("session_id", "") or "-"))
             if s.get("thread_id"):
                 a(tr.t("doc.sessions.thread", value=s["thread_id"]))
             a(tr.t("doc.sessions.mtime", value=s.get("mtime_text", "")))
+            # 转录来自别的电脑时，下面这些路径在本机全都无效。明说一句，
+            # 免得读者（和接续会话的智能体）照着去找文件，找不到才发现不对。
+            if s.get("is_foreign"):
+                a(tr.t("doc.sessions.foreign"))
             if s.get("cwd"):
-                a(tr.t("doc.sessions.cwd", value=_redact_home(s["cwd"])))
+                a(tr.t("doc.sessions.cwd", value=_redact(s["cwd"])))
             for rp in (s.get("repos") or [])[:3]:
-                a(tr.t("doc.sessions.repo", value=_redact_home(rp)))
-            a(tr.t("doc.sessions.file", value=_redact_home(s.get("path", ""))))
+                a(tr.t("doc.sessions.repo", value=_redact(rp)))
+            a(tr.t("doc.sessions.file", value=_redact(s.get("path", ""))))
             if s.get("digest_windows", 0) > 1:
                 a(tr.t("doc.sessions.windows", count=s["digest_windows"]))
             asks = s.get("asks") or []
@@ -357,18 +452,18 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
                 a("")
                 a(tr.t("doc.sessions.asks"))
                 for one in asks:
-                    _block(a, _redact_home(one))
+                    _block(a, _redact(one))
             if s.get("last_prompt"):
                 a("")
                 a(tr.t("doc.sessions.last_prompt"))
-                _block(a, _redact_home(s["last_prompt"]))
+                _block(a, _redact(s["last_prompt"]))
             if s.get("digest"):
                 a("")
                 a(tr.t("doc.sessions.digest"))
                 # 摘要是 Markdown（带 # 标题与代码块），整段放进代码围栏，
                 # 避免它的标题层级与本文档打架、列表被当成本文档的结构。
                 # 摘要来自转录，里面照抄了大量绝对路径，同样要脱敏。
-                _block(a, _redact_home(s["digest"]))
+                _block(a, _redact(s["digest"]))
             a("")
 
     a(tr.t("doc.h.prompt") + "\n")
@@ -383,5 +478,8 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
     #
     # 家目录写成 `~` 之后提示词仍然可用：`~/.codex/…` 在 shell 与两个 APP 里
     # 都会被展开，接续会话照它一样能找到转录。
-    _block(a, _redact_home(ctx["prompt"]))
+    #
+    # 走 `_redact` 而不是只脱本机家目录：勾选的会话可能来自另一台电脑，
+    # 那些路径里带的是别人的用户名，本机规则一条都匹配不上。
+    _block(a, _redact(ctx["prompt"]))
     return "\n".join(L) + "\n"

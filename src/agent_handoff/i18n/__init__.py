@@ -28,6 +28,14 @@ LANG_NAMES = {
     "en": "English",
 }
 
+# 侧栏窄，切换钮只放得下一两个字，同样用各自的语言写。
+# 放在这里而不是前端：新增语言时前端写死的三元判断会把它静默显示成 EN。
+LANG_SHORT = {
+    "zh-Hans": "简",
+    "zh-Hant": "繁",
+    "en": "EN",
+}
+
 _cache: dict[str, dict[str, str]] = {}
 
 

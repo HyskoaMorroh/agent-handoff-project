@@ -64,6 +64,8 @@
   /* ── i18n 应用 ─────────────────────────────────────────── */
   function applyStrings() {
     $$("[data-i18n]").forEach((n) => { n.textContent = t(n.getAttribute("data-i18n")); });
+    // 无障碍标签也要跟着切；屏幕阅读器用户否则永远听到英文。
+    $$("[data-i18n-aria]").forEach((n) => { n.setAttribute("aria-label", t(n.getAttribute("data-i18n-aria"))); });
     const repo = $("#repo");
     if (repo) repo.placeholder = t("gui.handoff.repo.ph");
     const fq = $("#find-q");
@@ -79,13 +81,18 @@
   function buildLangSeg() {
     const seg = clear($("#lang-seg"));
     (BOOT.langs || []).forEach((l) => {
-      // 侧栏窄，用短标签；完整名字放 title。
-      const short = l.code === "zh-Hans" ? "简" : l.code === "zh-Hant" ? "繁" : "EN";
-      const b = el("button", { text: short, title: l.name, "aria-pressed": String(l.code === LANG) });
+      // 侧栏窄，用短标签；完整名字放 title。两者都由服务端按各自语言给出。
+      const b = el("button", { text: l.short || l.code, title: l.name, "aria-pressed": String(l.code === LANG) });
       b.addEventListener("click", () => setLang(l.code));
       seg.appendChild(b);
     });
   }
+
+  // 切语言后要跟着更新的零散东西（目前是说明文档链接上的 #lang=）。
+  // 用订阅而不是在 setLang 里直接写死：那样每加一处就要改 setLang，
+  // 而漏改的表现是「切了语言但某处还是旧语言」——正是这轮修的那类缺陷。
+  const langHooks = [];
+  function onLangChange(fn) { langHooks.push(fn); }
 
   async function setLang(code) {
     if (code === LANG) return;
@@ -95,6 +102,7 @@
     } catch (e) { return; }
     try { localStorage.setItem("ah.lang", LANG); } catch (_) {}
     buildLangSeg(); applyStrings(); rerender();
+    langHooks.forEach((fn) => { try { fn(); } catch (_) {} });
   }
 
   /* ── 主题 ──────────────────────────────────────────────── */
@@ -109,7 +117,9 @@
   /* ── 视图切换 ──────────────────────────────────────────── */
   function showView(name) {
     $$(".view").forEach((v) => v.classList.toggle("is-active", v.getAttribute("data-view") === name));
-    $$(".nav-item").forEach((b) => {
+    // 只管真正的 tab。说明文档那一项是外部链接（没有 data-view），
+    // 给它设 aria-selected 会让读屏软件把一个链接念成未选中的标签页。
+    $$(".nav-item[data-view]").forEach((b) => {
       const on = b.getAttribute("data-view") === name;
       b.classList.toggle("is-active", on);
       b.setAttribute("aria-selected", String(on));
@@ -136,15 +146,54 @@
      Claude 的子代理转录里会与父会话重复。 */
   const picked = new Set();
 
+  /* 上下文占用。三种情况的可信程度不同，措辞也不同：
+       · 压缩过    —— 最硬的证据：自动压缩只在快装不下时触发，说明真顶到过上限
+       · 有上限    —— 报真占用率（Codex 在转录里写了 model_context_window）
+       · 没有上限  —— 只报占用量，不编一个分母出来（Claude 转录不写上限）
+     读不到 token 时返回 null，卡片就只显示体积——那是兜底判据。 */
+  function fullnessChip(r) {
+    if (r.compactions) {
+      const txt = t("gui.label.compacted") + " " + r.compactions + "x";
+      return el("span.hot", { title: t("gui.tip.compacted", { count: r.compactions, tokens: fmtNum(r.tokens) }) },
+        el("b", { text: txt }));
+    }
+    if (!r.tokens) return null;
+    if (r.context_window) {
+      const pct = Math.round(r.tokens * 100 / r.context_window);
+      const cls = pct >= 90 ? "hot" : "";
+      return el("span", { class: cls, title: t("gui.tip.fullness", { pct: pct, tokens: fmtNum(r.tokens), window: fmtNum(r.context_window) }) },
+        el("b", { text: pct + "%" }), " " + t("gui.label.context"));
+    }
+    return el("span", { title: t("gui.tip.tokens", { tokens: fmtNum(r.tokens) }) },
+      el("b", { text: fmtNum(r.tokens) }), " " + t("gui.label.tokens"));
+  }
+
+  function fmtNum(n) {
+    // 千分位。Intl 在所有目标浏览器里都有，但它会按 locale 变分隔符，
+    // 而这里要的是稳定可比的数字，所以自己插。
+    return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  }
+
   function sessionCard(r, opts) {
     const card = el("div.srow", { "data-band": r.band });
     const top = el("div.srow-top");
     // 组内不重复 APP 名（组标题已经说了）；找会话视图里没有分组，要显示。
     if (opts && opts.showAgent) top.appendChild(el("span.agent", { text: r.agent }));
     top.appendChild(el("span.badge", { text: t("band." + r.band), "data-band": r.band }));
+    // 外来转录：路径在本机无效、也续接不了。徽章紧跟判定，因为它同样影响
+    // 「这个会话我该怎么处理」——只是原因不同。
+    if (r.is_foreign) {
+      top.appendChild(el("span.badge.badge-foreign", {
+        text: t("gui.label.foreign"), title: t("gui.tip.foreign"),
+      }));
+    }
     top.appendChild(el("span.when", { text: ago(r.mtime), title: r.mtime_text }));
 
     const m = el("div.metrics");
+    // 占用排在体积前面：它才是判定的主依据。体积与占用严重脱钩——
+    // 实测 1.0 MB 的会话可以已用 194183 token，2.0 MB 的会话可以压缩过 10 次。
+    const fullness = fullnessChip(r);
+    if (fullness) m.appendChild(fullness);
     m.appendChild(el("span", null, el("b", { text: r.mb.toFixed(1) }), " MB"));
     m.appendChild(el("span", { class: r.fatal ? "hot" : "" }, t("gui.label.fatal") + " ", el("b", { text: String(r.fatal) })));
     // 中断轮次只在真的发生过时才占位置：半成品看起来和完成品一样，
@@ -158,14 +207,26 @@
 
     // 话题放在最显眼处：会话 ID 前八位对人没有意义，而开场提问在斜杠命令
     // 回显时对所有会话都一样。话题来自 AI 标题或会话自己写的压缩摘要。
-    if (r.label) card.appendChild(el("p.stopic", { text: r.label, title: r.label }));
+    //
+    // 话题与提问都是**会话原文**，语言由当时的对话决定，不跟随界面语言——
+    // 翻译它们等于篡改证据。所以标成引文而不是普通界面文字，让「英文界面里
+    // 出现中文」一眼看得出是引用，不是没翻译。
+    if (r.label) {
+      card.appendChild(el("p.stopic.is-quote", {
+        text: r.label, title: r.label, lang: "", "data-verbatim": t("gui.label.verbatim"),
+      }));
+    }
 
     const kv = el("dl.kv");
     const row = (k, v, cls) => {
       if (!v) return;
       kv.appendChild(el("dt", { text: k }));
       // 长文本夹两行 + title 悬停看全文：一屏能扫过更多会话卡片。
-      kv.appendChild(el("dd", { text: v, class: cls || "", title: cls && cls.indexOf("clamp") >= 0 ? v : null }));
+      const dd = el("dd", { text: v, class: cls || "", title: cls && cls.indexOf("clamp") >= 0 ? v : null });
+      // 引文标 lang=""：告诉浏览器与读屏软件「这段的语言未知、不是页面语言」，
+      // 避免读屏用英文腔去念中文原话。
+      if (cls && cls.indexOf("prose") >= 0) dd.setAttribute("lang", "");
+      kv.appendChild(dd);
     };
     row(t("gui.label.session"), r.session_id || "—");
     row(t("gui.label.thread"), r.thread_id);
@@ -205,8 +266,44 @@
         onclick: () => { $("#repo").value = r.repo; showView("handoff"); $("#repo").focus(); }
       }));
     }
+    // 原生续接严格优于交接：交接是有损的（工具授权、后台进程、被否决方案的
+    // 推理都传不过去）。只要还能原生续接就先给那条路——把命令复制走比在这里
+    // 生成一份有损摘要更好。归档过的 Codex 会话续接不了，resume_cmd 为空。
+    if (r.resume_cmd) {
+      const btn = el("button.link.link-quiet", {
+        text: t("gui.label.resume"),
+        title: t("gui.tip.resume", { cmd: r.resume_cmd }),
+      });
+      btn.onclick = () => copyText(r.resume_cmd, btn, t("gui.label.resume"));      act.appendChild(btn);
+    }
     if (act.childNodes.length) card.appendChild(act);
     return card;
+  }
+
+  /* 复制一段文本并就地反馈。剪贴板 API 在非安全上下文里不可用（http 的
+     127.0.0.1 算安全上下文，但用户可能通过别的主机名访问），所以留一条
+     选区回退，而不是静默失败。 */
+  function copyText(text, btn, restore) {
+    const done = () => {
+      btn.textContent = t("gui.label.copied");
+      setTimeout(() => { btn.textContent = restore; }, 1600);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, () => fallback());
+      return;
+    }
+    fallback();
+    function fallback() {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) { /* 复制不了就算了 */ }
+      document.body.removeChild(ta);
+    }
   }
 
   /* ── 体检 ──────────────────────────────────────────────── */
@@ -304,6 +401,7 @@
   let lastResult = null;
   let lastDry = false;
   let polling = null;
+  let lastLog = "";   // 切语言要原地重绘，日志只存在于 DOM 里会被重绘丢掉
 
   function errPanel(msg) {
     return el("div.panel.is-danger", null,
@@ -328,20 +426,32 @@
   // 轮询一个任务直到它结束。抽出来是因为「新建任务」与「附着到已有任务」
   // 只在前半段不同，后半段的日志追加与结果渲染必须逐字一致。
   function pollJob(jobId, logPre, since) {
+    let misses = 0;   // 连续轮询失败次数：服务端没了要说出来，不能一直转圈
     polling = setInterval(async () => {
       let st;
       try {
         st = await api("/api/job?id=" + encodeURIComponent(jobId) + "&since=" + since);
-      } catch (e) { return; }
+      } catch (e) {
+        // 单次失败可能只是一次抖动，连续失败则是服务端已经不在了。
+        // 静默 return 会让进度条永远转下去，用户看不出发生了什么。
+        if (++misses < 5) return;
+        clearInterval(polling); polling = null;
+        $("#run-btn").disabled = false; $("#dry-btn").disabled = false;
+        $("#handoff-out").prepend(errPanel(t("gui.err.poll_lost")));
+        return;
+      }
+      misses = 0;
       if (st.log && st.log.length) {
         since = st.next;
         logPre.textContent += st.log.join("\n") + "\n";
+        lastLog = logPre.textContent;
         logPre.scrollTop = logPre.scrollHeight;
       }
       if (st.state === "running") return;
       clearInterval(polling); polling = null;
       $("#run-btn").disabled = false; $("#dry-btn").disabled = false;
       lastResult = st.result;
+      lastLog = logPre.textContent;
       renderResult(st.state, logPre.textContent);
     }, 450);
   }
@@ -429,7 +539,9 @@
     if (nums.length) {
       const table = el("table.grid");
       const head = el("tr");
-      ["Task", t("gui.label.steps"), t("doc.table.head").split("|")[3].trim(), t("doc.table.head").split("|")[4].trim(), ""].forEach((h, i) => {
+      // 列名走各自的 key。原先从 doc.table.head 里 split("|") 抠字段，
+      // 文案改列序或列里出现竖线就会错位，而且第一列还漏成了硬编码英文。
+      [t("gui.col.task"), t("gui.label.steps"), t("gui.col.file_evidence"), t("gui.col.symbol_evidence"), ""].forEach((h, i) => {
         head.appendChild(el("th", { text: i === 4 ? "" : h }));
       });
       table.appendChild(el("thead", null, head));
@@ -528,7 +640,7 @@
   function rerender() {
     if (lastVitals) renderVitals();
     if (lastFind) renderFind();
-    if (lastResult) renderResult(lastResult.error ? "error" : "done", "");
+    if (lastResult) renderResult(lastResult.error ? "error" : "done", lastLog);
   }
 
   /* ── 启动 ──────────────────────────────────────────────── */
@@ -547,13 +659,32 @@
       b.addEventListener("click", () => setTheme(b.getAttribute("data-theme-set")));
     });
 
+    // 语言与主题同理：显式指定的优先于记住的选择。服务端已按 ?lang= 渲染好
+    // 首屏（BOOT.lang），此时再套用 localStorage 会把显式要求的语言顶掉；
+    // #lang= 同样要能压过记住的值，否则截图脚本拍不出指定语言那一版。
+    const forcedLang = hashQ && hashQ.get("lang");
+    const known = (BOOT.langs || []).some((l) => l.code === forcedLang);
     let savedLang = null;
     try { savedLang = localStorage.getItem("ah.lang"); } catch (_) {}
     buildLangSeg();
     applyStrings();
-    if (savedLang && savedLang !== LANG) setLang(savedLang);
+    const explicit = (known && forcedLang) || (BOOT.langExplicit ? LANG : null);
+    const want = explicit || savedLang;
+    if (want && want !== LANG) setLang(want);
+    else if (explicit) { try { localStorage.setItem("ah.lang", explicit); } catch (_) {} }
 
-    $$(".nav-item").forEach((b) => b.addEventListener("click", () => showView(b.getAttribute("data-view"))));
+    // 只给真正的 tab 绑切换。说明文档是 <a href> 外部链接，绑上去会让
+    // showView(null) 把三个视图全部隐藏。
+    $$(".nav-item[data-view]").forEach((b) => b.addEventListener("click", () => showView(b.getAttribute("data-view"))));
+    // 说明文档只在仓库里跑时存在；装好的包不带 docs/，那时不显示这个入口。
+    const guide = $("#nav-guide");
+    if (guide && BOOT.guideAvailable) {
+      guide.hidden = false;
+      // 语言跟着界面走：说明文档自己认 #lang=，否则英文用户点开会看到简体。
+      const sync = () => { guide.setAttribute("href", "/guide.html#lang=" + LANG); };
+      sync();
+      onLangChange(sync);
+    }
     $("#scan-btn").addEventListener("click", scanVitals);
     $("#scan-deep").addEventListener("change", () => { if (scanned) scanVitals(); });
     $("#run-btn").addEventListener("click", () => startHandoff(false));

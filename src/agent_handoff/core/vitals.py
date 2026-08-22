@@ -27,7 +27,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..platform import agent_session_roots, iter_path_candidates, nearest_repo, norm_path
+from ..platform import (
+    agent_session_roots,
+    is_foreign_path,
+    iter_path_candidates,
+    nearest_repo,
+    norm_path,
+)
 
 # --- 判据 -----------------------------------------------------------------
 # 真正杀死过会话的签名，不是只让人烦躁的那些。
@@ -50,10 +56,31 @@ FATAL_SIG = re.compile(
 ABORT_SIG = re.compile(r'"turn_aborted"|"reason"\s*:\s*"interrupted"')
 # 实测于 54 个 Claude + 54 个 Codex 转录：250 KB 以下无一带致命签名，
 # 8 MB 以上全部带。下面是观察到的断点。
+#
+# 注意：体积只是**兜底**判据，读不到 token 数时才用。实测体积与上下文占用
+# 严重脱钩——1.0 MB 的会话可以已用 194183 token，1.9 MB 的会话可以压缩过
+# 10 次。能读到 token 就按 FULLNESS_BANDS / TOKEN_BANDS 判。
 VITALS_BANDS = [
     (8_000_000, "critical"),
     (3_000_000, "high"),
     (1_000_000, "watch"),
+    (0, "ok"),
+]
+# 占用率判据。分母来自转录自己写的上下文上限（Codex 的 `model_context_window`）。
+# 90% 往上已经没有余量做完一件事就得压缩；75% 是「这次会话别再开新战场」；
+# 55% 是「可以开始想交接了」。
+FULLNESS_BANDS = [
+    (0.90, "critical"),
+    (0.75, "high"),
+    (0.55, "watch"),
+    (0.0, "ok"),
+]
+# 没有分母时的绝对阈值。按当下常见的 200k 窗口折算 FULLNESS_BANDS 得到，
+# 对更大的窗口偏保守——宁可早提醒，也不要漏掉真要满的会话。
+TOKEN_BANDS = [
+    (180_000, "critical"),
+    (150_000, "high"),
+    (110_000, "watch"),
     (0, "ok"),
 ]
 BAND_ORDER = {"critical": 0, "high": 1, "watch": 2, "ok": 3}
@@ -105,6 +132,21 @@ _DIGEST_PREAMBLE = re.compile(
 # 单遍扫描时用的廉价预筛：先做子串判断，命中了才付正则的代价。
 _ERR_MARKS = ('"is_error":true', '"isError":true')
 
+# 上下文占用与压缩事件的预筛标记。两家的写法完全不同：
+#   · Claude Code：assistant 消息里的 `message.usage`，字段
+#     `input_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens`。
+#     实测本会话末条 input_tokens=194183，而文件只有 1.0 MB——这就是体积判据
+#     失准的直接证据。转录里**没有**上下文上限，算不出真占用率。
+#   · Codex：`type:"event_msg"` + `payload.type:"token_count"`，
+#     `payload.info.last_token_usage.input_tokens` 是占用，
+#     `payload.info.model_context_window` 是上限（实测 121600）——两者都有，
+#     占用率可以直接算，不必猜阈值。
+# 压缩事件同样两家不同：Claude 是 `type:"system"` + `subtype:"compact_boundary"`，
+# 带 `compactMetadata.preTokens`（压缩发生时的占用，属于历史事实）；
+# Codex 是 `type:"compacted"` 记录。
+_USAGE_MARKS = ('"usage"', '"token_count"')
+_COMPACT_MARKS = ('"compact_boundary"', '"compacted"')
+
 
 def _looks_pathy(raw: str) -> bool:
     """这一行有没有可能含绝对路径？只用来省掉正则，判错方向必须偏保守。
@@ -132,25 +174,78 @@ IDENT_LINE_BUDGET = 400
 PATH_LINE_BUDGET = 260
 
 
-def band_for(size: int, fatal: int = 0, aborted: int = 0) -> str:
-    """风险区间。体积是主判据，但致命错误与中断能把它往上抬。
+def band_for(
+    size: int,
+    fatal: int = 0,
+    aborted: int = 0,
+    tokens: int = 0,
+    window: int = 0,
+    compactions: int = 0,
+) -> str:
+    """风险区间。有 token 数就按占用率判，没有才退回体积。
 
-    原版只看体积，于是一个 0.9 MB 但真的撞过熔断的会话被标「健康」，
-    而 1.7 MB 一切正常的被标「留意」。用户照徽章决策就会漏掉真出事的那个。
-    体积衡量的是「还能撑多久」，fatal/aborted 衡量的是「已经出事了没有」——
-    两件事都要进判定。
+    为什么不能只看体积：体积和上下文占用严重脱钩。实测本机四个转录——
+      · 1.0 MB 的会话已用 194183 token（接近满），体积判据说「健康」
+      · 1.9 MB 的会话**自动压缩过 10 次**，体积判据说「留意」
+      · 27.4 MB 的会话峰值 710340 token，体积判据碰巧说对了
+    体积小恰恰可能因为压缩一直在丢历史——越小丢得越多。而 token 数就在转录里
+    明写着（Claude 的 `message.usage`、Codex 的 `token_count` 事件），
+    没有理由去猜。
+
+    `window` 是模型的上下文上限。Codex 在 `model_context_window` 里直接给出；
+    Claude 转录里没有，此时用占用量本身对照保守阈值——那比体积仍然准得多。
+
+    `compactions` 是已发生的压缩次数，属于**历史事实**而不是推测：压缩过就说明
+    上下文真的满过——自动压缩只在快装不下时才触发。所以压缩过的会话直接按
+    「满过」对待，而不是拿压缩前的占用去对照阈值：那个数字看着可能只有 167k，
+    但它恰恰是触发压缩的那一刻，等于 100%。
+
+    fatal/aborted 的抬升逻辑不变：它们回答「已经出事了没有」，与「还能撑多久」
+    是两件事。
     """
-    band = "ok"
-    for threshold, name in VITALS_BANDS:
-        if size >= threshold:
-            band = name
-            break
+    band = _band_by_fullness(tokens, window) if tokens else _band_by_size(size)
+
+    if compactions:
+        # 压缩发生过，就说明上下文真的顶到过上限——自动压缩不会在有余量时触发。
+        # 压缩一次已经丢过一轮细节，两次以上就是反复丢：这类会话看着体积不大
+        # （压缩本身在缩小它），实际最该交接。实测一个 1.9 MB 的会话压了 10 次。
+        floor = "critical" if compactions >= 2 else "high"
+        if BAND_ORDER[floor] < BAND_ORDER[band]:
+            band = floor
+
     if fatal or aborted:
         # 已经出过致命错误或被打断：至少「留意」，出过多次直接升到「尽快交接」。
         floor = "high" if (fatal + aborted) >= 3 else "watch"
         if BAND_ORDER[floor] < BAND_ORDER[band]:
             band = floor
     return band
+
+
+def _band_by_size(size: int) -> str:
+    """体积兜底判据。只在转录里读不到 token 数时使用。"""
+    for threshold, name in VITALS_BANDS:
+        if size >= threshold:
+            return name
+    return "ok"
+
+
+def _band_by_fullness(tokens: int, window: int) -> str:
+    """按上下文占用率判定。
+
+    有上限就算真占用率；没有上限（Claude 转录不写）就拿占用量对照
+    `TOKEN_BANDS` 的绝对阈值——那些阈值按当下常见的 200k 窗口取，
+    对更大的窗口偏保守，宁可早提醒也不要漏掉真要满的会话。
+    """
+    if window > 0:
+        ratio = tokens / window
+        for threshold, name in FULLNESS_BANDS:
+            if ratio >= threshold:
+                return name
+        return "ok"
+    for threshold, name in TOKEN_BANDS:
+        if tokens >= threshold:
+            return name
+    return "ok"
 
 
 @dataclass
@@ -170,6 +265,16 @@ class SessionRow:
     # 3 次，而 `turn_aborted` 有 6 次——后者才是「这轮没做完」的真实信号，
     # 而半成品被当成已完成是交接里最贵的误判。
     aborted: int = 0
+    # 上下文占用。0 表示这份转录里读不到 token 数（此时判定退回体积）。
+    # 取峰值而非末值：末条 assistant 可能来自子代理或没有 cache 记账，
+    # 实测两个转录的末值都是 0。
+    tokens: int = 0
+    # 模型的上下文上限。Codex 在 `model_context_window` 里直接给出；
+    # Claude 转录里没有，为 0 时按绝对阈值判而不是算占用率。
+    context_window: int = 0
+    # 已发生的压缩次数。压缩过就说明上下文真的满过——这是历史事实，
+    # 比任何体积推断都硬。实测一个 1.9 MB 的会话压缩过 10 次。
+    compactions: int = 0
     session_id: str = ""
     thread_id: str = ""
     cwd: str = ""
@@ -191,6 +296,53 @@ class SessionRow:
         return self.repos[0] if self.repos else ""
 
     @property
+    def is_foreign(self) -> bool:
+        """这份转录是从另一台电脑搬过来的吗？
+
+        判据是它记录的工作目录像不像本机的——不猜用户名，靠
+        `platform.is_foreign_path` 的结构判断。cwd 为空时无从判断，
+        当作本机（宁可少提示，也不要对着正常会话喊「这是外来的」）。
+
+        为什么要区分：搬过来的转录里，路径、原生续接、仓库推断全都失效，
+        但**内容仍然有价值**——那正是迁机时最想带走的东西。所以不是丢弃它，
+        而是把哪些字段还能信、哪些不能，明确告诉用户。
+        """
+        return is_foreign_path(self.cwd)
+
+    @property
+    def resume_cmd(self) -> str:
+        """在原生 app 里继续这个会话的命令。
+
+        为什么值得给出：交接是有损的（工具授权、后台进程、被否决方案的推理都
+        传不过去），所以只要原生续接还可行，它就严格优于交接。把命令摆在卡片上
+        等于先给出更好的那个选项，而不是把用户往交接上推。
+
+        Codex 的会话 ID 是 8-4-4-4-12 的 UUID，而 rollout 文件名前缀自带很多
+        连字符（`rollout-2026-08-22T06-09-26-<uuid>`）。取尾部五段比写正则稳：
+        无论前缀怎么变，UUID 总是最后五段。
+        （这个取法来自 codex-history-vscode 的 getResumeCommand。）
+
+        归档过的 Codex 会话不能续接——Codex 只在活动目录里找——所以那种情况
+        返回空字符串，不给一条注定失败的命令。
+
+        从别的电脑搬过来的转录同理：Claude / Codex 都按自己的数据目录建索引，
+        拷进来的 jsonl 不在索引里，命令一定报「找不到会话」。同一条原则，
+        同一种处理——不给注定失败的命令。
+        """
+        sid = (self.session_id or "").strip()
+        if not sid:
+            return ""
+        if self.is_foreign:
+            return ""
+        if self.agent == "Codex":
+            if "archived_sessions" in {p.lower() for p in self.path.parts}:
+                return ""
+            parts = sid.split("-")
+            uuid = "-".join(parts[-5:]) if len(parts) >= 5 else sid
+            return f"codex resume {uuid}"
+        return f"claude --resume {sid}"
+
+    @property
     def label(self) -> str:
         """人认会话时最有辨识度的一行。
 
@@ -206,7 +358,7 @@ class SessionRow:
         if self.digest:
             for line in self.digest.splitlines():
                 text = line.strip().lstrip("#*->+= ").strip()
-                if text.startswith("压缩窗口 "):
+                if _DIGEST_SEP_RE.match(line.strip()):
                     continue
                 if len(text) >= 8:
                     return text[:_DIGEST_PREVIEW]
@@ -226,6 +378,11 @@ class SessionRow:
             "aborted": self.aborted,
             "errors": self.errors,
             "band": self.band,
+            # 判定的主依据。GUI 要能显示「凭什么这么判」，否则用户只看到体积
+            # 和一个徽章，会以为工具在按文件大小瞎猜。
+            "tokens": self.tokens,
+            "context_window": self.context_window,
+            "compactions": self.compactions,
             "session_id": self.session_id,
             "thread_id": self.thread_id,
             "cwd": self.cwd,
@@ -239,6 +396,10 @@ class SessionRow:
             "digest_windows": self.digest_windows,
             "asks": self.asks,
             "label": self.label,
+            "resume_cmd": self.resume_cmd,
+            # 这份转录是不是从别的电脑搬来的。为真时路径、原生续接、仓库推断
+            # 都不可信，但内容仍然有价值——界面据此标注而不是隐藏。
+            "is_foreign": self.is_foreign,
             "is_subagent": self.is_subagent,
             "repos": self.repos,
             "repo": self.repo,
@@ -406,6 +567,15 @@ class _Extractor:
 # 命中 3-30 行，不到千分之一。
 _DIGEST_MARKS = ('"compacted"', '"ai-title"', '"last-prompt"')
 
+# 压缩窗口之间的分隔标记。刻意不带任何自然语言：这一层是纯解析，拿不到
+# Translator，而 digest 会原样进交接文档——写死中文会让英文文档里冒出中文标题。
+# 形如 `===== [2/3] =====`，`_DIGEST_SEP_RE` 是配对的识别式。
+_DIGEST_SEP_RE = re.compile(r"^=+\s*\[\d+\s*/\s*\d+\]\s*=+$")
+
+
+def _digest_sep(i: int, total: int) -> str:
+    return f"===== [{i}/{total}] ====="
+
 
 class _DigestCollector:
     """收集「这个会话到底做了什么」。
@@ -439,7 +609,7 @@ class _DigestCollector:
             return next(iter(self.windows.values()))
         parts = []
         for i, key in enumerate(sorted(self.windows), 1):
-            parts.append(f"===== 压缩窗口 {i} / {len(self.windows)} =====\n\n{self.windows[key]}")
+            parts.append(f"{_digest_sep(i, len(self.windows))}\n\n{self.windows[key]}")
         return "\n\n".join(parts)
 
     def feed(self, raw: str) -> None:
@@ -484,6 +654,104 @@ class _DigestCollector:
                     self.asks.append(one[:_ASK_CHARS])
 
 
+class _FullnessCollector:
+    """收集上下文占用与压缩次数——判断「还能撑多久」的真实依据。
+
+    为什么必须有这个：体积与占用严重脱钩。实测 1.0 MB 的会话已用 194183 token
+    （体积判据说「健康」），1.9 MB 的会话自动压缩过 10 次（体积判据说「留意」）。
+    token 数就明写在转录里，没有理由去猜。
+
+    取**峰值**而不是末值：末条 assistant 消息可能来自子代理或没有 cache 记账，
+    实测两个转录的末值都是 0，照末值判会把满会话判成空的。
+
+    与 _Extractor 不同，这个采集器**不能早停**：占用随会话增长，最大值可能出现
+    在文件任何位置；压缩事件也散落全篇。所以照 _DigestCollector 的做法，
+    先用子串预筛，命中了才付 json.loads 的代价——实测每份转录命中几十到几百行。
+    """
+
+    __slots__ = ("peak_tokens", "window", "compactions", "pre_tokens")
+
+    def __init__(self) -> None:
+        self.peak_tokens = 0
+        self.window = 0          # 上下文上限；只有 Codex 在转录里写
+        self.compactions = 0     # 已发生的压缩次数——压缩过就是满过
+        self.pre_tokens = 0      # 压缩发生时的占用峰值（Claude 的 preTokens）
+
+    def feed(self, raw: str) -> None:
+        has_usage = any(m in raw for m in _USAGE_MARKS)
+        has_compact = any(m in raw for m in _COMPACT_MARKS)
+        if not has_usage and not has_compact:
+            return
+        try:
+            d = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return
+        if not isinstance(d, dict):
+            return
+
+        if has_compact:
+            self._feed_compaction(d)
+        if has_usage:
+            self._feed_usage(d)
+
+    def _feed_compaction(self, d: dict) -> None:
+        # Claude：type:"system" + subtype:"compact_boundary"，
+        # compactMetadata.preTokens 是压缩时的占用，属于历史事实。
+        if d.get("subtype") == "compact_boundary":
+            self.compactions += 1
+            meta = d.get("compactMetadata")
+            if isinstance(meta, dict):
+                pre = meta.get("preTokens")
+                if isinstance(pre, int) and pre > self.pre_tokens:
+                    self.pre_tokens = pre
+        # Codex：独立的 compacted 记录。摘要内容由 _DigestCollector 负责，
+        # 这里只数次数。
+        elif d.get("type") == "compacted":
+            self.compactions += 1
+
+    def _feed_usage(self, d: dict) -> None:
+        msg = d.get("message")
+        if isinstance(msg, dict):
+            # Claude Code：占用 = 新输入 + 两种缓存读入。输出不算占用，
+            # 它下一轮才会作为输入回到上下文里。
+            u = msg.get("usage")
+            if isinstance(u, dict):
+                total = 0
+                for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+                    v = u.get(key)
+                    if isinstance(v, int):
+                        total += v
+                if total > self.peak_tokens:
+                    self.peak_tokens = total
+                return
+
+        # Codex：event_msg / token_count，占用与上限都在 payload.info 里。
+        payload = d.get("payload")
+        if not isinstance(payload, dict) or payload.get("type") != "token_count":
+            return
+        info = payload.get("info")
+        if not isinstance(info, dict):
+            return
+        win = info.get("model_context_window")
+        if isinstance(win, int) and win > 0:
+            self.window = win
+        # last_token_usage 是「这一轮送进去多少」，也就是当前占用；
+        # total_token_usage 是全会话累计，会远超窗口，不能当占用用。
+        last = info.get("last_token_usage")
+        if isinstance(last, dict):
+            v = last.get("input_tokens")
+            if isinstance(v, int) and v > self.peak_tokens:
+                self.peak_tokens = v
+
+    @property
+    def tokens(self) -> int:
+        """判定用的占用量：实测峰值与压缩前占用取大。
+
+        压缩会把占用打回低位，只看压缩后的峰值会低估这个会话真正到过多满。
+        """
+        return max(self.peak_tokens, self.pre_tokens)
+
+
 def _is_subagent(fp: Path) -> bool:
     """这份转录是子代理的，还是人真正对话的主会话？
 
@@ -517,6 +785,7 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
     repos: list[str] = []
     ex = _Extractor(agent) if deep else None
     dg = _DigestCollector() if deep else None
+    fl = _FullnessCollector() if deep else None
     try:
         with fp.open(encoding="utf-8", errors="replace") as fh:
             for raw in fh:
@@ -528,6 +797,8 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
                     errors += 1
                 if dg is not None:
                     dg.feed(raw)
+                if fl is not None:
+                    fl.feed(raw)
                 if ex is not None:
                     ex.feed(raw)
                     if ex.done:
@@ -553,8 +824,16 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
         size=st.st_size,
         fatal=fatal,
         errors=errors,
-        band=band_for(st.st_size, fatal, aborted),
+        band=band_for(
+            st.st_size, fatal, aborted,
+            tokens=fl.tokens if fl else 0,
+            window=fl.window if fl else 0,
+            compactions=fl.compactions if fl else 0,
+        ),
         aborted=aborted,
+        tokens=fl.tokens if fl else 0,
+        context_window=fl.window if fl else 0,
+        compactions=fl.compactions if fl else 0,
         session_id=ident.get("session_id", ""),
         thread_id=ident.get("thread_id", ""),
         cwd=ident.get("cwd", ""),
@@ -670,7 +949,10 @@ def scan_session_vitals(
                 if row is not None:
                     rows.append(row)
 
-    rows.sort(key=lambda r: (BAND_ORDER[r.band], -r.mb))
+    # 同一区间内按占用排，不按体积：体积大不等于更该交接。一个压缩过 10 次的
+    # 2 MB 会话比一个从没压缩的 20 MB 会话更紧急，而体积排序会把它压到后面。
+    # 压缩次数优先，其次占用量，最后才拿体积兜底（读不到 token 时唯一可用的）。
+    rows.sort(key=lambda r: (BAND_ORDER[r.band], -r.compactions, -r.tokens, -r.mb))
     return rows
 
 

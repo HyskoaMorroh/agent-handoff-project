@@ -151,8 +151,37 @@ def agent_session_roots() -> list[tuple[str, Path]]:
 
     Windows 的 Claude Code / Codex 装在 %USERPROFILE% 下；在 WSL 里跑时，
     真正的记录往往在 Windows 侧的用户目录，所以两处都找。
+
+    转录**不会**因为项目在别的盘而跟着搬家：实测本机 E 盘上的项目，转录仍在
+    C 盘家目录下，盘符只出现在转录内容记录的 `cwd` 里。但两个应用都允许用
+    环境变量把整个数据目录挪走（`CLAUDE_CONFIG_DIR` / `CODEX_HOME`），
+    笔记本上把它们指向 D 盘是常见做法。不读这两个变量的后果不是少扫几个文件，
+    而是「一个转录都找不到」——所以它们优先于家目录。
     """
     roots: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+
+    def add(name: str, p: Path) -> None:
+        key = norm_path(str(p))
+        if key in seen:
+            return
+        seen.add(key)
+        if p.is_dir():
+            roots.append((name, p))
+
+    # 显式指定的数据目录优先。`CLAUDE_CONFIG_DIR` 指向 `.claude` 本身，
+    # `CODEX_HOME` 指向 `.codex` 本身——都是目录，不是它们的父目录。
+    for env, name, subs in (
+        ("CLAUDE_CONFIG_DIR", "Claude Code", ("projects",)),
+        ("CODEX_HOME", "Codex", ("sessions", "archived_sessions")),
+    ):
+        raw = (os.environ.get(env) or "").strip().strip('"')
+        if not raw:
+            continue
+        base = Path(os.path.expanduser(os.path.expandvars(raw)))
+        for sub in subs:
+            add(name, base / sub)
+
     homes = [Path(os.path.expanduser("~"))]
 
     # WSL：/mnt/c/Users/<name> 才是宿主机的家目录，转录在那边。
@@ -167,7 +196,6 @@ def agent_session_roots() -> list[tuple[str, Path]]:
             except OSError:
                 pass
 
-    seen: set[str] = set()
     for home in homes:
         # `.codex/archived_sessions` 也要扫：在 Codex 里归档一个会话只是把它移出
         # 活动列表，转录本身还在，而「归档了但还想把结论带走」恰恰是交接的典型
@@ -177,13 +205,7 @@ def agent_session_roots() -> list[tuple[str, Path]]:
             ("Codex", ".codex/sessions"),
             ("Codex", ".codex/archived_sessions"),
         ):
-            p = home / rel
-            key = str(p).lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            if p.is_dir():
-                roots.append((name, p))
+            add(name, home / rel)
     return roots
 
 
@@ -202,3 +224,73 @@ def nearest_repo(start: str) -> str:
         if (cand / ".git").exists():
             return str(cand)
     return ""
+
+
+# 「另一台电脑上的家目录」的结构特征。用结构而不是猜用户名：
+# 硬编码用户名列表在换机器时必然失效，而 `<盘符>:\Users\<任意名>` 与
+# `/home/<任意名>` 这两种形状在所有 Windows / Linux 机器上都成立。
+# 用于两件事：判断转录是不是本机产生的，以及脱敏时连别人的用户名一起处理。
+FOREIGN_HOME_RX = re.compile(
+    r"(?:^|(?<=[\s\"'`(=]))"
+    r"(?:[A-Za-z]:[\\/]+Users[\\/]+|/home/|/Users/|/mnt/[a-z]/Users/)"
+    r"([^\\/\s\"'`,;:)]+)",
+    re.I,
+)
+
+
+def local_home_names() -> set[str]:
+    """本机家目录的名字。用来把「别人的用户名」与「我自己的」区分开。
+
+    返回集合而不是单个字符串：WSL 里 `~` 是 Linux 侧的名字，而转录可能来自
+    Windows 侧，两个名字都算本机。
+    """
+    names: set[str] = set()
+    try:
+        home = Path(os.path.expanduser("~"))
+    except (OSError, RuntimeError):
+        return names
+    if home.name:
+        names.add(home.name.lower())
+    # WSL 下 /mnt/c/Users/<name> 也是「本机」，名字可能与 Linux 侧不同。
+    for env in ("USERNAME", "USER", "LOGNAME"):
+        val = (os.environ.get(env) or "").strip()
+        if val:
+            names.add(val.lower())
+    return names
+
+
+def is_foreign_path(raw: str) -> bool:
+    """这个路径确定属于另一台电脑吗？
+
+    只认一条强判据：**路径形如某个家目录，而其中的用户名不是本机的**。
+    不猜用户名清单（那换台机器就失效），靠 `FOREIGN_HOME_RX` 的结构匹配。
+
+    刻意**不**把「绝对路径但不存在」算进来，那是弱信号：本机删掉一个项目目录
+    是常事，而这个判断会关掉原生续接——那个会话在应用索引里还在，续接本来
+    是可用的，误判等于把能用的功能关掉。路径失效那种情况用 `path_is_stale`
+    单独表达，两者后果不同：一个说「续接不了」，一个只说「这条路径打不开」。
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return False
+    m = FOREIGN_HOME_RX.search(raw)
+    if not m:
+        return False
+    return m.group(1).lower() not in local_home_names()
+
+
+def path_is_stale(raw: str) -> bool:
+    """这条路径在本机打不开吗？
+
+    与 `is_foreign_path` 分开：本机删掉的目录也会命中这里，但那**不**意味着
+    会话不能续接。用来提示「照这条路径找不到东西」，不用来决定续接可行性。
+
+    只对绝对路径成立——相对片段无从判断，报了只会给正常会话加噪声。
+    """
+    raw = (raw or "").strip()
+    if not raw or not re.match(r"^(?:[A-Za-z]:[\\/]|[\\/])", raw):
+        return False
+    try:
+        return not Path(raw).exists()
+    except (OSError, ValueError):
+        return False

@@ -49,7 +49,9 @@ jobs:
           python -m pip install -e ".[dev]"
 
       - name: Lint
-        run: python -m ruff check src tests
+        # scripts/ 也要过：build_guide.py 与 check_i18n.py 是 CI 自己依赖的工具，
+        # 它们坏掉会让 i18n 与指南的门失效，却又不在 src/ 里。
+        run: python -m ruff check src tests scripts
 
       - name: Test
         run: python -m pytest -q
@@ -59,6 +61,7 @@ jobs:
 
   i18n:
     # 三种语言的键必须完全一致，占位符也必须一致——缺一个键界面上就出现 ??key??
+    # 同时校验源码里没有绕过文案表的中文字面量：那种串切了语言也不会动。
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -157,9 +160,104 @@ jobs:
 
           echo "e2e ok"
 
+  e2e-windows:
+    # Windows 是这个工具的主要使用环境（转录默认就在 %USERPROFILE% 下），
+    # 但端到端此前只在 Linux 上跑。这里覆盖 POSIX 侧覆盖不到的几件事：
+    # Windows venv 布局（Scripts\ 而不是 bin/）、控制台编码、启动器脚本、
+    # 以及交接文件在 Windows 上仍然必须是纯 LF。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Configure git identity
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "CI"
+          git config --global init.defaultBranch main
+      - name: Install
+        run: python -m pip install -e .
+      - name: Run against a synthetic repository
+        shell: pwsh
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: utf-8
+        run: |
+          $ErrorActionPreference = "Stop"
+          $work = Join-Path $env:RUNNER_TEMP "e2e-win"
+          New-Item -ItemType Directory -Force -Path "$work/docs","$work/pkg" | Out-Null
+          Set-Location $work
+          git init -q
+          @'
+          # Plan
+
+          **Goal:** ship the widget pipeline.
+
+          ## Global Constraints
+          - `docs/LOGO.jpg` is a user-owned file and must not be committed.
+
+          ### Task 1: core
+
+          **Files:**
+          - Create: `pkg/core.py`
+
+          **Interfaces:**
+          - Produces: `build_widget`
+
+          - [ ] **Step 1** write core
+          - [ ] **Step 2** test core
+
+          ### Task 2: render
+
+          **Files:**
+          - Create: `pkg/render.py`
+
+          **Interfaces:**
+          - Produces: `render_widget`
+
+          - [ ] **Step 1** write render
+          '@ | Set-Content docs/plan.md -Encoding utf8NoBOM
+          "def build_widget():`n    return 1" | Set-Content pkg/core.py -Encoding utf8NoBOM
+          [System.IO.File]::WriteAllBytes("$work/docs/LOGO.jpg", [byte[]](0xFF,0xD8,0x6C,0x6F,0x67,0x6F))
+          # Windows venv 布局：解释器在 Scripts\ 下，不是 bin/。
+          New-Item -ItemType Directory -Force -Path "$work/.venv/Scripts" | Out-Null
+          Copy-Item (Get-Command python).Source "$work/.venv/Scripts/python.exe"
+          git add docs/plan.md pkg/core.py
+          git commit -q -m init
+
+          agent-handoff . --no-vitals --lang en *>&1 | Tee-Object -FilePath "$work/run.log"
+
+          $plan = Get-Content docs/plan.md -Raw
+          $ticked = ([regex]::Matches($plan, '(?m)^- \[x\]')).Count
+          if ($ticked -ne 2) { throw "expected 2 ticked steps, got $ticked" }
+
+          if (git ls-files | Select-String -Quiet LOGO) { throw "protected file leaked" }
+
+          $handoff = (Get-ChildItem docs/*-handoff.md)[0].FullName
+          $bytes = [System.IO.File]::ReadAllBytes($handoff)
+          if ($bytes -contains 13) { throw "handoff has CRLF on Windows" }
+
+          # Windows venv 布局要被认出来，否则交接文件里的测试命令跑不起来。
+          if (-not (Select-String -Path $handoff -Pattern '\.venv[/\\]Scripts[/\\]python' -Quiet)) {
+            throw "Windows venv layout not detected"
+          }
+
+          $log = Get-Content "$work/run.log" -Raw
+          foreach ($needle in 'Global Constraints', 'Do not redo Task 1', 'missing symbol render_widget') {
+            if ($log -notlike "*$needle*") { throw "prompt missing: $needle" }
+          }
+
+          Write-Output "e2e-windows ok"
+
+      - name: Launcher script works
+        shell: cmd
+        run: |
+          call scripts\agent-handoff.cmd --version || exit /b 1
+
   build:
     runs-on: ubuntu-latest
-    needs: [test, i18n, e2e]
+    needs: [test, i18n, e2e, e2e-windows]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

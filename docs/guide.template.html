@@ -332,6 +332,13 @@ figcaption{margin-top:12px;text-align:center;font:500 11.5px/1 var(--mono);
   let lang = pickLang();
 
   function pickLang() {
+    // 显式指定优先于记住的选择：菜单和 CLI 用 ?lang= / #lang= 把用户已经选过的
+    // 语言带进来。少了这一层，英文用户从菜单点开指南只会看到简体中文
+    // ——只有一份 guide.html，语言全靠这里挑。
+    const q = new URLSearchParams(location.search);
+    const h = location.hash ? new URLSearchParams(location.hash.slice(1)) : null;
+    const asked = q.get("lang") || (h && h.get("lang"));
+    if (asked && T[asked]) return asked;
     let saved = null;
     try { saved = localStorage.getItem("ah.guide.lang"); } catch (e) {}
     if (saved && T[saved]) return saved;
@@ -579,6 +586,9 @@ figcaption{margin-top:12px;text-align:center;font:500 11.5px/1 var(--mono);
     sec("s2", "s2.h", [
       rich("p", "s2.p1"),
       h("ul", null, rich("li", "s2.li1"), rich("li", "s2.li2"), rich("li", "s2.li3")),
+      // 判据本身先讲清楚：占用是主判据，体积只是兜底。顺序不能颠倒，
+      // 否则读者会以为下面那张体积表就是判定依据。
+      h("div.note", null, rich("p", "s2.p0"), rich("p", "s2.p0b")),
       h("h3", { text: g("s2.h2") }), rich("p", "s2.p2"),
       h("div.tw", null, bandTable),
       h("div.note", null, rich("p", "s2.p3")),

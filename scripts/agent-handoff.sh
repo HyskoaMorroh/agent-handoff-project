@@ -24,5 +24,18 @@ export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 # python3 优先：某些发行版的 `python` 仍是 2.x。
 PY=python3
 command -v python3 >/dev/null 2>&1 || PY=python
+# 一个都没有时给出可操作的提示，而不是让 shell 报 "command not found"。
+if ! command -v "$PY" >/dev/null 2>&1; then
+  echo "agent-handoff: 需要 Python 3.9 或更新版本，但没找到解释器。" >&2
+  echo "  Debian/Ubuntu: sudo apt install python3" >&2
+  echo "  macOS:         brew install python" >&2
+  exit 127
+fi
+# 版本太旧时也早退：否则用户看到的是包内部抛出的 SyntaxError 堆栈。
+if ! "$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null; then
+  echo "agent-handoff: 需要 Python 3.9 或更新版本，当前解释器过旧：" >&2
+  "$PY" -c 'import sys; print("  " + sys.version)' >&2 || true
+  exit 1
+fi
 
 exec "$PY" -m agent_handoff.cli "$@"

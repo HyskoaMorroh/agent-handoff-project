@@ -22,6 +22,34 @@ BASE = "zh-Hans"
 ORDER = ("zh-Hans", "zh-Hant", "en")
 
 
+def _check_markup_channel(tables: dict[str, dict[str, str]]) -> list[str]:
+    """模板里用 textContent 渲染的键不能带 HTML 标签。
+
+    页面有两条渲染通道：`rich()` 走 innerHTML（文案里可以有 `<code>`、
+    `<strong>`），而模板里的 `data-g="..."` 属性走 textContent。后者写了标签
+    不会报错，会把 `<em>兜底</em>` 原样显示在正文里——实测就这么漏出去过一次，
+    而且只有肉眼看渲染结果才发现。
+
+    所以在这里比对：凡是以 `data-g` 出现在模板里的键，一律不许带尖括号标签。
+    """
+    if not TEMPLATE.is_file():
+        return []
+    html = TEMPLATE.read_text(encoding="utf-8")
+    text_keys = set(re.findall(r'data-g="([^"]+)"', html))
+    tag = re.compile(r"</?[a-zA-Z][^>]*>")
+    out: list[str] = []
+    for lang, table in tables.items():
+        for key in sorted(text_keys):
+            val = table.get(key)
+            if isinstance(val, str) and tag.search(val):
+                found = tag.search(val)
+                out.append(
+                    f"guide.{lang}: {key} 是 textContent 渲染的键，不能带 HTML 标签"
+                    f"（找到 {found.group(0)!r}）——改用纯文本，或把它挪到 rich() 渲染的位置"
+                )
+    return out
+
+
 def main() -> int:
     tables: dict[str, dict[str, str]] = {}
     for lang in ORDER:
@@ -44,6 +72,7 @@ def main() -> int:
             problems.append(f"guide.{lang}: missing {', '.join(missing[:10])}")
         if extra:
             problems.append(f"guide.{lang}: unknown {', '.join(extra[:10])}")
+    problems.extend(_check_markup_channel(tables))
     if problems:
         for p in problems:
             print(p, file=sys.stderr)

@@ -7,10 +7,13 @@ import argparse
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from . import __version__
+from .core.disk import TOP_N, by_repo, scan_disk
 from .core.handoff import EXIT_BAD_INPUT, EXIT_OK, Options, run_handoff
+from .core.report import _redact_home, _rule
 from .core.vitals import (
     SessionRow,
     find_sessions,
@@ -19,7 +22,7 @@ from .core.vitals import (
     sessions_for_repo,
 )
 from .i18n import Translator, available, detect
-from .platform import force_utf8_io
+from .platform import force_utf8_io, is_foreign_path, norm_path
 
 
 def print_session_card(r: SessionRow, tr: Translator, index: int | None = None) -> None:
@@ -43,6 +46,15 @@ def print_session_card(r: SessionRow, tr: Translator, index: int | None = None) 
     )
     if r.label:
         print(tr.t("cli.card.topic", value=r.label[:110]))
+    # 占用是判定的主依据，必须和判定挨着显示——否则用户看到「立刻交接」
+    # 却只看得到体积，会以为工具在按文件大小瞎猜。
+    line = _fullness_line(r, tr)
+    if line:
+        print(line)
+    # 从别的电脑搬来的转录：下面所有路径在本机都无效，而且续接不了。
+    # 早说一句，免得用户照着路径去找文件、或者去试一条必然失败的命令。
+    if r.is_foreign:
+        print(tr.t("cli.card.foreign"))
     # 被打断的轮次要显式说出来：半成品看起来和完成品一样，而按「已完成」
     # 继续做下去，代价是把没做完的工作当成做完的。
     if r.aborted:
@@ -68,10 +80,33 @@ def print_session_card(r: SessionRow, tr: Translator, index: int | None = None) 
         for other in r.repos[1:3]:
             print(f"                {other}")
     print(tr.t("cli.card.file", value=str(r.path)))
+    # 原生续接严格优于交接：交接是有损的（工具授权、后台进程、被否决方案的
+    # 推理都传不过去）。只要还能原生续接，就先把那条路摆出来。
+    if r.resume_cmd:
+        print(tr.t("cli.card.resume", value=r.resume_cmd))
     if r.digest:
         # 摘要存在意味着这个会话有一份模型自己写的交接记录，可以被提取进
         # 新会话的提示词。不显示全文（几千字），只说明它存在、有多长。
         print(tr.t("cli.card.digest", chars=len(r.digest)))
+
+
+def _fullness_line(r: SessionRow, tr: Translator) -> str:
+    """占用行。三种情况的措辞不同，因为可信程度不同。
+
+    有上限就报真占用率；没有上限只报占用量（不能编一个分母出来）；
+    压缩过就直接说压缩过——那是最硬的证据，比任何百分比都清楚。
+    """
+    if r.compactions:
+        return tr.t("cli.card.compacted", count=r.compactions, tokens=f"{r.tokens:,}")
+    if not r.tokens:
+        return ""
+    if r.context_window:
+        pct = round(r.tokens * 100 / r.context_window)
+        return tr.t(
+            "cli.card.fullness",
+            pct=pct, tokens=f"{r.tokens:,}", window=f"{r.context_window:,}",
+        )
+    return tr.t("cli.card.tokens", tokens=f"{r.tokens:,}")
 
 
 def cmd_find(args: argparse.Namespace, tr: Translator) -> int:
@@ -109,6 +144,151 @@ def cmd_find(args: argparse.Namespace, tr: Translator) -> int:
     return 0
 
 
+def cmd_sweep(args: argparse.Namespace, tr: Translator) -> int:
+    """磁盘占用报告。**只统计，不删任何文件。**
+
+    删除转录不可逆，而转录里可能存着唯一一份工作记录，所以这里给出可审阅的
+    清单和一条可复制的命令，由人决定要不要执行。这与工具其余部分的立场一致：
+    只给证据，不做不可逆动作。
+
+    默认只 stat 不读内容——实测 423 个转录 1.09 GB 用 12 毫秒。按仓库聚合需要
+    知道每个转录在哪个目录工作过，那要读内容，所以只在 `--by-repo` 时才付
+    这份代价（而且复用 vitals 的缓存）。
+    """
+    report = scan_disk()
+    if not report.rows:
+        print(tr.t("cli.sweep.none"))
+        return 0
+
+    if args.json:
+        payload = {
+            "total_bytes": report.total_bytes,
+            "elapsed_ms": round(report.elapsed_ms, 1),
+            "rows": [r.to_dict() for r in report.rows],
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    lines: list[str] = []
+    add = lines.append
+    add(tr.t("cli.sweep.head",
+             count=len(report.rows),
+             size=_human_bytes(report.total_bytes),
+             ms=f"{report.elapsed_ms:.0f}") + "\n")
+
+    # 可回收分类。三类的「安全」程度不同，所以分开列并各配一句理由。
+    groups = report.reclaimable()
+    if groups:
+        add(tr.t("cli.sweep.reclaim") + "\n")
+        for kind, rows in groups:
+            add(tr.t(f"cli.sweep.kind.{kind}",
+                     count=len(rows),
+                     size=_human_bytes(sum(r.size for r in rows))))
+            add("      " + tr.t(f"cli.sweep.why.{kind}"))
+        add("")
+
+    # 占用排行榜。真正吃磁盘的永远是少数几个文件——本机实测「超过 30 天」是
+    # 0 个，而单个 90 MB 的文件占了总量的 8%，所以排行榜比按时间过期有用。
+    add(tr.t("cli.sweep.biggest", n=len(report.biggest)) + "\n")
+    for r in report.biggest:
+        tags = []
+        if r.is_subagent:
+            tags.append(tr.t("cli.sweep.tag.subagent"))
+        if r.is_archived:
+            tags.append(tr.t("cli.sweep.tag.archived"))
+        tag = ("  " + " ".join(tags)) if tags else ""
+        add(f"  {_human_bytes(r.size):>10}  {r.agent:12} {r.path.name[:44]}{tag}")
+    add("")
+
+    if args.by_repo:
+        # 这一步要读内容才能拿到 cwd，所以单独一个开关。复用 vitals 的扫描，
+        # 它已经把 cwd 与 repos 解析好了，不必再实现一遍。
+        #
+        # limit 要足够大：vitals 默认只看每个应用最新 12 个，剩下几百个转录
+        # 全会落进「未知」，聚合表就没意义了。按实际文件数放大，让每个转录
+        # 都有机会被解析到。
+        want = max(args.limit, len(report.rows))
+        vit = scan_session_vitals(limit=want, jobs=args.jobs)
+        cwd_of = {}
+        for v in vit:
+            key = norm_path(str(v.path))
+            cwd_of[key] = v.repo or v.cwd or ""
+        rows_by_repo = by_repo(report, cwd_of)
+        add(tr.t("cli.sweep.by_repo") + "\n")
+        for name, n, size in rows_by_repo[:TOP_N]:
+            shown = tr.t("cli.sweep.unknown_repo") if name == "<unknown>" else name
+            add(f"  {_human_bytes(size):>10}  {n:4}  {shown[:58]}")
+        add("")
+
+    add(tr.t("cli.sweep.no_delete"))
+    text = "\n".join(lines)
+    print(text)
+
+    if args.out:
+        out = Path(args.out).expanduser()
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(_sweep_markdown(report, tr, args), encoding="utf-8", newline="\n")
+        except OSError as exc:
+            print(tr.t("cli.sweep.write_failed", path=str(out), err=str(exc)))
+            return EXIT_BAD_INPUT
+        print("\n" + tr.t("cli.sweep.written", path=str(out)))
+    return 0
+
+
+def _human_bytes(n: int) -> str:
+    """给人看的体积。KB 以下不显示小数——「0.03 MB」比「31 KB」难读。"""
+    if n >= 1024 ** 3:
+        return f"{n / 1024 ** 3:.2f} GB"
+    if n >= 1024 ** 2:
+        return f"{n / 1024 ** 2:.1f} MB"
+    if n >= 1024:
+        return f"{n / 1024:.0f} KB"
+    return f"{n} B"
+
+
+def _sweep_markdown(report, tr: Translator, args: argparse.Namespace) -> str:
+    """导出成 md。存档或对比两次扫描时比终端输出好用。"""
+    L: list[str] = []
+    a = L.append
+    a(tr.t("cli.sweep.md.title", date=f"{datetime.now():%Y-%m-%d %H:%M}") + "\n")
+    a(tr.t("cli.sweep.head",
+           count=len(report.rows),
+           size=_human_bytes(report.total_bytes),
+           ms=f"{report.elapsed_ms:.0f}") + "\n")
+    a("## " + tr.t("cli.sweep.md.roots") + "\n")
+    for agent, root in report.roots:
+        a(f"- {agent}: `{_redact_home(str(root))}`")
+    a("")
+
+    groups = report.reclaimable()
+    if groups:
+        a("## " + tr.t("cli.sweep.reclaim") + "\n")
+        head = tr.t("cli.sweep.md.thead")
+        a(head)
+        a(_rule(head))
+        for kind, rows in groups:
+            a(f"| {tr.t(f'cli.sweep.md.name.{kind}')} | {len(rows)} | "
+              f"{_human_bytes(sum(r.size for r in rows))} | {tr.t(f'cli.sweep.why.{kind}')} |")
+        a("")
+
+    a("## " + tr.t("cli.sweep.biggest", n=len(report.biggest)) + "\n")
+    head2 = tr.t("cli.sweep.md.thead2")
+    a(head2)
+    a(_rule(head2))
+    for r in report.biggest:
+        flags = []
+        if r.is_subagent:
+            flags.append(tr.t("cli.sweep.tag.subagent"))
+        if r.is_archived:
+            flags.append(tr.t("cli.sweep.tag.archived"))
+        a(f"| {_human_bytes(r.size)} | {r.agent} | `{r.path.name}` | "
+          f"{r.mtime:%Y-%m-%d} | {' '.join(flags) or '—'} |")
+    a("")
+    a("> " + tr.t("cli.sweep.no_delete"))
+    return "\n".join(L) + "\n"
+
+
 def cmd_vitals(args: argparse.Namespace, tr: Translator) -> int:
     rows = scan_session_vitals(limit=args.limit, jobs=args.jobs)
     if not rows:
@@ -137,14 +317,16 @@ def cmd_vitals(args: argparse.Namespace, tr: Translator) -> int:
             print()
 
     if risky:
-        by_repo: dict[str, list[SessionRow]] = {}
+        # 变量名不叫 by_repo：那是 core.disk 里同名函数，遮蔽掉会给以后在这个
+        # 函数里想用它的人埋一个「明明导入了却是个 dict」的坑。
+        risky_by_repo: dict[str, list[SessionRow]] = {}
         for r in risky:
             key = r.repo or r.cwd or tr.t("cli.vitals.no_cwd")
-            by_repo.setdefault(key, []).append(r)
+            risky_by_repo.setdefault(key, []).append(r)
         print("─" * 66)
         print(tr.t("cli.vitals.by_repo") + "\n")
         # 仓库分组按"最近被碰过"排，与上面的会话顺序一致。
-        for cwd, group in sorted(by_repo.items(), key=lambda kv: -max(g.mtime.timestamp() for g in kv[1])):
+        for cwd, group in sorted(risky_by_repo.items(), key=lambda kv: -max(g.mtime.timestamp() for g in kv[1])):
             ids = ", ".join(g.session_id[:8] for g in group)
             print(f"  {cwd}")
             print(tr.t("cli.vitals.group", count=len(group), ids=ids))
@@ -152,6 +334,11 @@ def cmd_vitals(args: argparse.Namespace, tr: Translator) -> int:
                 print(tr.t("cli.vitals.no_path"))
             elif (Path(cwd) / ".git").exists():
                 print(f'      agent-handoff "{cwd}"')
+            elif is_foreign_path(cwd):
+                # 「先 git init」对另一台机器上的目录是错的建议——那个目录
+                # 本机根本没有。要做的是在本机找到对应仓库，或直接把这个会话
+                # 的内容交接进来。
+                print(tr.t("cli.vitals.foreign_repo"))
             else:
                 print(tr.t("cli.vitals.not_repo"))
             print()
@@ -161,17 +348,20 @@ def cmd_vitals(args: argparse.Namespace, tr: Translator) -> int:
     return 0
 
 
-def _parse_pick(raw: str, total: int) -> list[int]:
+def _parse_pick(raw: str, total: int, all_words: tuple[str, ...] = ()) -> list[int]:
     """把用户输入的编号串解析成下标列表（0 起）。
 
     容错优先：这是给人用的输入框，写 `1,3 4`、`1、3`、`a` 都该work。
     非法编号静默丢弃而不是报错重问——用户已经看着列表在选，越界通常是手误，
     重问一遍比忽略更烦人。返回顺序去重后保持用户输入的顺序。
+
+    `all_words` 是当前语言的「全选」写法，由调用方从 i18n 取。`a` / `all`
+    始终接受：提示语里写的就是它们，而且键盘上永远打得出来。
     """
     text = raw.strip().lower()
     if not text:
         return []
-    if text in ("a", "all", "全部", "全选"):
+    if text in ("a", "all") or text in tuple(w.strip().lower() for w in all_words):
         return list(range(total))
     out: list[int] = []
     for token in re.split(r"[\s,，、;；]+", text):
@@ -224,12 +414,15 @@ def pick_sessions(rows: list[SessionRow], repo: Path, tr: Translator) -> list[st
         print(tr.t("cli.pick.none"))
         return []
 
-    idx = _parse_pick(raw, len(ordered))
+    idx = _parse_pick(raw, len(ordered), tuple(tr.t("cli.pick.all_words").split("|")))
     if not idx:
         print(tr.t("cli.pick.none"))
         return []
     chosen = [ordered[i] for i in idx]
-    titles = "；".join((r.label or r.session_id)[:40] for r in chosen)
+    # 分隔符跟随语言：英文用半角分号加空格，中文用全角分号。
+    # 写死「；」会让 --lang en 的输出里冒出一个 CJK 标点。
+    joiner = "；" if tr.lang.startswith("zh") else "; "
+    titles = joiner.join((r.label or r.session_id)[:40] for r in chosen)
     print(tr.t("cli.pick.chosen", count=len(chosen), titles=titles))
     return [str(r.path) for r in chosen]
 
@@ -246,6 +439,8 @@ def build_parser(tr: Translator) -> argparse.ArgumentParser:
     ap.add_argument("--test-timeout", type=int, default=900, help=tr.t("cli.arg.test_timeout"))
     ap.add_argument("--vitals", action="store_true", help=tr.t("cli.arg.vitals"))
     ap.add_argument("--no-vitals", action="store_true", help=tr.t("cli.arg.no_vitals"))
+    ap.add_argument("--sweep", action="store_true", help=tr.t("cli.arg.sweep"))
+    ap.add_argument("--by-repo", action="store_true", help=tr.t("cli.arg.by_repo"))
     ap.add_argument("--find", metavar="KEYWORD", help=tr.t("cli.arg.find"))
     ap.add_argument("--limit", type=int, default=12, help=tr.t("cli.arg.limit"))
     ap.add_argument("--force", action="store_true", help=tr.t("cli.arg.force"))
@@ -290,6 +485,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.find:
         return cmd_find(args, tr)
+    if args.sweep:
+        # 磁盘报告不碰仓库、也不需要 git，所以排在 git 检查之前。
+        return cmd_sweep(args, tr)
     if args.vitals:
         return cmd_vitals(args, tr)
 

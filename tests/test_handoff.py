@@ -18,7 +18,7 @@ import pytest
 
 from agent_handoff.core.gitops import git, head_sha
 from agent_handoff.core.handoff import EXIT_BAD_INPUT, EXIT_CONCURRENT, EXIT_OK, Options, run_handoff
-from agent_handoff.core.report import _redact_home
+from agent_handoff.core.report import _redact, _redact_home, build_handoff
 from agent_handoff.i18n import Translator
 
 
@@ -313,6 +313,41 @@ def test_handoff_body_table_and_verdicts(repo: Path, tr):
     assert tr.t("doc.verdict.none").replace("*", "") in res.body.replace("*", "")
 
 
+@pytest.mark.parametrize("lang", ["zh-Hans", "zh-Hant", "en"])
+def test_handoff_tables_have_matching_separator_row(repo: Path, lang):
+    """分隔行的列数必须等于表头，否则 Markdown 不渲染成表格。
+
+    表头文案来自 i18n，三种语言各有一份；写死分隔行会在某一语言改列数时静默失配。
+    体征表默认不渲染（no_vitals），所以这里显式塞一行体征进 ctx 再重渲染，
+    确保两张表都真的被检查到——否则测试会在「文档里没这张表」的情况下空转通过。
+    """
+    tr = Translator(lang)
+    res = _run(repo, tr)
+    ctx = dict(res.ctx)
+    ctx["vitals"] = [{
+        "agent": "Codex", "session_id": "01a02005", "file": "rollout-x.jsonl",
+        "mb": 70.5, "fatal": 30, "aborted": 0, "errors": 39, "band": "critical",
+    }]
+    body = build_handoff(ctx, tr)
+
+    checked = []
+    lines = body.splitlines()
+    for i, line in enumerate(lines[:-1]):
+        nxt = lines[i + 1]
+        if not line.startswith("|") or not nxt.startswith("|"):
+            continue
+        if set(nxt.strip()) - set("|- :"):
+            continue
+        head_cells = line.strip().strip("|").split("|")
+        rule_cells = nxt.strip().strip("|").split("|")
+        checked.append(line)
+        assert len(head_cells) == len(rule_cells), (
+            f"{lang}: 表头 {len(head_cells)} 列，分隔行 {len(rule_cells)} 列\n{line}\n{nxt}"
+        )
+    assert tr.t("doc.vitals.head") in checked, f"{lang}: 体征表没被检查到\n{checked}"
+    assert tr.t("doc.table.head") in checked, f"{lang}: 完成度表没被检查到\n{checked}"
+
+
 def test_handoff_body_escapes_pipe_in_task_title(tmp_path: Path, tr):
     """任务标题里的竖线会把 Markdown 表格拆散。"""
     r = tmp_path / "p"
@@ -603,6 +638,83 @@ def test_redact_home_leaves_other_paths_alone():
     """家目录之外的路径不能被动——仓库路径是接续会话要用的信息。"""
     outside = "E:/output/kirara-ai/kirara-ai3.3.0b8"
     assert _redact_home(outside) == outside
+
+
+# ── 迁机：别人机器上的用户名也要脱 ────────────────────────────────────
+
+@pytest.mark.parametrize(("raw", "want_gone"), [
+    (r"D:\Users\bob\myproj\src", "bob"),
+    ("/home/alice/proj/src", "alice"),
+    ("/Users/carol/work", "carol"),
+    ("/mnt/c/Users/dave/p", "dave"),
+    # Claude 的 slug 目录名：用户名嵌在 `-` 分隔的一段里，认不出真实分隔符。
+    # 实测漏掉这一形态会让用户名从转录路径漏出去。
+    (r"~\.claude\projects\D--Users-bob-myproj\x.jsonl", "bob"),
+])
+def test_redact_strips_other_peoples_usernames(raw: str, want_gone: str, monkeypatch):
+    monkeypatch.setenv("USERNAME", "devin")
+    got = _redact(raw)
+    assert want_gone not in got, f"别人的用户名漏了：{got}"
+    assert "_USER_" in got
+
+
+def test_redact_keeps_the_rest_of_a_foreign_path(monkeypatch):
+    """只换用户名那一段。读者仍要靠路径判断「那台机器上的项目在哪」。"""
+    monkeypatch.setenv("USERNAME", "devin")
+    got = _redact(r"D:\Users\bob\myproj\src\auth.py")
+    assert "myproj" in got and "auth.py" in got
+    assert got.startswith(r"D:\Users\_USER_")
+
+
+def test_redact_does_not_touch_the_local_username_twice(monkeypatch, tmp_path: Path):
+    """本机名字由 `_redact_home` 处理成 `~`；外来规则不该再碰它。
+
+    两条规则都作用于同一个名字时会产生 `_USER_` 混在 `~` 里的怪输出。
+    """
+    fake = tmp_path / "devin"
+    fake.mkdir()
+    monkeypatch.setattr("os.path.expanduser", lambda p: str(fake) if p == "~" else p)
+    monkeypatch.setenv("USERNAME", "devin")
+    got = _redact(str(fake / "proj"))
+    assert "_USER_" not in got
+    assert got.startswith("~")
+
+
+def test_redact_leaves_non_home_paths_alone(monkeypatch):
+    """不长得像家目录的路径不能被动——那是接续会话要用的信息。"""
+    monkeypatch.setenv("USERNAME", "devin")
+    for raw in ("E:/output/kirara-ai/kirara-ai3.3.0b8", "/opt/app/src", "src/x.py"):
+        assert _redact(raw) == raw
+
+
+def test_document_flags_a_foreign_session(repo: Path, tr):
+    """外来会话的路径在本机全无效，文档必须说出来。
+
+    否则读者（和接续会话的智能体）会照着那些路径去找文件，找不到才发现不对。
+    """
+    ctx = dict(_run(repo, tr).ctx)
+    ctx["sessions"] = [{
+        "agent": "Claude Code", "session_id": "mig99", "label": "重构认证模块",
+        "cwd": r"D:\Users\bob\myproj", "repos": [], "path": r"D:\Users\bob\.claude\x.jsonl",
+        "mtime_text": "2026-08-22 10:00:00", "is_foreign": True, "digest_windows": 0,
+        "asks": [], "last_prompt": "", "digest": "",
+    }]
+    body = build_handoff(ctx, tr)
+    assert tr.t("doc.sessions.foreign") in body
+    assert "bob" not in body, "外来用户名不能进文档"
+
+
+def test_document_does_not_flag_a_local_session(repo: Path, tr):
+    """本机会话不该带这条警告——它会让读者以为路径不可用。"""
+    ctx = dict(_run(repo, tr).ctx)
+    ctx["sessions"] = [{
+        "agent": "Claude Code", "session_id": "loc1", "label": "本机会话",
+        "cwd": str(repo), "repos": [str(repo)], "path": str(repo / "x.jsonl"),
+        "mtime_text": "2026-08-22 10:00:00", "is_foreign": False, "digest_windows": 0,
+        "asks": [], "last_prompt": "", "digest": "",
+    }]
+    body = build_handoff(ctx, tr)
+    assert tr.t("doc.sessions.foreign") not in body
 
 
 def test_document_redacts_home_directory(repo: Path, tr, tmp_path: Path, monkeypatch):

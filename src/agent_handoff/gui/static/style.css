@@ -154,6 +154,11 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round
 .nav-item:hover { background: var(--surface-2); color: var(--ink); }
 .nav-item.is-active { background: var(--accent-sub); color: var(--accent); font-weight: 550; }
 .nav-item.is-active svg { opacity: 1; }
+/* 说明文档那一项是 <a>：去掉链接默认样式，让它和三个 tab 长得一样。
+ * 外部链接标记只用一个箭头，不改颜色——它是并列的第四个入口，不是强调项。 */
+a.nav-item { text-decoration: none; }
+a.nav-item::after { content: "↗"; margin-left: auto; font-size: 11px; opacity: .5; }
+a.nav-item[hidden] { display: none; }
 
 .rail-foot { margin-top: auto; display: flex; flex-direction: column; gap: 10px; }
 .seg {
@@ -264,6 +269,9 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round
 .badge[data-band="watch"]    { background: var(--info-bg);   color: var(--info); }
 .badge[data-band="ok"]       { background: var(--good-bg);   color: var(--good); }
 .badge-dry { background: var(--info-bg); color: var(--info); }
+/* 外来转录：用警示色而不是危险色。它不是「出事了」，而是「这些路径在本机
+ * 不成立」——与判定徽章的语义分开，避免两个红色徽章并列让人以为是同一件事。 */
+.badge-foreign { background: var(--warn-bg); color: var(--warn); cursor: help; }
 
 .metrics { display: flex; gap: 12px; margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--ink-3); }
 .metrics b { color: var(--ink-2); font-weight: 600; }
@@ -285,8 +293,31 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round
  * 会把卡片撑高，长列表就没法扫读了。 */
 .stopic {
   margin: 9px 0 0; font-size: 13.5px; font-weight: 550; line-height: 1.45;
-  color: var(--ink-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   cursor: help;
+}
+
+/* 引文区隔：话题与用户原话来自会话本身，语言由当时的对话决定，切界面语言
+ * 也不会变——翻译它们等于篡改证据。所以给一道引文竖线和一个小标记，
+ * 让「英文界面里出现中文」一眼看得出是引用，而不是漏翻。
+ * 竖线用强调色的浅版：够显眼，又不和判定徽章的语义色抢注意力。
+ *
+ * 标记必须排在文字**前面**：话题用 nowrap + ellipsis 截断，放在后面会被
+ * 挤到省略号之外，等于没做（实测 scrollWidth 2888 vs clientWidth 658）。 */
+.stopic.is-quote {
+  padding-left: 9px; border-left: 2.5px solid var(--accent-sub);
+}
+.stopic.is-quote::before {
+  content: attr(data-verbatim);
+  margin-right: 7px; padding: 1px 5px; border-radius: 3px;
+  font-family: var(--mono); font-size: 9.5px; font-weight: 600;
+  letter-spacing: .02em; vertical-align: 1.5px;
+  /* 9.5px 属于 WCAG 的小字，对比度要 4.5 以上。用 --ink-2 而不是 --ink-3：
+   * 实测 --ink-3 配 --surface-2 在深色下只有 4.42，差一点不达标。 */
+  color: var(--ink-2); background: var(--surface-2);
+}
+.kv dd.prose {
+  padding-left: 8px; border-left: 2px solid var(--line);
 }
 
 .srow-act { margin-top: 12px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
@@ -305,6 +336,13 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round
   cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
 }
 .link:hover { filter: brightness(1.15); }
+/* 次要动作：与主动作同一行时不抢注意力。「复制续接命令」是并列的另一条路，
+ * 不是这一屏的主目标（主目标是交接），所以不加下划线、用弱化色。 */
+.link-quiet {
+  color: var(--ink-2); font-weight: 500; text-decoration: none;
+  font-family: var(--mono); font-size: 12px;
+}
+.link-quiet:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 
 /* ── 分组标题 ───────────────────────────────────────────────── */
 /* APP 名字用正常大小写与主色，不做全大写：Claude Code / Codex 是产品名，

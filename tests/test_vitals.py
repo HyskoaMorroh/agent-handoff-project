@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 from agent_handoff.core.vitals import (
+    _DIGEST_SEP_RE,
     BAND_ORDER,
     VITALS_BANDS,
     _newest_files,
@@ -223,6 +225,259 @@ def test_band_accounts_for_failures():
     assert band_for(100_000, aborted=4) == "high"
     # 体积已经更严重时不能被往下拉。
     assert band_for(9_000_000, fatal=1) == "critical"
+
+
+# ── 上下文占用判据 ────────────────────────────────────────────────────
+
+def test_tokens_outrank_size():
+    """有 token 数就按它判，体积只是兜底。
+
+    实测本机：1.0 MB 的会话已用 194183 token，体积判据说「健康」；
+    27.4 MB 的会话峰值 710340。体积与占用严重脱钩，谁都不能替代谁。
+    """
+    # 小文件 + 高占用 -> 按占用判，不能因为文件小就说健康。
+    assert band_for(500_000) == "ok"                      # 只看体积
+    assert band_for(500_000, tokens=194_183) == "critical"  # 实测本会话的数字
+    # 大文件 + 低占用 -> 按占用判，不能因为文件大就喊立刻交接。
+    assert band_for(9_000_000) == "critical"
+    assert band_for(9_000_000, tokens=20_000) == "ok"
+
+
+def test_fullness_uses_the_window_when_the_transcript_gives_one():
+    """Codex 在 `model_context_window` 里写了上限，占用率可以直接算。
+
+    实测一个 Codex 会话 121407 / 121600 = 99.8%——真顶到上限了，
+    而体积判据只说「尽快交接」。
+    """
+    assert band_for(0, tokens=121_407, window=121_600) == "critical"
+    assert band_for(0, tokens=95_000, window=121_600) == "high"     # 78%
+    assert band_for(0, tokens=70_000, window=121_600) == "watch"    # 58%
+    assert band_for(0, tokens=30_000, window=121_600) == "ok"       # 25%
+    # 同样的占用量，窗口大一倍就没那么紧张。
+    assert band_for(0, tokens=95_000, window=400_000) == "ok"
+
+
+def test_compaction_history_raises_the_band():
+    """压缩过就是满过——这是历史事实，不是推断。
+
+    自动压缩只在快装不下时才触发，所以压缩过的会话直接按「满过」对待，
+    而不是拿压缩前的占用去对照阈值：那个数字看着可能只有 167k，
+    但它恰恰是触发压缩的那一刻，等于 100%。
+
+    实测一个 1.9 MB 的会话自动压缩过 10 次：体积判据说「留意」，
+    但它已经反复丢掉早期事实，是最该交接的那一类。
+    """
+    assert band_for(1_900_000, tokens=1_000) == "ok"
+    assert band_for(1_900_000, tokens=1_000, compactions=1) == "high"
+    assert band_for(1_900_000, tokens=1_000, compactions=10) == "critical"
+    # 占用已经更严重时不能被往下拉。
+    assert band_for(0, tokens=190_000, compactions=1) == "critical"
+
+
+def test_zero_tokens_falls_back_to_size():
+    """读不到 token 时必须退回体积，不能一律判成健康。
+
+    Claude 的旧转录、被截断的文件、非深度扫描都可能没有 usage 记录。
+    那种情况下体积仍然是唯一可用的信号。
+    """
+    assert band_for(9_000_000, tokens=0) == "critical"
+    assert band_for(0, tokens=0) == "ok"
+
+
+def test_scan_reads_claude_usage(tmp_path: Path):
+    """Claude 的占用在 `message.usage` 里，等于新输入加两种缓存读入。
+
+    取峰值而不是末值：实测两个真转录的末条 assistant 占用都是 0
+    （子代理或没有 cache 记账），照末值判会把满会话判成空的。
+    """
+    fp = tmp_path / "claude.jsonl"
+    _write_jsonl(fp, [
+        {"type": "system", "sessionId": "u1", "cwd": "/p"},
+        {"type": "assistant", "message": {"usage": {
+            "input_tokens": 5_000, "cache_read_input_tokens": 100_000,
+            "cache_creation_input_tokens": 1_000, "output_tokens": 900}}},
+        # 峰值出现在中间，末条是 0——必须取到峰值。
+        {"type": "assistant", "message": {"usage": {
+            "input_tokens": 194_183, "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0, "output_tokens": 987}}},
+        {"type": "assistant", "message": {"usage": {"input_tokens": 0, "output_tokens": 0}}},
+    ])
+    row = scan_one("Claude Code", fp)
+    assert row.tokens == 194_183, "取峰值，且 output_tokens 不算占用"
+    assert row.context_window == 0, "Claude 转录里没有上限"
+    assert row.band == "critical"
+
+
+def test_scan_reads_codex_token_count(tmp_path: Path):
+    """Codex 把占用和上限都写在 token_count 事件里。
+
+    `last_token_usage` 才是当前占用；`total_token_usage` 是全会话累计，
+    会远超窗口，当占用用会永远判成爆满。
+    """
+    fp = tmp_path / "rollout-2026-08-22T06-00-00-cx.jsonl"
+    _write_jsonl(fp, [
+        {"type": "session_meta", "payload": {"session_id": "cx", "cwd": "/p"}},
+        {"type": "event_msg", "payload": {"type": "token_count", "info": {
+            "total_token_usage": {"input_tokens": 999_999, "total_tokens": 999_999},
+            "last_token_usage": {"input_tokens": 121_407, "total_tokens": 123_000},
+            "model_context_window": 121_600}}},
+    ])
+    row = scan_one("Codex", fp)
+    assert row.tokens == 121_407, "用 last_token_usage，不是 total"
+    assert row.context_window == 121_600
+    assert row.band == "critical"        # 99.8% 占用
+
+
+def test_scan_counts_claude_compaction_boundaries(tmp_path: Path):
+    """Claude 的压缩事件藏在 `type:"system"` 里，带 preTokens。
+
+    按顶层 subtype 找是对的，但要注意它不是独立的记录类型——
+    实测一个未压缩过的转录里根本没有这个字段，容易误以为 Claude 不写压缩事件。
+    """
+    fp = tmp_path / "claude2.jsonl"
+    _write_jsonl(fp, [
+        {"type": "system", "sessionId": "c2", "cwd": "/p"},
+        {"type": "system", "subtype": "compact_boundary",
+         "compactMetadata": {"trigger": "auto", "preTokens": 167_941, "durationMs": 245_296}},
+        {"type": "system", "subtype": "compact_boundary",
+         "compactMetadata": {"trigger": "auto", "preTokens": 150_000}},
+    ])
+    row = scan_one("Claude Code", fp)
+    assert row.compactions == 2
+    # 压缩把占用打回低位，只看压缩后的峰值会低估这个会话到过多满。
+    assert row.tokens == 167_941
+    assert row.band == "critical"
+
+
+def test_scan_survives_transcripts_without_any_token_data(tmp_path: Path):
+    """没有 usage / token_count 的转录不能崩，也不能谎报占用为某个值。"""
+    fp = tmp_path / "bare.jsonl"
+    _write_jsonl(fp, [
+        {"type": "system", "sessionId": "bare", "cwd": "/p"},
+        {"type": "user", "message": {"content": [{"type": "text", "text": "你好"}]}},
+    ])
+    row = scan_one("Claude Code", fp)
+    assert row.tokens == 0
+    assert row.context_window == 0
+    assert row.compactions == 0
+    assert row.band == "ok"     # 退回体积判据，文件很小
+
+
+# ── 原生续接命令 ──────────────────────────────────────────────────────
+
+def test_resume_cmd_for_claude(tmp_path: Path):
+    """Claude 用会话 ID 原样续接。"""
+    fp = tmp_path / "c.jsonl"
+    _write_jsonl(fp, [{"type": "system", "sessionId": "fc0e9aac-7840-4413-a154-91be846600b6", "cwd": "/p"}])
+    row = scan_one("Claude Code", fp)
+    assert row.resume_cmd == "claude --resume fc0e9aac-7840-4413-a154-91be846600b6"
+
+
+def test_resume_cmd_for_codex_takes_the_uuid_tail(tmp_path: Path):
+    """Codex 只认 UUID。rollout 文件名前缀自带连字符，取尾部五段比写正则稳。"""
+    fp = tmp_path / "rollout-2026-08-22T06-09-26-01a0265f-2c5c-7962-a1b2-7a75df296ab4.jsonl"
+    _write_jsonl(fp, [{"type": "session_meta", "payload": {
+        "session_id": "01a0265f-2c5c-7962-a1b2-7a75df296ab4", "cwd": "/p"}}])
+    row = scan_one("Codex", fp)
+    assert row.resume_cmd == "codex resume 01a0265f-2c5c-7962-a1b2-7a75df296ab4"
+
+
+def test_archived_codex_session_offers_no_resume(tmp_path: Path):
+    """归档过的 Codex 会话续接不了——Codex 只在活动目录里找。
+
+    给一条注定失败的命令比不给更糟：用户会以为工具在骗他。
+    """
+    d = tmp_path / "archived_sessions"
+    d.mkdir()
+    fp = d / "rollout-2026-08-22T03-36-15-01a025d2-ef0b-7690-bf6c-5671d08765ee.jsonl"
+    _write_jsonl(fp, [{"type": "session_meta", "payload": {
+        "session_id": "01a025d2-ef0b-7690-bf6c-5671d08765ee", "cwd": "/p"}}])
+    row = scan_one("Codex", fp)
+    assert row.resume_cmd == ""
+    # 归档的 Claude 会话没有这个概念，不能一并禁掉。
+    assert scan_one("Claude Code", fp).resume_cmd.startswith("claude --resume")
+
+
+def test_resume_cmd_empty_without_a_session_id(tmp_path: Path):
+    """认不出会话 ID 时不编一条命令出来。"""
+    fp = tmp_path / "x.jsonl"
+    _write_jsonl(fp, [{"type": "noise"}])
+    row = scan_one("Claude Code", fp)
+    assert row.session_id == "x"          # 回退到文件名
+    assert row.resume_cmd == "claude --resume x"
+    row.session_id = ""
+    assert row.resume_cmd == ""
+
+
+def test_resume_cmd_is_in_the_gui_payload(tmp_path: Path):
+    """网页界面靠 to_dict 拿数据；漏了这个字段按钮就不会出现。"""
+    fp = tmp_path / "c2.jsonl"
+    _write_jsonl(fp, [{"type": "system", "sessionId": "abc12345", "cwd": "/p"}])
+    d = scan_one("Claude Code", fp).to_dict()
+    assert d["resume_cmd"] == "claude --resume abc12345"
+    for key in ("tokens", "context_window", "compactions"):
+        assert key in d, key
+
+
+# ── 迁机：从别的电脑搬来的转录 ────────────────────────────────────────
+
+def _foreign(tmp_path: Path, name: str = "foreign.jsonl") -> Path:
+    """造一份「来自另一台电脑」的转录：cwd 用别人的用户名。"""
+    fp = tmp_path / name
+    _write_jsonl(fp, [
+        {"type": "system", "sessionId": "mig99", "cwd": r"D:\Users\bob\myproj",
+         "gitBranch": "main", "version": "2.1.0"},
+        {"type": "assistant", "message": {"usage": {
+            "input_tokens": 160_000, "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0, "output_tokens": 400}}},
+    ])
+    return fp
+
+
+def test_foreign_transcript_is_flagged(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("USERNAME", "devin")
+    row = scan_one("Claude Code", _foreign(tmp_path))
+    assert row.is_foreign is True
+    assert row.to_dict()["is_foreign"] is True
+
+
+def test_foreign_transcript_offers_no_resume(tmp_path: Path, monkeypatch):
+    """两个应用都只索引自己数据目录里的会话，拷进来的 jsonl 不在索引里。
+
+    命令一定报「找不到会话」——与归档 Codex 会话同一条原则：
+    不给注定失败的命令。
+    """
+    monkeypatch.setenv("USERNAME", "devin")
+    row = scan_one("Claude Code", _foreign(tmp_path))
+    assert row.resume_cmd == ""
+    # Codex 侧同理，且与「归档」是两条独立的原因。
+    cx = tmp_path / "rollout-2026-08-22T00-00-00-01a0aaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl"
+    _write_jsonl(cx, [{"type": "session_meta", "payload": {
+        "session_id": "01a0aaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "cwd": "/home/alice/x"}}])
+    assert scan_one("Codex", cx).resume_cmd == ""
+
+
+def test_local_transcript_still_offers_resume(tmp_path: Path, monkeypatch):
+    """外来判断不能把正常会话也扫进去——那会让 resume 功能整体消失。"""
+    monkeypatch.setenv("USERNAME", "devin")
+    fp = tmp_path / "local.jsonl"
+    # cwd 指向一个真实存在的本机目录。
+    _write_jsonl(fp, [{"type": "system", "sessionId": "loc1", "cwd": str(tmp_path)}])
+    row = scan_one("Claude Code", fp)
+    assert row.is_foreign is False
+    assert row.resume_cmd == "claude --resume loc1"
+
+
+def test_foreign_transcript_still_reports_tokens_and_band(tmp_path: Path, monkeypatch):
+    """迁机不影响 token 判据：占用数与机器无关，那正是它比体积可靠的地方。
+
+    外来转录的**内容仍然有价值**——那是迁机时最想带走的东西。所以标注它，
+    不是丢弃它。
+    """
+    monkeypatch.setenv("USERNAME", "devin")
+    row = scan_one("Claude Code", _foreign(tmp_path))
+    assert row.tokens == 160_000
+    assert row.band == "high"      # 160k 落在 TOKEN_BANDS 的 high 区间
 
 
 def test_scan_one_counts_fatal_past_early_exit_budget(tmp_path: Path):
@@ -545,6 +800,41 @@ def test_single_window_needs_no_separator(tmp_path: Path):
     row = scan_one("Codex", fp)
     assert row.digest == "唯一的摘要"
     assert row.digest_windows == 1
+
+
+def test_window_separator_carries_no_natural_language(tmp_path: Path):
+    """分隔标记不能带任何语言的词。
+
+    digest 原样进交接文档，而这一层是纯解析、拿不到 Translator。
+    写死中文会让 `--lang en` 的文档里冒出中文标题；改成纯符号 `[i/n]`。
+    """
+    fp = tmp_path / "rollout-2026-08-21T00-00-00-sep.jsonl"
+    _write_jsonl(fp, [
+        {"type": "session_meta", "payload": {"session_id": "sep", "cwd": "/p"}},
+        {"type": "compacted", "payload": {"message": "第一段", "window_number": 1}},
+        {"type": "compacted", "payload": {"message": "第二段", "window_number": 2}},
+    ])
+    row = scan_one("Codex", fp)
+    seps = [ln for ln in row.digest.splitlines() if _DIGEST_SEP_RE.match(ln.strip())]
+    assert len(seps) == 2, row.digest
+    for ln in seps:
+        assert not re.search(r"[一-鿿]", ln), ln
+        assert not re.search(r"[A-Za-z]", ln), ln
+    assert "[1/2]" in row.digest and "[2/2]" in row.digest
+
+
+def test_topic_skips_the_window_separator(tmp_path: Path):
+    """话题要跳过分隔行取正文。分隔标记换了写法，识别式必须跟着换。"""
+    fp = tmp_path / "rollout-2026-08-21T00-00-00-top.jsonl"
+    _write_jsonl(fp, [
+        {"type": "session_meta", "payload": {"session_id": "top", "cwd": "/p"}},
+        {"type": "compacted", "payload": {"message": "# 交接摘要\n迁移预设到新的配置格式", "window_number": 1}},
+        {"type": "compacted", "payload": {"message": "继续收尾并补测试", "window_number": 2}},
+    ])
+    row = scan_one("Codex", fp)
+    assert not _DIGEST_SEP_RE.match(row.label.strip())
+    assert "[1/2]" not in row.label
+    assert row.label.startswith("迁移预设")
 
 
 def test_digest_is_not_truncated(tmp_path: Path):
