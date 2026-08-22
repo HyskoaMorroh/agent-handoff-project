@@ -353,6 +353,7 @@ C 盘家目录下——盘符只出现在转录内容记录的 `cwd` 里，不�
 会变的是**数据目录本身**：两个应用都支持用环境变量整体挪走（笔记本 C 盘小、
 指向 D 盘是常见做法）。工具优先读这两个变量，家目录仍作兜底——两处都可能有
 历史记录，只认一边就是丢会话。WSL 里还会去 `/mnt/c/Users/<name>` 找宿主机的记录。
+搬机器时怎么指过去，见[换电脑](#换电脑)。
 
 `--sweep` 报告占用，**不删任何文件**：
 
@@ -421,6 +422,45 @@ agent-handoff --sweep
 
 没有远程时它会明说「这个仓库只存在于本机，接续必须在同一台机器上进行」，
 并给出未推送的提交数——别以为在新机器上 clone 就能拿到那些改动。
+
+### 怎么把工具和会话都搬过去
+
+**没有任何一处写死用户名或盘符。** 运行时每个位置都是当场算出来的：
+家目录来自 `expanduser("~")`，检出根来自启动脚本自己的位置，会话目录来自
+`CODEX_HOME` / `CLAUDE_CONFIG_DIR` 或家目录。整个目录拷到另一台电脑
+（用户名不同、盘符不同）直接可用，不改一行配置。
+
+把别的电脑的 `.codex` / `.claude` 拷过来后，用环境变量指过去——路径可以在
+任何盘、任何目录名下：
+
+```bash
+# Windows（cmd）
+set "CODEX_HOME=D:\from-old-laptop\.codex"
+set "CLAUDE_CONFIG_DIR=D:\from-old-laptop\.claude"
+agent-handoff E:\output\myproj --pick-sessions
+
+# POSIX
+export CODEX_HOME=/mnt/backup/from-old-laptop/.codex
+export CLAUDE_CONFIG_DIR=/mnt/backup/from-old-laptop/.claude
+./scripts/agent-handoff.sh ~/proj/myapp --pick-sessions
+```
+
+指过去之后本机家目录**仍然会扫**，两边的会话一起列出、一起可勾选——迁移是
+「多一处」不是「换一个」，否则搬完就看不到本机历史了。
+
+工具自己怎么搬，三选一，都不用改文件：
+
+| 做法 | 命令 |
+|---|---|
+| 装成命令（推荐） | `pip install -e .`，之后 `agent-handoff` 在任何目录可用 |
+| 直接跑检出 | `python -m agent_handoff.cli`（在检出根，或先设 `PYTHONPATH=<检出>/src`） |
+| 用启动脚本 | `scripts/agent-handoff.sh`；它按自己的位置找检出 |
+
+把包装脚本放进 `~/bin` 这类 PATH 目录时，用 `AGENT_HANDOFF_HOME` 指向检出：
+
+```bash
+export AGENT_HANDOFF_HOME=/opt/agent-handoff-project   # 或 D:\tools\agent-handoff-project
+```
 
 ## 仓库身份 vs 本机路径
 

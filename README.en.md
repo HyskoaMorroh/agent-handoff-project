@@ -460,6 +460,50 @@ With no remote it says so plainly — this repo exists only on that machine, so
 continue there — and reports how many commits are unpushed, so you do not assume
 a fresh clone will carry them.
 
+### Moving the tool and the sessions across
+
+**Nothing is hardcoded to a user name or a drive letter.** Every location is
+worked out at runtime: the home directory from `expanduser("~")`, the checkout
+root from the launcher's own location, the session directories from
+`CODEX_HOME` / `CLAUDE_CONFIG_DIR` or the home directory. Copy the whole
+directory to another computer — different user name, different drive — and it
+runs unchanged.
+
+Once the other machine's `.codex` / `.claude` are copied over, point the
+environment variables at them. The path can be on any drive, under any name:
+
+```bash
+# Windows (cmd)
+set "CODEX_HOME=D:\from-old-laptop\.codex"
+set "CLAUDE_CONFIG_DIR=D:\from-old-laptop\.claude"
+agent-handoff E:\output\myproj --pick-sessions
+
+# POSIX
+export CODEX_HOME=/mnt/backup/from-old-laptop/.codex
+export CLAUDE_CONFIG_DIR=/mnt/backup/from-old-laptop/.claude
+./scripts/agent-handoff.sh ~/proj/myapp --pick-sessions
+```
+
+The local home directory is **still scanned** after you point those elsewhere —
+both sets are listed together and both are tickable. Migrating adds a location
+rather than replacing one; otherwise you would lose sight of this machine's own
+history the moment you copied someone else's in.
+
+Three ways to move the tool itself, none of which need a file edited:
+
+| Approach | Command |
+|---|---|
+| Install it (recommended) | `pip install -e .`, then `agent-handoff` works from any directory |
+| Run the checkout | `python -m agent_handoff.cli` (from the checkout root, or set `PYTHONPATH=<checkout>/src`) |
+| Use the launcher | `scripts/agent-handoff.sh` — it locates the checkout from its own path |
+
+When a wrapper script lives in a PATH directory such as `~/bin`, point
+`AGENT_HANDOFF_HOME` at the checkout:
+
+```bash
+export AGENT_HANDOFF_HOME=/opt/agent-handoff-project   # or D:\tools\agent-handoff-project
+```
+
 ## Repo identity vs local path
 
 The prompt states both:

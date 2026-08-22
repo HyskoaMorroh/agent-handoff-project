@@ -418,6 +418,45 @@ agent-handoff --sweep
 沒有遠端時它會明說「這個儲存庫只存在於本機，接續必須在同一台機器上進行」，
 並給出未推送的提交數——別以為在新機器上 clone 就能拿到那些變更。
 
+### 怎麼把工具和工作階段都搬過去
+
+**沒有任何一處寫死使用者名稱或磁碟機代號。** 執行時每個位置都是當場算出來的：
+家目錄來自 `expanduser("~")`，檢出根來自啟動腳本自己的位置，工作階段目錄來自
+`CODEX_HOME` / `CLAUDE_CONFIG_DIR` 或家目錄。整個目錄拷到另一台電腦
+（使用者名稱不同、磁碟機代號不同）直接可用，不改一行設定。
+
+把別的電腦的 `.codex` / `.claude` 拷過來後，用環境變數指過去——路徑可以在
+任何磁碟機、任何目錄名下：
+
+```bash
+# Windows（cmd）
+set "CODEX_HOME=D:\from-old-laptop\.codex"
+set "CLAUDE_CONFIG_DIR=D:\from-old-laptop\.claude"
+agent-handoff E:\output\myproj --pick-sessions
+
+# POSIX
+export CODEX_HOME=/mnt/backup/from-old-laptop/.codex
+export CLAUDE_CONFIG_DIR=/mnt/backup/from-old-laptop/.claude
+./scripts/agent-handoff.sh ~/proj/myapp --pick-sessions
+```
+
+指過去之後本機家目錄**仍然會掃**，兩邊的工作階段一起列出、一起可勾選——遷移是
+「多一處」不是「換一個」，否則搬完就看不到本機歷史了。
+
+工具自己怎麼搬，三選一，都不用改檔案：
+
+| 做法 | 命令 |
+|---|---|
+| 裝成命令（推薦） | `pip install -e .`，之後 `agent-handoff` 在任何目錄可用 |
+| 直接跑檢出 | `python -m agent_handoff.cli`（在檢出根，或先設 `PYTHONPATH=<檢出>/src`） |
+| 用啟動腳本 | `scripts/agent-handoff.sh`；它按自己的位置找檢出 |
+
+把包裝腳本放進 `~/bin` 這類 PATH 目錄時，用 `AGENT_HANDOFF_HOME` 指向檢出：
+
+```bash
+export AGENT_HANDOFF_HOME=/opt/agent-handoff-project   # 或 D:\tools\agent-handoff-project
+```
+
 ## 儲存庫身分 vs 本機路徑
 
 提示詞同時給出兩樣東西：
