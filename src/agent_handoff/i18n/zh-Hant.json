@@ -460,6 +460,8 @@
   "prompt.sessions.head": "前序會話（共 {count} 段）。它們的完整摘要在交接檔案裡，先讀那份再動手：",
   "prompt.sessions.howto": "這些會話已經做出的判斷不要重新推導，也不要推出相反的結論；{handoff} 的「前序會話」一節有各自的完整摘要，需要更細的過程再去讀上面的轉錄檔案（用工具讀，不要整份貼進對話）。",
   "prompt.sessions.id": "      會話 ID：{value}",
+  "prompt.sessions.cwd": "      工作目錄：{path}",
+  "prompt.sessions.artifacts": "      若已打包帶走（--export-bundle）：包內 {path}/ 有這個工作階段的完整對話（session.md）與定位資訊",
   "prompt.sessions.item": "  · {agent}｜{topic}｜{mtime}",
   "prompt.sessions.lossy": "注意：這是摘要交接，不等於原會話。工具授權、背景行程、MCP 連線、被否決方案的推理過程都沒有傳過來。摘要裡沒提到的事，不代表沒發生過——動手前先按上面的現場自行核實，不要憑「摘要沒寫」推斷結論。",
   "prompt.sessions.path": "      轉錄：{path}",
@@ -469,5 +471,6 @@
   "cli.sessions.cross_repo": "      [注意] 勾選的工作階段裡有 {count} 個不屬於 {repo}。交接固化的是一個儲存庫的狀態；混進別的專案的工作階段，新工作階段會拿 A 專案的結論改 B 專案的程式碼。確認是同一份跨儲存庫的工作再繼續，否則分別交接。",
   "cli.sessions.cross_repo_item": "        {agent} {id} -> {repo}",
   "md.tools_n": "{count} 次工具呼叫",
-  "md.compacted": "**此處上下文被壓縮過（{source}）** —— 這條線之前的原始歷史已被摘要取代，更早的細節在原工作階段裡也已經不存在。"
+  "md.compacted": "**此處上下文被壓縮過（{source}）** —— 這條線之前的原始歷史已被摘要取代，更早的細節在原工作階段裡也已經不存在。",
+  "gui.label.evidence": "判定依據"
 }

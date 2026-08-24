@@ -5,7 +5,7 @@
 <p align="center">
   <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.3.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="測試" src="https://img.shields.io/badge/tests-617%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="測試" src="https://img.shields.io/badge/tests-660%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="執行時依賴" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="授權" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -411,6 +411,43 @@ rollout 裡只有 3 次，而 `turn_aborted` 有 6 次。把半成品當成已�
 摘要也不截斷：實測 62/70 個末視窗超過 4000 字元，中位會被切掉 2925 字元、
 最多 13241 字元，而切掉的往往正是結論與待辦。完整摘要寫進交接**文件**
 （檔案多幾十 KB 無所謂），提示詞裡只放話題與路徑。
+
+### 多個工作階段彙總成一份提示詞
+
+可以一次勾多個工作階段（健檢列表與找工作階段結果都能勾），它們彙總進**同一份**
+提示詞，每個工作階段各帶六項定位資訊：
+
+```text
+前序工作階段（共 3 段）。它們的完整摘要在交接檔案裡，先讀那份再動手：
+  · Codex｜畫布復原重做｜2026-08-23 17:15:30
+      記錄：~\.codex\sessions\2026\08\23\rollout-...-01a02de7-....jsonl
+      工作階段 ID：01a02de7-55f3-7c62-93b0-59897b54736e
+      工作目錄：E:\output\kirara-ai\kirara-ai3.3.0b8
+      原生續接（無損，先試這個）：codex resume 01a02de7-55f3-7c62-93b0-59897b54736e
+      深度連結：codex://threads/01a02de7-55f3-7c62-93b0-59897b54736e
+      若已打包帶走（--export-bundle）：包內 sessions/01a02de7-.../ 有完整對話
+```
+
+六項各有用途，缺一樣接續工作階段就會卡住：
+
+| 項 | 用途 |
+|---|---|
+| 話題 | 認得出是哪一段工作 |
+| 記錄路徑 | 去讀原文 |
+| 工作階段 ID | 餵給 `--find`、貼進 issue |
+| 工作目錄 | cd 到對的地方——多個工作階段可能在不同子目錄裡跑過，只給儲存庫根不夠 |
+| 續接命令 | 無損回去，**首選路徑**；這份交接是退路 |
+| 包內四件套位置 | 讀完整對話（`sessions/<id>/session.md`） |
+
+**深度連結指向這個工作階段本身，不是它 fork 自的那個。** 這一點曾經出錯：
+`thread_id`（派生來源）優先於 `session_id`，於是第三個工作階段的連結指向第二個的
+ID——點開是別人的對話，而連結語法合法所以不報錯。只有 Codex 註冊了 URI scheme，
+Claude Code 沒有，那邊不給連結而不是編一個 `claude://`。
+
+跨 APP 混選沒問題（Claude Code 與 Codex 可以同時勾），每條按自己 APP 的形態給
+續接命令。但**跨專案會明確提示**：交接固化的是一個儲存庫的狀態，把兩個現場彙總
+進一份提示詞，接續工作階段會拿 A 專案的結論去改 B 專案的程式碼。提示而不攔——
+同一份工作跨兩個儲存庫（前後端分離、主倉 + 外掛倉）是真實場景。
 
 ## 記錄存在哪裡，佔了多少
 

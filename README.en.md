@@ -5,7 +5,7 @@
 <p align="center">
   <a href="CHANGELOG.md"><img alt="version" src="https://img.shields.io/badge/version-2.3.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="tests" src="https://img.shields.io/badge/tests-617%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="tests" src="https://img.shields.io/badge/tests-660%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -449,6 +449,47 @@ characters, with a median of 2925 and up to 13241 characters cut — and what ge
 cut is usually the conclusions and the to-do list. The full digest goes into the
 handoff **document** (a file can afford tens of KB); the prompt carries only
 topics and paths.
+
+### Several sessions merged into one prompt
+
+You can tick several sessions at once (from the vitals list or from search
+results). They merge into **one** prompt, each carrying six locators:
+
+```text
+Previous sessions (3). Their full digests are in the handoff file - read that first:
+  · Codex | canvas undo/redo | 2026-08-23 17:15:30
+      transcript: ~\.codex\sessions\2026\08\23\rollout-...-01a02de7-....jsonl
+      session id: 01a02de7-55f3-7c62-93b0-59897b54736e
+      working directory: E:\output\kirara-ai\kirara-ai3.3.0b8
+      native resume (lossless, try this first): codex resume 01a02de7-55f3-...
+      deep link: codex://threads/01a02de7-55f3-7c62-93b0-59897b54736e
+      if exported with --export-bundle: sessions/01a02de7-.../ holds the full conversation
+```
+
+Each locator answers a different question; miss one and the next session stalls:
+
+| Locator | What it is for |
+|---|---|
+| Topic | recognising which piece of work this was |
+| Transcript path | reading the original |
+| Session id | feeding `--find`, pasting into an issue |
+| Working directory | `cd` to the right place — several sessions may have run in different subdirectories, so the repo root alone is not enough |
+| Resume command | going back losslessly — the **preferred path**; this handoff is the fallback |
+| Bundle artifacts path | reading the full conversation (`sessions/<id>/session.md`) |
+
+**A deep link points at the session itself, not the one it was forked from.**
+This was a real bug: `thread_id` (the derivation source) took priority over
+`session_id`, so the third session's link pointed at the second session's id —
+opening someone else's conversation, and the link is syntactically valid so
+nothing errors. Only Codex registers a URI scheme; Claude Code has none, so no
+link is given there rather than inventing a `claude://` that does nothing.
+
+Mixing apps is fine (Claude Code and Codex can be ticked together) — each gets the
+resume command in its own app's form. But **mixing projects is called out**: a
+handoff freezes one repository's state, and merging two scenes into one prompt
+leaves the next session applying project A's conclusions to project B's code. It
+warns rather than blocks, because one piece of work spanning two repositories
+(split front/back end, main repo plus plugin repo) is a real situation.
 
 ## Where transcripts live, and how much they use
 

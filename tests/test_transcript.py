@@ -204,6 +204,18 @@ def test_resume_command_per_agent():
     assert resume_command("Codex", "") == ""
 
 
+def test_deep_link_uses_the_session_not_its_parent_thread():
+    """深链要指向**这个**会话，不是它 fork 自的那个。
+
+    `thread_id` 是派生来源。让它优先是个真缺陷：Codex 的派生会话里它指向父线程，
+    于是三个会话汇总时，第三条的深链指向了第二条的 ID——而卡片上的会话 ID
+    显示的是它自己，两者对不上。用户点进去看到的是别人的对话。
+    """
+    assert deep_link("Codex", "self-id", "parent-thread") == "codex://threads/self-id"
+    # 没有 session_id 时才退回 thread_id：那时它是唯一已知的定位信息。
+    assert deep_link("Codex", "", "parent-thread") == "codex://threads/parent-thread"
+
+
 def test_deep_link_only_where_a_scheme_exists():
     """只给真实存在的 scheme。
 

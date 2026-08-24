@@ -214,6 +214,65 @@ def norm_path(s: str) -> str:
     return re.sub(r"[\\/]+", "/", str(s)).rstrip("/").lower()
 
 
+def agent_for(path: Path | str) -> str:
+    """这份转录属于哪个 APP。**唯一的判定处。**
+
+    判据按可靠性排序：
+      1. 文件名前缀 —— Codex 的 rollout 有 `rollout-<时间戳>-` 前缀，
+         Claude 的是裸 UUID。这是两边各自的命名契约。
+      2. 路径里的数据目录名 —— 文件被拷到别处时前缀可能被改，
+         但 `.codex` / `.claude` 这一段通常还在。
+
+    为什么必须收拢成一个函数：认错的后果是**续接命令给错**——对 Claude 会话
+    发 `codex resume` 必然失败，而用户拿到一条注定不工作的命令，会以为是自己
+    环境的问题。此前三处各写一份判断（`handoff.py`、`portable.py`、
+    `transcript.py`），其中两处只看前缀、一处还看 `.codex`，迟早分叉。
+    """
+    p = Path(path)
+    name = p.name.lower()
+    if name.startswith("rollout-"):
+        return "Codex"
+    parts = {x.lower() for x in p.parts}
+    if ".codex" in parts or "archived_sessions" in parts:
+        return "Codex"
+    if ".claude" in parts:
+        return "Claude Code"
+    # 认不出时按 Claude 走：它的解析器对未知结构更宽容（逐行读 message），
+    # 而 `read_turns` 认不出内容还会再试另一个解析器。
+    return "Claude Code"
+
+
+def agent_evidence(path: Path | str) -> str:
+    """凭什么判定是这个 APP。给人看的一句话。
+
+    为什么要把依据摆出来：卡片上会同时出现「这个会话是谁写的」与「这个会话在
+    谈论谁」，而后者常常是另一个 APP 的东西——一个 Claude Code 会话完全可以
+    整篇在分析某个 Codex 会话，它的开场提问里就有 `codex://threads/...`。
+    读者看到那个链接会以为标注错了。
+
+    实测本机就发生过：会话 `081c400c` 由 Claude Code 写（转录在
+    `~/.claude/projects/`、客户端 2.1.241），内容却是让它去排查一个 Codex
+    会话的报错，用户因此认定「明明用 codex 跑的，为什么标成 Claude Code」。
+
+    判定本身没错，错在没把依据说出来。这一行让读者能自己核实，
+    而不是在两个互相矛盾的信号之间猜。
+
+    返回的是**语言中性的路径片段**（`~/.claude/projects/`、`rollout-*`），
+    不是一句中文说明：这个模块不该知道界面语言，而路径本身各语言读者都认得。
+    """
+    p = Path(path)
+    if p.name.lower().startswith("rollout-"):
+        return "rollout-*"
+    parts = {x.lower() for x in p.parts}
+    if "archived_sessions" in parts:
+        return "~/.codex/archived_sessions/"
+    if ".codex" in parts:
+        return "~/.codex/"
+    if ".claude" in parts:
+        return "~/.claude/projects/"
+    return ""
+
+
 def split_multi(text: str) -> list[str]:
     """把一段「多个值」的输入拆成去重后的列表。
 

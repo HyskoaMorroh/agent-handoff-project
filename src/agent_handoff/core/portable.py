@@ -30,7 +30,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..platform import agent_session_roots, norm_path
+from ..platform import agent_for, agent_session_roots, norm_path
 
 # 包格式的版本。读到比自己大的值就停下并让用户升级，而不是硬着头皮解析——
 # 猜一个未知格式的字段含义，比明确说「我不认识这个版本」危险得多。
@@ -235,7 +235,7 @@ def export_bundle(
     taken: set[str] = set()
     for raw in sessions:
         fp = Path(raw)
-        agent = "Codex" if fp.name.lower().startswith("rollout-") else "Claude Code"
+        agent = agent_for(fp)
         row = ExportedSession(agent=agent, placeholder_path=to_placeholder(fp))
         row.session_id = bare_session_id(fp)
         if not fp.is_file():

@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from ..platform import (
+    agent_evidence,
     agent_session_roots,
     is_foreign_path,
     iter_path_candidates,
@@ -345,6 +346,26 @@ class SessionRow:
 
     @property
     def repo(self) -> str:
+        """这个会话**在哪个仓库里工作**。
+
+        `repos` 是从会话正文里捞出来的全部仓库路径，一个会话提到别的项目是常态
+        （审计外部参考、对比两个仓库、把路径粘进来问问题）。取第一个作为归属
+        会出错：实测一个在 `agent-handoff-project` 里跑的会话，因为正文大量提到
+        `E:/output/kirara-ai/kirara-ai3.3.0b8`，被判成了后者——**用户看到的归属
+        与他实际在哪工作完全对不上**，那让整张表失去意义。
+
+        所以优先用 `cwd`：它是会话开始时 shell 的实际工作目录，由 harness 写进
+        转录（Claude 的 `cwd` 字段、Codex 的 `session_meta.cwd`），是「在哪工作」
+        的直接证据，而正文里的路径只是「提到过」。
+
+        `cwd` 可能比仓库根更深（在子目录里启动），所以要往上找到 `.git`；
+        找不到时才退回 `repos` 的第一个——那至少是个经 `nearest_repo` 验证过的
+        真实仓库，比空白有用。
+        """
+        if self.cwd:
+            here = nearest_repo(self.cwd)
+            if here:
+                return here
         return self.repos[0] if self.repos else ""
 
     @property
@@ -462,6 +483,9 @@ class SessionRow:
             "branch": self.branch,
             "version": self.version,
             "origin": self.origin,
+            # 凭什么判定是这个 APP。卡片上会同时出现「谁写的」与「在谈论谁」，
+            # 后者常是另一个 APP 的东西，不把依据摆出来读者只能猜。
+            "agent_evidence": agent_evidence(self.path),
             "first_prompt": self.first_prompt,
             "title": self.title,
             "last_prompt": self.last_prompt,

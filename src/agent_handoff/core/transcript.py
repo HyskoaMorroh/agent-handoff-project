@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..platform import agent_for
+
 # 单条内容的保留长度。用户原话与助手结论给得宽，工具结果给得窄。
 #
 # 为什么不是同一个数：它们的信息密度差一个数量级。用户说的每一句都可能是约束，
@@ -412,8 +414,15 @@ def _loads(line: str) -> dict[str, Any] | None:
 
 
 def read_turns(agent: str, fp: Path) -> list[Turn]:
-    """按 agent 选解析器。认不出就两个都试——格式判断错不该让导出变成空文件。"""
-    if agent == "Codex" or fp.name.lower().startswith("rollout-"):
+    """按 agent 选解析器。认不出就两个都试——格式判断错不该让导出变成空文件。
+
+    调用方给的 `agent` 优先；为空时用 `platform.agent_for` 从路径判定，
+    与其余各处同一份判据。
+
+    路径判定能覆盖调用方的说法：调用方可能只是从别处透传了一个默认值，
+    而文件名前缀（`rollout-`）是 Codex 自己的命名契约，比传参可靠。
+    """
+    if "Codex" in (agent, agent_for(fp)):
         turns = read_codex_turns(fp)
         return turns or read_claude_turns(fp)
     turns = read_claude_turns(fp)
@@ -463,8 +472,14 @@ def deep_link(agent: str, session_id: str, thread_id: str = "") -> str:
 
     编一个不存在的 scheme 比不给更糟：用户点了没反应，且无从判断是链接错了
     还是 APP 没装。
+
+    **`session_id` 优先，`thread_id` 只作兜底。** 反过来写是个真缺陷：
+    `thread_id` 是**派生来源**（这个会话从哪个线程 fork 出来的），不是本会话
+    的身份。Codex 的派生会话里它指向父线程，于是链接会跳到另一个会话——
+    实测三个会话汇总时，第三条的深链指向了第二条的 ID，而卡片上的会话 ID
+    显示的是它自己，两者对不上。用户点进去看到的是别人的对话。
     """
-    sid = (thread_id or session_id or "").strip()
+    sid = (session_id or thread_id or "").strip()
     if not sid:
         return ""
     if agent == "Codex":

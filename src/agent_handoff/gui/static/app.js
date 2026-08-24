@@ -233,6 +233,11 @@
     row(t("gui.label.mtime"), r.mtime_text);
     row(t("gui.label.cwd"), r.cwd);
     row(t("gui.label.client"), [r.version, r.origin].filter(Boolean).join(" "));
+    /* 判定依据。卡片上会同时出现「谁写的」与「在谈论谁」——一个 Claude Code
+       会话完全可以整篇在分析某个 Codex 会话，开场提问里就带 codex://threads/…。
+       只标 APP 名不给依据，读者会以为标错了。所以把转录的存放位置摆出来，
+       它是判定的唯一来源，也让人能自己核实。 */
+    if (r.agent_evidence) row(t("gui.label.evidence"), r.agent_evidence);
     row(t("gui.label.last_prompt"), r.last_prompt, "prose clamp");
     if (!r.last_prompt) row(t("gui.label.first_prompt"), r.first_prompt, "prose clamp");
     if (r.repos && r.repos.length) {

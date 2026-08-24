@@ -378,6 +378,10 @@ def build_prompt(ctx: dict[str, Any], tr: Translator) -> str:
             a(tr.t("prompt.sessions.path", path=s.get("path", "")))
             if s.get("session_id"):
                 a(tr.t("prompt.sessions.id", value=s["session_id"]))
+            # 工作目录要单独给：多个会话汇总时，它们可能在不同子目录里跑过，
+            # 而新会话第一件事就是 cd 到对的地方。只给仓库根不够。
+            if s.get("cwd"):
+                a(tr.t("prompt.sessions.cwd", path=_redact(s["cwd"])))
             # 原生续接命令要给出来：它无损，而这份交接是有损摘要。
             # 只要那个会话还在同一台机器上、还完好，读到这里的人就该先试它。
             cmd = resume_command(s.get("agent", ""), s.get("session_id", "") or "")
@@ -388,6 +392,16 @@ def build_prompt(ctx: dict[str, Any], tr: Translator) -> str:
             )
             if link:
                 a(tr.t("prompt.sessions.deeplink", url=link))
+            # 每会话四件套在包里的位置。**按会话 ID 直接拼**，不依赖导出结果：
+            # 提示词在打包之前就生成好了，等 `artifacts_dir` 回填是等不到的
+            # （实测那个字段只存在于包的 manifest 里，这一行于是永不显示）。
+            #
+            # 路径形态是固定契约（`sessions/<id>/`），所以拼出来的一定对；
+            # 没打包时这一行指向一个不存在的目录，但它前面写着「若已打包」，
+            # 而且同一段里已经给了转录原始路径作为不打包时的退路。
+            sid = (s.get("session_id") or "").strip()
+            if sid:
+                a(tr.t("prompt.sessions.artifacts", path=f"sessions/{sid}"))
         a(tr.t("prompt.sessions.howto", handoff=ctx["handoff_rel"]))
         # 交接是有损的。不说明这一点，新会话会把「摘要里没有」当成「没发生过」，
         # 于是把上一个会话已经排除的方案重新试一遍。

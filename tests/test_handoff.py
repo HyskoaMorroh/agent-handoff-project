@@ -595,7 +595,11 @@ def test_skip_tests_records_the_skip(repo: Path, tr):
 
 # ── 会话传承 ──────────────────────────────────────────────────────────
 
-def _transcript(tmp_path: Path, name: str = "rollout-2026-08-21T00-00-00-abc123.jsonl") -> Path:
+def _transcript(
+    tmp_path: Path,
+    name: str = "rollout-2026-08-21T00-00-00-abc123.jsonl",
+    sid: str = "abc123",
+) -> Path:
     """一份带压缩摘要的 Codex 转录。摘要是会话自己写的，正是要传承的东西。
 
     文件名里的 id 必须与 session_meta 里的一致——真实的 rollout 就是这样命名的，
@@ -604,7 +608,7 @@ def _transcript(tmp_path: Path, name: str = "rollout-2026-08-21T00-00-00-abc123.
     fp = tmp_path / "codexlogs" / name
     fp.parent.mkdir(parents=True, exist_ok=True)
     rows = [
-        {"type": "session_meta", "payload": {"session_id": "abc123", "cwd": str(tmp_path)}},
+        {"type": "session_meta", "payload": {"session_id": sid, "cwd": str(tmp_path)}},
         {"type": "compacted", "payload": {"message": "# 交接摘要\n\n实测后端 557 passed，Task 5 已完成"}},
     ]
     with fp.open("w", encoding="utf-8") as fh:
@@ -641,6 +645,40 @@ def test_selected_session_named_in_prompt_without_full_text(repo: Path, tr, tmp_
     assert digest in res.body
     assert digest not in res.prompt
     assert res.ctx["handoff_rel"] in res.prompt
+
+
+def test_multi_session_prompt_carries_all_locators_per_session(repo: Path, tr, tmp_path: Path):
+    """多个会话汇总成一份提示词时，**每个**会话都要带齐定位信息。
+
+    六样东西缺一样都会让新会话卡住：话题（认得出是哪段）、转录路径（去读原文）、
+    会话 ID（喂给 --find 或贴进 issue）、工作目录（cd 到对的地方）、
+    续接命令（无损回去）、包内四件套位置（读完整对话）。
+
+    最容易错的是**串号**：三个会话的 ID 与深链必须一一对应。实测曾出现第三条
+    的深链指向第二条的 ID——用户点进去看到的是别人的对话。
+    """
+    a = _transcript(tmp_path / "s1", "rollout-2026-08-21T00-00-00-aaa111.jsonl", sid="aaa111")
+    b = _transcript(tmp_path / "s2", "rollout-2026-08-22T00-00-00-bbb222.jsonl", sid="bbb222")
+    c = _transcript(tmp_path / "s3", "rollout-2026-08-23T00-00-00-ccc333.jsonl", sid="ccc333")
+    res = _run(repo, tr, sessions=[str(a), str(b), str(c)], no_vitals=True)
+
+    assert len(res.ctx["sessions"]) == 3, "三个都要进来"
+    prompt = res.prompt
+
+    # 用语言无关的形态断言：`tr` fixture 是英文，写中文正则匹配不到任何东西
+    # （第一版就这么错过，测试红了而功能其实是好的）。
+    ids = re.findall(r"\b(aaa111|bbb222|ccc333)\b", prompt)
+    links = re.findall(r"codex://threads/(\S+)", prompt)
+    assert len(links) == 3, f"Codex 会话都该有深链，实际 {links}"
+    assert sorted(set(ids)) == ["aaa111", "bbb222", "ccc333"], f"ID 不全：{sorted(set(ids))}"
+    assert sorted(links) == ["aaa111", "bbb222", "ccc333"], f"深链串号了：{links}"
+
+    for sid in ("aaa111", "bbb222", "ccc333"):
+        assert f"sessions/{sid}" in prompt, f"{sid} 缺包内四件套位置"
+        assert f"codex resume {sid}" in prompt, f"{sid} 缺续接命令"
+    # 工作目录：三份转录的 cwd 各不相同，都要出现。
+    for sub in ("s1", "s2", "s3"):
+        assert sub in prompt, f"缺 {sub} 的工作目录"
 
 
 def test_no_selection_keeps_original_output(repo: Path, tr):

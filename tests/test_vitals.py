@@ -116,6 +116,72 @@ def test_scan_one_claude_identity(tmp_path: Path):
     assert row.first_prompt == "帮我修一下登录 bug"
 
 
+def test_repo_follows_cwd_not_the_first_mentioned_path(tmp_path: Path):
+    """归属看**在哪工作**，不看正文里先提到谁。
+
+    一个会话提到别的项目是常态：审计外部参考、对比两个仓库、把路径粘进来问
+    问题。原先取 `repos[0]`，于是一个在 A 仓库里跑、正文大量提到 B 仓库的会话
+    被判成 B——实测本机就有这种情况，用户看到的归属与他实际在哪工作对不上，
+    那让整张体检表失去意义。
+
+    `cwd` 是 harness 写进转录的实际工作目录，是「在哪工作」的直接证据；
+    正文里的路径只是「提到过」。
+    """
+    work = tmp_path / "mywork"
+    (work / ".git").mkdir(parents=True)
+    other = tmp_path / "referenced"
+    (other / ".git").mkdir(parents=True)
+
+    fp = tmp_path / "s.jsonl"
+    _write_jsonl(fp, [
+        {"type": "system", "sessionId": "s1", "cwd": str(work)},
+        # 正文反复提到另一个仓库——这不该改变归属。
+        {"type": "user", "message": {"content": [
+            {"type": "text", "text": f"参考 {other} 里的实现，对比一下 {other}"},
+        ]}},
+    ])
+    row = scan_one("Claude Code", fp)
+    assert row is not None
+    assert Path(row.repo) == work, f"归属应当是 cwd 所在仓库，实际 {row.repo}"
+    # 提到过的仓库仍要留在 repos 里，那对「这个会话碰过什么」有价值。
+    assert any(Path(r) == other for r in row.repos)
+
+
+def test_repo_falls_back_to_mentioned_when_cwd_is_not_a_repo(tmp_path: Path):
+    """cwd 不在任何仓库里时，退回正文里验证过的那个——比空白有用。"""
+    plain = tmp_path / "nowhere"
+    plain.mkdir()
+    real = tmp_path / "realrepo"
+    (real / ".git").mkdir(parents=True)
+
+    fp = tmp_path / "s2.jsonl"
+    _write_jsonl(fp, [
+        {"type": "system", "sessionId": "s2", "cwd": str(plain)},
+        {"type": "user", "message": {"content": [
+            {"type": "text", "text": f"看看 {real}"},
+        ]}},
+    ])
+    row = scan_one("Claude Code", fp)
+    assert row is not None
+    assert Path(row.repo) == real
+
+
+def test_agent_type_is_never_guessed_wrong(tmp_path: Path):
+    """Codex 与 Claude 的转录不能互相认错。
+
+    判据是文件名：Codex 的 rollout 有固定前缀，Claude 的是裸 UUID。
+    认错的后果是续接命令给错（`codex resume` 对 Claude 会话必然失败），
+    而用户拿到一条注定不工作的命令，会以为是自己环境的问题。
+    """
+    from agent_handoff.platform import agent_for
+
+    assert agent_for(tmp_path / "rollout-2026-08-23T01-02-03-abc.jsonl") == "Codex"
+    assert agent_for(tmp_path / "5370f0b4-6ca0-4e45-88ec-e7dc77feb8c7.jsonl") == "Claude Code"
+    # 拷到别处、前缀被改名时靠数据目录名兜底。
+    assert agent_for(Path("/home/me/.codex/sessions/2026/x.jsonl")) == "Codex"
+    assert agent_for(Path("/home/me/.claude/projects/slug/x.jsonl")) == "Claude Code"
+
+
 def test_scan_one_skips_injected_prompt_noise(tmp_path: Path):
     """插件清单与 caveman 广播不是人问的问题，认成开场提问会丢辨识度。"""
     fp = tmp_path / "claude.jsonl"

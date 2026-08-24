@@ -5,7 +5,7 @@
 <p align="center">
   <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.3.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="测试" src="https://img.shields.io/badge/tests-617%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="测试" src="https://img.shields.io/badge/tests-660%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="运行时依赖" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="许可" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -399,6 +399,43 @@ rollout 里只有 3 次，而 `turn_aborted` 有 6 次。把半成品当成已�
 摘要也不截断：实测 62/70 个末窗超过 4000 字符，中位会被切掉 2925 字符、
 最多 13241 字符，而切掉的往往正是结论与待办。完整摘要写进交接**文档**
 （文件多几十 KB 无所谓），提示词里只放话题与路径。
+
+### 多个会话汇总成一份提示词
+
+可以一次勾多个会话（体检列表与找会话结果都能勾），它们汇总进**同一份**提示词，
+每个会话各带六项定位信息：
+
+```text
+前序会话（共 3 段）。它们的完整摘要在交接文件里，先读那份再动手：
+  · Codex｜画布撤销重做｜2026-08-23 17:15:30
+      转录：~\.codex\sessions\2026\08\23\rollout-...-01a02de7-....jsonl
+      会话 ID：01a02de7-55f3-7c62-93b0-59897b54736e
+      工作目录：E:\output\kirara-ai\kirara-ai3.3.0b8
+      原生续接（无损，先试这个）：codex resume 01a02de7-55f3-7c62-93b0-59897b54736e
+      深度链接：codex://threads/01a02de7-55f3-7c62-93b0-59897b54736e
+      若已打包带走（--export-bundle）：包内 sessions/01a02de7-.../ 有完整对话
+```
+
+六项各有用途，缺一样接续会话就会卡住：
+
+| 项 | 用途 |
+|---|---|
+| 话题 | 认得出是哪一段工作 |
+| 转录路径 | 去读原文 |
+| 会话 ID | 喂给 `--find`、贴进 issue |
+| 工作目录 | cd 到对的地方——多个会话可能在不同子目录里跑过，只给仓库根不够 |
+| 续接命令 | 无损回去，**首选路径**；这份交接是退路 |
+| 包内四件套位置 | 读完整对话（`sessions/<id>/session.md`） |
+
+**深度链接指向这个会话本身，不是它 fork 自的那个。** 这一点曾经出错：
+`thread_id`（派生来源）优先于 `session_id`，于是第三个会话的链接指向第二个的 ID
+——点开是别人的对话，而链接语法合法所以不报错。只有 Codex 注册了 URI scheme，
+Claude Code 没有，那边不给链接而不是编一个 `claude://`。
+
+跨 APP 混选没问题（Claude Code 与 Codex 可以同时勾），每条按自己 APP 的形态给
+续接命令。但**跨项目会明确提示**：交接固化的是一个仓库的状态，把两个现场汇总进
+一份提示词，接续会话会拿 A 项目的结论去改 B 项目的代码。提示而不拦——
+同一份工作跨两个仓库（前后端分离、主仓 + 插件仓）是真实场景。
 
 ## 转录存在哪里，占了多少
 

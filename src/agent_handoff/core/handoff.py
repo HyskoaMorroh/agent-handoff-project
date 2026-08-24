@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..i18n import Translator
-from ..platform import norm_path
+from ..platform import agent_for, norm_path
 from .evidence import score_tasks
 from .gitops import (
     _strip_leading_dotslash,
@@ -152,11 +152,9 @@ def _scan_selected(key: str, originals: list[str]) -> dict[str, Any] | None:
         fp = Path(raw)
         if not fp.is_file():
             return None
-        # Codex 的转录文件名形如 `rollout-<时间戳>-<id>.jsonl`，这是它自己的命名
-        # 契约；`.codex` 目录名只是默认位置，用户拷走一份转录就不成立了。
-        # 判错只影响卡片上的 APP 名字与身份字段的解析路径，不影响摘要提取。
-        name = fp.name.lower()
-        agent = "Codex" if name.startswith("rollout-") or ".codex" in norm_path(fp) else "Claude Code"
+        # APP 判定收拢在 `platform.agent_for`：判错会让续接命令给错，
+        # 而三处各写一份判断迟早分叉。
+        agent = agent_for(fp)
         row = scan_one(agent, fp)
         return row.to_dict() if row is not None else None
     return None

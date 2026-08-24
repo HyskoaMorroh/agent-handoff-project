@@ -460,6 +460,8 @@
   "prompt.sessions.head": "Prior sessions ({count}). Their full digests are in the handoff file:",
   "prompt.sessions.howto": "Do not re-derive or contradict what these sessions already concluded; see the 'Prior sessions' section of {handoff} for each full digest, and read the transcripts above only if you need finer detail.",
   "prompt.sessions.id": "      session id: {value}",
+  "prompt.sessions.cwd": "      Working directory: {path}",
+  "prompt.sessions.artifacts": "      If exported with --export-bundle: {path}/ in the bundle holds this session's full conversation (session.md) and locators",
   "prompt.sessions.item": "  - {agent} | {topic} | {mtime}",
   "prompt.sessions.lossy": "Note: this is a digest handoff, not the original session. Tool approvals, background processes, MCP connections and the reasoning behind rejected approaches did not travel. Absence from the digest is not evidence of absence - verify against the state above before acting.",
   "prompt.sessions.path": "      transcript: {path}",
@@ -469,5 +471,6 @@
   "cli.sessions.cross_repo": "      [note] {count} of the picked sessions do not belong to {repo}. A handoff freezes one repository's state; mixing in another project's sessions means the next session applies project A's conclusions to project B's code. Continue only if this really is one piece of work spanning repositories; otherwise hand each off separately.",
   "cli.sessions.cross_repo_item": "        {agent} {id} -> {repo}",
   "md.tools_n": "{count} tool call(s)",
-  "md.compacted": "**Context was compacted here ({source})** - the raw history before this line has been replaced by a summary, and those earlier details no longer exist in the original session either."
+  "md.compacted": "**Context was compacted here ({source})** - the raw history before this line has been replaced by a summary, and those earlier details no longer exist in the original session either.",
+  "gui.label.evidence": "identified by"
 }
