@@ -9,6 +9,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from . import __version__
 from .core.disk import TOP_N, by_repo, scan_disk
@@ -18,11 +19,12 @@ from .core.vitals import (
     SessionRow,
     find_sessions,
     group_by_agent,
+    locate_by_id,
     scan_session_vitals,
     sessions_for_repo,
 )
 from .i18n import Translator, available, detect
-from .platform import force_utf8_io, is_foreign_path, norm_path
+from .platform import force_utf8_io, is_foreign_path, norm_path, split_multi
 
 
 def print_session_card(r: SessionRow, tr: Translator, index: int | None = None) -> None:
@@ -109,11 +111,55 @@ def _fullness_line(r: SessionRow, tr: Translator) -> str:
     return tr.t("cli.card.tokens", tokens=f"{r.tokens:,}")
 
 
+def _split_multi(items: list[str] | str | None) -> list[str]:
+    """CLI 侧的薄包装。真正的实现在 `platform.split_multi`——网页界面也要用它，
+    两处各写一份就会在「顿号算不算分隔符」这种细节上分叉。
+    """
+    if items is None:
+        return []
+    raw = [items] if isinstance(items, str) else list(items)
+    out: list[str] = []
+    for item in raw:
+        for part in split_multi(str(item)):
+            if part not in out:
+                out.append(part)
+    return out
+
+
 def cmd_find(args: argparse.Namespace, tr: Translator) -> int:
+    """按 ID 片段 / 目录 / 关键词定位会话，支持一次给多个。
+
+    两条路径合并结果：
+      1. `locate_by_id` 按**文件名**在全部转录里精确定位，不受 `--limit` 约束。
+         用户握着 ID 时必须能找到——按 limit 扫最新若干个再搜，实测覆盖 26%，
+         给了正确 ID 也有七成概率说「没找到」，那是最坏的失败。
+      2. `find_sessions` 在已体检的行里按目录 / 话题 / 摘要关键词搜。这条要读
+         正文，所以仍受 limit 约束——按关键词找本来就是模糊查询，覆盖最近的
+         若干个是合理取舍。
+    """
+    needles = _split_multi(args.find)
+    if not needles:
+        print(tr.t("cli.find.hint"))
+        return EXIT_BAD_INPUT
+
+    hits: list = []
+    seen: set[str] = set()
+
+    def take(rows: list) -> None:
+        for r in rows:
+            key = norm_path(r.path)
+            if key not in seen:
+                seen.add(key)
+                hits.append(r)
+
+    take(locate_by_id(needles))
     rows = scan_session_vitals(limit=max(args.limit, 40), jobs=args.jobs)
-    hits = find_sessions(args.find, rows)
+    for needle in needles:
+        take(find_sessions(needle, rows))
+
+    shown_needle = ", ".join(needles)
     if not hits:
-        print(tr.t("cli.find.none", needle=args.find))
+        print(tr.t("cli.find.none", needle=shown_needle))
         print(tr.t("cli.find.hint"))
         return 1
 
@@ -121,8 +167,11 @@ def cmd_find(args: argparse.Namespace, tr: Translator) -> int:
         print(json.dumps([r.to_dict() for r in hits], ensure_ascii=False, indent=2))
         return 0
 
-    shown = hits[:8]
-    header = tr.t("cli.find.header", needle=args.find, count=len(hits))
+    # 多个 ID 时不截断：用户明确列出了要找哪几个，砍掉一部分等于没回答问题。
+    # 单个关键词是模糊查询，截断到 8 个仍然合理。
+    limit_shown = len(hits) if len(needles) > 1 else 8
+    shown = hits[:limit_shown]
+    header = tr.t("cli.find.header", needle=shown_needle, count=len(hits))
     if len(hits) > len(shown):
         header += tr.t("cli.find.truncated", shown=len(shown))
     print(header + "：\n" if tr.lang.startswith("zh") else header + ":\n")
@@ -228,7 +277,15 @@ def cmd_sweep(args: argparse.Namespace, tr: Translator) -> int:
         out = Path(args.out).expanduser()
         try:
             out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text(_sweep_markdown(report, tr, args), encoding="utf-8", newline="\n")
+            # 写字节而不是 `write_text(..., newline="\n")`：`newline=` 是
+            # `pathlib` 3.10 才有的参数，而本项目声明支持 3.9（CI 也跑 3.9）。
+            # 用它会让 `--sweep --out` 在 3.9 上直接抛 TypeError。
+            # `core/handoff.py` 早就为同一个坑改用了 write_bytes，这里补齐。
+            #
+            # 顺带把换行钉成 LF：报告要进 git，`.gitattributes` 也声明了
+            # `*.md text eol=lf`，让平台默认换行渗进来只会制造无意义的 diff。
+            body = _sweep_markdown(report, tr, args)
+            out.write_bytes(body.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8"))
         except OSError as exc:
             print(tr.t("cli.sweep.write_failed", path=str(out), err=str(exc)))
             return EXIT_BAD_INPUT
@@ -287,6 +344,61 @@ def _sweep_markdown(report, tr: Translator, args: argparse.Namespace) -> str:
     a("")
     a("> " + tr.t("cli.sweep.no_delete"))
     return "\n".join(L) + "\n"
+
+
+def cmd_import_bundle(args: argparse.Namespace, tr: Translator) -> int:
+    """读一个交接包，把里面的占位符路径解析到本机，报告每一条的结果。
+
+    只读：不复制任何转录到 agent 的数据目录。把别处的转录塞进 `~/.claude` 或
+    `~/.codex` 会改变那个 app 的会话列表，是有副作用的动作——必须由用户看过
+    清单之后自己决定，工具不代劳。何况 Claude Code 自 v2.1.205 起明确禁止
+    篡改会话转录文件。
+    """
+    from .core.portable import import_bundle
+
+    bundle = Path(args.import_bundle).expanduser()
+    if not bundle.is_dir():
+        print(tr.t("cli.err.not_dir", path=str(bundle)), file=sys.stderr)
+        return EXIT_BAD_INPUT
+
+    rep = import_bundle(bundle)
+    if args.json:
+        print(json.dumps(rep.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+        return EXIT_OK if not rep.problems else EXIT_BAD_INPUT
+
+    if rep.problems and not rep.resolved:
+        # 连一条都没解析出来：包本身有问题，直接把原因摊开。
+        for p in rep.problems:
+            print(f"  {p}", file=sys.stderr)
+        return EXIT_BAD_INPUT
+
+    print(tr.t("cli.bundle.read", path=str(bundle), version=rep.schema_version))
+    if rep.doc:
+        print(tr.t("cli.bundle.doc", path=rep.doc))
+    if rep.prompt:
+        print(tr.t("cli.bundle.prompt", path=rep.prompt))
+
+    if rep.resolved:
+        print(tr.t("cli.bundle.sessions", count=len(rep.resolved)))
+    for row in rep.resolved:
+        sid = row.get("session_id") or tr.t("cli.card.unknown")
+        print(f"  · {row.get('agent', '?')}  {sid}")
+        if row.get("bundled_copy"):
+            print(tr.t("cli.bundle.copy", path=row["bundled_copy"]))
+        local = row.get("local_path")
+        if local:
+            key = "cli.bundle.local_have" if row.get("exists_locally") else "cli.bundle.local_missing"
+            print(tr.t(key, path=local))
+        elif row.get("note"):
+            print(tr.t("cli.bundle.no_root"))
+        if row.get("skipped_reason"):
+            print(tr.t("cli.bundle.skipped", why=row["skipped_reason"]))
+
+    for p in rep.problems:
+        print(tr.t("cli.bundle.problem", detail=p), file=sys.stderr)
+    print()
+    print(tr.t("cli.bundle.readonly"))
+    return EXIT_OK
 
 
 def cmd_vitals(args: argparse.Namespace, tr: Translator) -> int:
@@ -441,7 +553,10 @@ def build_parser(tr: Translator) -> argparse.ArgumentParser:
     ap.add_argument("--no-vitals", action="store_true", help=tr.t("cli.arg.no_vitals"))
     ap.add_argument("--sweep", action="store_true", help=tr.t("cli.arg.sweep"))
     ap.add_argument("--by-repo", action="store_true", help=tr.t("cli.arg.by_repo"))
-    ap.add_argument("--find", metavar="KEYWORD", help=tr.t("cli.arg.find"))
+    # 可重复、可逗号分隔：一次找多个会话是常态（要把几段对话一起交接时，
+    # 手边就是一串 ID）。单个用法完全不变，所以旧脚本不受影响。
+    ap.add_argument("--find", action="append", default=[], metavar="KEYWORD",
+                    help=tr.t("cli.arg.find"))
     ap.add_argument("--limit", type=int, default=12, help=tr.t("cli.arg.limit"))
     ap.add_argument("--force", action="store_true", help=tr.t("cli.arg.force"))
     ap.add_argument("--dry-run", action="store_true", help=tr.t("cli.arg.dry_run"))
@@ -456,6 +571,11 @@ def build_parser(tr: Translator) -> argparse.ArgumentParser:
     ap.add_argument("--sessions", action="append", default=[], metavar="PATH",
                     help=tr.t("cli.arg.sessions"))
     ap.add_argument("--pick-sessions", action="store_true", help=tr.t("cli.arg.pick_sessions"))
+    # 跨机器搬运。导出把转录**副本**一起打包，所以换机之后内容还在；
+    # 只给路径的交接文档在另一台机器上必然失效——那些路径里编码着源机的 cwd。
+    ap.add_argument("--export-bundle", nargs="?", const="", default=None, metavar="DIR",
+                    help=tr.t("cli.arg.export_bundle"))
+    ap.add_argument("--import-bundle", metavar="DIR", help=tr.t("cli.arg.import_bundle"))
     ap.add_argument("--version", action="version", version=f"agent-handoff {__version__}")
     return ap
 
@@ -488,6 +608,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.sweep:
         # 磁盘报告不碰仓库、也不需要 git，所以排在 git 检查之前。
         return cmd_sweep(args, tr)
+    if args.import_bundle:
+        # 导入只读包、解析路径、报告结果；不碰仓库也不需要 git。
+        return cmd_import_bundle(args, tr)
     if args.vitals:
         return cmd_vitals(args, tr)
 
@@ -496,12 +619,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_BAD_INPUT
 
     # --sessions 支持逗号分隔，也支持重复传参；两种写法合并后去重。
-    sessions: list[str] = []
-    for item in args.sessions:
-        for part in re.split(r"[,，;；]+", item):
-            part = part.strip().strip('"').strip("'")
-            if part and part not in sessions:
-                sessions.append(part)
+    sessions: list[str] = _split_multi(args.sessions)
 
     if args.pick_sessions:
         # 勾选要在交接开始前完成：它决定交接文件里写什么，而交接文件一旦写出
@@ -535,9 +653,17 @@ def main(argv: list[str] | None = None) -> int:
     if res.code != EXIT_OK:
         return res.code
 
+    # 导出包要在结果确定之后、输出提示词之前做：包里要放刚写出的交接文档。
+    # dry-run 时不导出——那一趟本来就不产出文件。
+    bundle_info = ""
+    if args.export_bundle is not None and not args.dry_run:
+        bundle_info = _do_export(args, res, sessions, tr)
+
     if args.json:
         payload = res.to_dict()
         payload["body"] = res.body
+        if bundle_info:
+            payload["bundle"] = bundle_info
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return EXIT_OK
 
@@ -552,6 +678,62 @@ def main(argv: list[str] | None = None) -> int:
     print(res.prompt)
     print("=" * 68)
     return EXIT_OK
+
+
+def _do_export(
+    args: argparse.Namespace,
+    res: Any,
+    sessions: list[str],
+    tr: Translator,
+) -> str:
+    """把这次交接打成可拷走的包，返回包目录（失败返回空串）。
+
+    失败只提示不改变退出码：交接本身已经成功，包是附加产物。为了打包失败而
+    让整条命令报错，会让用户以为交接也没成——那比没有包糟得多。
+    """
+    from .core.portable import default_bundle_dir, export_bundle
+
+    stamp_day = datetime.now().strftime("%Y-%m-%d")
+    repo = Path(args.repo).expanduser().resolve()
+    target = (
+        Path(args.export_bundle).expanduser()
+        if args.export_bundle
+        else default_bundle_dir(repo, stamp_day)
+    )
+    meta = {
+        "name": res.ctx.get("repo_name", ""),
+        "branch": res.ctx.get("branch", ""),
+        "head": res.ctx.get("head_sha", ""),
+        "remote": res.ctx.get("remote", ""),
+        # 刻意**不**写仓库的本机绝对路径：那正是换机之后失效的东西，
+        # 而 remote + head 才是仓库的身份。
+    }
+    try:
+        mf = export_bundle(
+            out_dir=target,
+            doc_path=Path(res.out_path) if res.out_path else None,
+            prompt=res.prompt,
+            sessions=sessions,
+            meta=meta,
+        )
+    except OSError as exc:
+        print(tr.t("cli.bundle.export_failed", path=str(target), err=str(exc)),
+              file=sys.stderr)
+        return ""
+
+    if not args.json:
+        carried = sum(1 for s in mf["sessions"] if s.get("stored_name"))
+        print()
+        print(tr.t("cli.bundle.exported", path=str(target), count=carried))
+        skipped = [s for s in mf["sessions"] if s.get("skipped_reason")]
+        for s in skipped:
+            print(tr.t("cli.bundle.skipped", why=s["skipped_reason"]))
+        if carried:
+            # 只在真的带了副本时警告。没带副本却警告「里面有敏感内容」会训练
+            # 用户忽略这条提示，那比不提示更糟。
+            print(tr.t("cli.bundle.verbatim"))
+        print(tr.t("cli.bundle.howto", path=str(target)))
+    return str(target)
 
 
 def main_entry() -> None:

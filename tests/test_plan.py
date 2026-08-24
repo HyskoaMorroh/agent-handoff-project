@@ -64,6 +64,47 @@ def test_intent_sections_detected(repo: Path):
     assert "Global Constraints" in got
 
 
+@pytest.mark.parametrize(
+    "text, want",
+    [
+        ("# P\n\n## Goal\n\nx\n", "Goal"),
+        ("# P\n\n### Goal\n\nx\n", "Goal"),
+        ("# P\n\n**Goal:** x\n", "Goal"),
+        ("# P\n\n## 目标\n\nx\n", "目标"),
+        ("# P\n\n## 目標\n\nx\n", "目標"),
+        ("# P\n\n## Non-Goals\n\nx\n", "Non-Goals"),
+        ("# P\n\n## Scope\n\nx\n", "Scope"),
+        ("# P\n\n## 红线\n\nx\n", "红线"),
+    ],
+)
+def test_goal_is_found_as_a_heading_too(text: str, want: str):
+    """`## Goal` 与 `**Goal:**` 必须都认得出。
+
+    原版把词表拆在粗体分支与标题分支里各写一份，`Goal` 只出现在粗体那份，
+    于是 `## Goal`——最常见的写法，本工具自己的计划文档用的就是它——认不出来。
+    提示词因此不点名目标段落，新会话把计划当待办清单读，漏掉整体目标与红线，
+    而那恰恰是交接最不能丢的东西。
+    """
+    assert want in find_intent_sections(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "# P\n\n## Goalkeeper\n\nx\n",          # 词只是前缀，不是整个标题
+        "# P\n\n本节 Goal 是内联词。\n",          # 正文里提到，不是标题
+        "# P\n\n## Goal extra words\n\nx\n",    # 标题后还有别的词
+    ],
+)
+def test_intent_detection_does_not_over_match(text: str):
+    """宁可漏认一个奇怪写法，也不要把正文里的词当成段落标题。
+
+    误认的代价是提示词点名一个不存在的段落，新会话去找找不到——
+    那比不点名更糟，它会让人怀疑整份交接的可信度。
+    """
+    assert find_intent_sections(text) == []
+
+
 def test_find_plan_prefers_checkbox_document(repo: Path):
     found = find_plan(repo, None)
     assert found is not None

@@ -308,3 +308,76 @@ def test_force_utf8_io_is_idempotent():
     force_utf8_io()
     force_utf8_io()  # 二次调用不该抛异常
     assert sys.stdout.encoding.lower().replace("-", "") == "utf8"
+
+
+# ── 图文说明的查找 ────────────────────────────────────────────────────
+
+def test_guide_is_found_in_the_installed_package():
+    """装好的包里也要能找到图文说明。
+
+    此前 `gui/server.py` 从自己往上数四层、`menu.py` 数三层去找
+    `docs/guide.html`——两者在源码检出下都对，但 `docs/` 从来不进 wheel，
+    所以 `pip install` 之后网页界面的「指南」入口必然 404、菜单第 6 项必然
+    打印「找不到」。这份 104 KB 的三语文档正是本项目的主要说明载体。
+
+    现在 `build_guide.py` 会把它复制进 `gui/static/`（该副本不进 git，
+    避免两个真源漂移），`find_guide()` 优先找那一份。
+    """
+    from agent_handoff.platform import find_guide
+
+    got = find_guide()
+    assert got is not None, "本仓库里 guide.html 必须能找到"
+    assert got.is_file()
+    assert got.stat().st_size > 10_000, "图文说明是完整的三语文档，不该只有几百字节"
+
+
+def test_guide_lookup_prefers_the_packaged_copy(tmp_path, monkeypatch):
+    """包内副本优先于源码检出。
+
+    装好的包里不存在源码树，这条保证查找顺序不依赖「恰好有 docs/」。
+    """
+    from agent_handoff import platform as plat
+
+    pkg_static = tmp_path / "agent_handoff" / "gui" / "static"
+    pkg_static.mkdir(parents=True)
+    (pkg_static / "guide.html").write_text("packaged", encoding="utf-8")
+    # 让 find_guide 以为自己住在这个假包里。
+    monkeypatch.setattr(plat, "__file__", str(tmp_path / "agent_handoff" / "platform.py"))
+
+    got = plat.find_guide()
+    assert got is not None
+    assert got.read_text(encoding="utf-8") == "packaged"
+
+
+def test_guide_lookup_returns_none_when_absent(tmp_path, monkeypatch):
+    """找不到就返回 None，不能抛异常。
+
+    图文说明缺失不影响工具的任何实际功能：网页界面隐藏入口、菜单打印
+    「找不到」即可。为此让调用方崩掉是本末倒置。
+    """
+    from agent_handoff import platform as plat
+
+    empty = tmp_path / "nowhere" / "agent_handoff"
+    empty.mkdir(parents=True)
+    monkeypatch.setattr(plat, "__file__", str(empty / "platform.py"))
+    monkeypatch.delenv("AGENT_HANDOFF_HOME", raising=False)
+
+    assert plat.find_guide() is None
+
+
+def test_declared_home_is_the_last_resort(tmp_path, monkeypatch):
+    """`AGENT_HANDOFF_HOME` 指向的检出也算一个来源。"""
+    from agent_handoff import platform as plat
+
+    empty = tmp_path / "pkg" / "agent_handoff"
+    empty.mkdir(parents=True)
+    monkeypatch.setattr(plat, "__file__", str(empty / "platform.py"))
+
+    checkout = tmp_path / "checkout"
+    (checkout / "docs").mkdir(parents=True)
+    (checkout / "docs" / "guide.html").write_text("declared", encoding="utf-8")
+    monkeypatch.setenv("AGENT_HANDOFF_HOME", str(checkout))
+
+    got = plat.find_guide()
+    assert got is not None
+    assert got.read_text(encoding="utf-8") == "declared"

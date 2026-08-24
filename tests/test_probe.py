@@ -136,6 +136,43 @@ def test_summarize_timeout(tr):
     assert "900" in got
 
 
+def test_summarize_timeout_is_never_reported_as_passed(tr):
+    """超时被杀的测试不能报成「通过」——那是给出假证据，比不给证据糟得多。
+
+    超时是把进程杀掉，被杀之前 pytest 已经打印了一部分结果。原版把超时检查排在
+    框架摘要之后，于是 `"3 passed\\n<timeout after 900s>"` 先命中 pytest 分支，
+    摘要变成 `"3 passed"`，交接文档据此声称测试通过——而其余用例一个都没跑。
+    接续会话会拿这份文档当「代码是好的」的依据。
+    """
+    got = summarize_test_output("backend", "3 passed in 4.2s\n<timeout after 900s>", tr)
+    assert "900" in got, "必须说明是超时"
+    assert got != "3 passed"
+    assert not got.startswith("3 passed"), "超时不能被摘要成通过"
+
+
+def test_summarize_timeout_keeps_the_partial_count(tr):
+    """超时前已跑完的数量有诊断价值，但必须和超时标记一起出现。"""
+    got = summarize_test_output("backend", "7 passed in 30s\n<timeout after 60s>", tr)
+    assert "60" in got
+    assert "7" in got, "保留「超时前通过 7 个」这条线索"
+
+
+def test_summarize_timeout_translated_in_all_languages():
+    """超时文案三语都要有，不能是硬编码英文。"""
+    from agent_handoff.i18n import Translator, available
+
+    raw = "3 passed in 4.2s\n<timeout after 900s>"
+    for lang in available():
+        got = summarize_test_output("backend", raw, Translator(lang))
+        assert "900" in got
+        assert got != "3 passed"
+
+
+def test_summarize_normal_pass_is_unaffected(tr):
+    """加了超时前置判断后，正常通过的输出必须照原样摘要。"""
+    assert summarize_test_output("backend", "===== 491 passed in 402.11s =====", tr) == "491 passed"
+
+
 def test_summarize_command_not_found(tr):
     assert summarize_test_output("backend", "<command not found>", tr) == tr.t("cli.tests.not_found")
 

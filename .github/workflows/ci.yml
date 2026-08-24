@@ -15,6 +15,10 @@ jobs:
     # 三个平台都跑，因为这个工具的整个卖点之一是跨平台：
     # 路径分隔符、venv 布局、换行风格、浏览器打开方式各不相同。
     runs-on: ${{ matrix.os }}
+    # 套件本地实测约 400 秒，最慢的 runner 上翻倍也够。卡死时不该挂到
+    # GitHub 的默认上限（6 小时）——那会白烧 9 个矩阵组合的额度，
+    # 而且看不出是卡死还是在跑。
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -75,6 +79,55 @@ jobs:
         run: |
           python scripts/build_guide.py
           git diff --exit-code docs/guide.html
+      - name: Version and badges agree everywhere
+        # 版本写在三处（pyproject、__init__、三份 README 的徽章），全靠人手同步。
+        # 漂移的后果是 --version、guide 顶栏、README 徽章三者不一致，
+        # 读者只会当成「文档不可信」——而那正是这个工具最不能背的名声。
+        # 测试数徽章同理：实测曾停在 392 而真实数字是 589。
+        run: |
+          python - <<'PY'
+          import re, sys, tomllib
+          from pathlib import Path
+
+          problems = []
+          pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          want = pyproject["project"]["version"]
+
+          init = Path("src/agent_handoff/__init__.py").read_text(encoding="utf-8")
+          m = re.search(r'__version__\s*=\s*"([^"]+)"', init)
+          if not m:
+              problems.append("__init__.py: no __version__ found")
+          elif m.group(1) != want:
+              problems.append(f"__init__.py says {m.group(1)}, pyproject says {want}")
+
+          # 真实用例数：与徽章比对，避免徽章长期停在旧数字。
+          collected = 0
+          for fp in sorted(Path("tests").glob("test_*.py")):
+              collected += len(re.findall(r"^def (test_\w+)", fp.read_text(encoding="utf-8"), re.M))
+
+          for name in ("README.md", "README.en.md", "README.zh-Hant.md"):
+              text = Path(name).read_text(encoding="utf-8")
+              vm = re.search(r"badge/version-([0-9][^-]*)-", text)
+              if not vm:
+                  problems.append(f"{name}: no version badge")
+              elif vm.group(1) != want:
+                  problems.append(f"{name} badge says {vm.group(1)}, pyproject says {want}")
+              tm = re.search(r"badge/tests-(\d+)%20passed", text)
+              if not tm:
+                  problems.append(f"{name}: no tests badge")
+              else:
+                  claimed = int(tm.group(1))
+                  # 参数化用例会让真实收集数高于 def 计数，所以只挡「徽章比
+                  # def 计数还少」这种明显过时的情形，不做精确相等。
+                  if claimed < collected:
+                      problems.append(
+                          f"{name} claims {claimed} tests but at least {collected} exist"
+                      )
+
+          if problems:
+              sys.exit("version/badge drift:\n  " + "\n  ".join(problems))
+          print(f"version {want} consistent; test badges >= {collected} def-counted tests")
+          PY
 
   e2e:
     # 端到端：在真 Linux 上建一个仓库、跑一次交接、检查产物。
@@ -266,6 +319,9 @@ jobs:
       - name: Build wheel and sdist
         run: |
           python -m pip install --upgrade pip build
+          # 图文说明的包内副本由 build_guide.py 生成，且不进 git——
+          # 打包前必须先跑它，否则 wheel 里没有 guide.html。
+          python scripts/build_guide.py
           python -m build
       - name: Verify package data is bundled
         # i18n JSON 与 GUI 静态资源必须进 wheel，否则装完之后界面是空的。
@@ -281,12 +337,48 @@ jobs:
               "agent_handoff/gui/static/index.html",
               "agent_handoff/gui/static/style.css",
               "agent_handoff/gui/static/app.js",
+              # 图文说明。docs/ 从不进 wheel，靠打包前复制进 gui/static/。
+              # 少了它，装好的包里「指南」入口必然 404。
+              "agent_handoff/gui/static/guide.html",
+              # --sweep 的实现。曾经有一个 wheel 漏掉这个模块，
+              # 而 README 与 CHANGELOG 通篇在讲这个功能。
+              "agent_handoff/core/disk.py",
           ]
           missing = [n for n in need if n not in names]
           if missing:
               sys.exit("missing from wheel: " + ", ".join(missing))
           print("wheel contains all package data")
           PY
+      - name: Install the wheel and smoke-test it
+        # 只检查文件名在不在是不够的：那只证明文件进了压缩包，
+        # 不证明装好之后找得到、跑得起来。此前 guide.html 的 404 缺陷
+        # 正是被这个缺口放过的——文件名检查全绿，装完却打不开说明书。
+        #
+        # 在一个干净目录里装、在干净目录里跑：模拟另一台电脑，
+        # 避免从仓库检出里意外读到 docs/ 或 src/。
+        run: |
+          python -m venv /tmp/wheeltest
+          /tmp/wheeltest/bin/python -m pip install --quiet dist/*.whl
+          mkdir -p /tmp/elsewhere
+          cd /tmp/elsewhere
+          /tmp/wheeltest/bin/agent-handoff --version
+          # 三种语言都要能起来：i18n JSON 少一份就会在这里失败。
+          for lang in zh-Hans zh-Hant en; do
+            /tmp/wheeltest/bin/agent-handoff --lang "$lang" --help > /dev/null
+          done
+          # --sweep 只读转录元信息，在没有转录的 runner 上也应正常退出。
+          /tmp/wheeltest/bin/agent-handoff --sweep > /dev/null
+          # 图文说明必须能从装好的包里找到。
+          /tmp/wheeltest/bin/python - <<'PY'
+          from agent_handoff.platform import find_guide
+          g = find_guide()
+          assert g is not None, "find_guide() returned None from an installed wheel"
+          assert g.is_file(), f"not a file: {g}"
+          size = g.stat().st_size
+          assert size > 10_000, f"guide.html looks truncated: {size} bytes"
+          print(f"guide found in the installed package: {size} bytes")
+          PY
+          echo "wheel smoke test passed"
       - uses: actions/upload-artifact@v4
         with:
           name: dist

@@ -60,6 +60,21 @@ def test_new_flags_default_to_original_behavior():
     assert ns.port == 0
     assert ns.jobs == 0
     assert ns.lang is None
+    # 跨机器搬运默认全关：导出会写文件、导入会读外部目录，
+    # 两者都不该在用户没要求时发生。
+    assert ns.export_bundle is None, "默认不导出"
+    assert ns.import_bundle is None, "默认不导入"
+
+
+def test_export_bundle_accepts_an_optional_path():
+    """`--export-bundle` 不带路径时用默认位置，带路径时用给的。
+
+    `nargs="?"` 的两种形态都要能解析：写成必需参数会让最常用的
+    「就导出到默认位置」变成必须记住一个路径。
+    """
+    ap = build_parser(Translator("en"))
+    assert ap.parse_args(["--export-bundle"]).export_bundle == ""
+    assert ap.parse_args(["--export-bundle", "/tmp/b"]).export_bundle == "/tmp/b"
 
 
 def test_help_text_follows_lang():

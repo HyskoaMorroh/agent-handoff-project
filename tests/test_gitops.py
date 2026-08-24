@@ -10,7 +10,10 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from agent_handoff.core.gitops import (
+    DETACHED,
     _exclude_pathspecs,
     changed_paths,
     commit_paths,
@@ -26,6 +29,7 @@ from agent_handoff.core.gitops import (
     repo_meta,
     run,
 )
+from agent_handoff.i18n import Translator
 
 
 def _git(repo: Path, *a: str) -> None:
@@ -91,6 +95,46 @@ def test_repo_meta_branch_and_head(repo: Path):
     assert meta["ahead"] == ""
 
 
+def test_detached_head_is_not_reported_as_a_branch(repo: Path):
+    """detached HEAD 不能显示成「分支：HEAD」——那个分支不存在。
+
+    `git rev-parse --abbrev-ref HEAD` 在 detached 下返回**字面量** `HEAD`，
+    非空且退出码 0，所以 `or "<detached>"` 那种兜底永远不触发。原版就是这样，
+    文档于是告诉接续会话一个不存在的分支名。`symbolic-ref --short -q HEAD`
+    才是 git 用来区分两者的接口：在分支上返回分支名，detached 时返回空。
+    """
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "second")
+    _git(repo, "checkout", "-q", "HEAD~1")
+
+    meta = repo_meta(repo)
+    assert meta["branch"] == DETACHED, "detached 必须用专门的标记"
+    assert meta["branch"] != "HEAD", "不能把 git 的字面量当分支名透传"
+    # 其余字段仍要可用：detached 状态下 HEAD 和 sha 都是有效信息。
+    assert meta["head_sha"]
+    assert meta["head"] != "<no commits>"
+
+
+def test_detached_marker_reaches_the_document(repo: Path):
+    """detached 要在文档里单独警告，不能只标「不是主干」。
+
+    在 detached 状态下提交，提交不属于任何分支：切走之后只能靠 sha 找回，
+    reflog 过期后可能被 gc 回收。接续会话必须知道，否则它照常提交，
+    而那些提交随时会变成悬空对象。
+    """
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "second")
+    _git(repo, "checkout", "-q", "HEAD~1")
+    meta = repo_meta(repo)
+
+    tr = Translator("zh-Hans")
+    ctx = {
+        "repo": str(repo), "branch": meta["branch"], "head": meta["head"],
+        "ahead": "", "has_git": True, "plan_rel": "", "now": "2026-01-01 00:00",
+    }
+    line = tr.t("doc.scene.branch", branch=ctx["branch"]) + tr.t("doc.scene.detached")
+    assert "detached" in line.lower()
+    assert "git switch -c" in line, "要给出可执行的补救命令，不只是报警"
+
+
 def test_is_repo_true_and_false(repo: Path, tmp_path: Path):
     assert is_repo(repo) is True
     plain = tmp_path / "plain"
@@ -117,6 +161,54 @@ def test_exclude_pathspecs_uses_literal_form():
         ":(exclude,literal)x.txt",
         ":(exclude,literal)win/path.bin",
     ]
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        ".env",
+        ".env.local",
+        ".gitignore",
+        ".claude/settings.json",
+        ".ssh/id_rsa",
+        "...weird",
+    ],
+)
+def test_exclude_pathspecs_keeps_dotfile_names_intact(given: str):
+    """点文件的名字一个字符都不能少——少了排除就落空，凭据会被提交进去。
+
+    原版用 `.lstrip("./")`。`str.lstrip` 收字符集合而不是前缀，会把开头所有的
+    `.` 和 `/` 逐个剥掉：`.env` 变成 `env`、`.claude/settings.json` 变成
+    `claude/settings.json`。名字错一个字符，`:(exclude,literal)` 就匹配不上真实
+    路径，于是计划文档声明为用户私有的文件仍被 `git add -A` 收走。
+    点文件恰恰是放密钥最常见的地方，所以这条不能只靠肉眼保证。
+    """
+    assert _exclude_pathspecs([given]) == [f":(exclude,literal){given}"]
+
+
+def test_exclude_pathspecs_still_strips_leading_dot_slash():
+    """`./` 前缀要去掉，但只去这两个字符，且允许重复。"""
+    assert _exclude_pathspecs(["./a.md", "././b.md", "./.env"]) == [
+        ":(exclude,literal)a.md",
+        ":(exclude,literal)b.md",
+        ":(exclude,literal).env",
+    ]
+
+
+def test_do_commit_really_excludes_a_dotfile(repo: Path, tr):
+    """端到端：声明为受保护的点文件，提交后仍不在 git 里。
+
+    上面两条测的是 pathspec 字符串，这条测 git 真的照它办事——
+    字符串对了但 git 不认，等于没修。
+    """
+    (repo / ".env").write_text("API_KEY=super-secret-value\n", encoding="utf-8")
+    (repo / "code.py").write_text("x = 1\n", encoding="utf-8")
+
+    do_commit(repo, [".env"], "test: protected dotfile", False, tr)
+
+    tracked = git(repo, "ls-files").splitlines()
+    assert ".env" not in tracked, "受保护的点文件被提交了"
+    assert "code.py" in tracked, "普通文件应当照常提交"
 
 
 def test_do_commit_excludes_protected(repo: Path, tr):

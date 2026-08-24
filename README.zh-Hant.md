@@ -5,7 +5,7 @@
 <p align="center">
   <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.3.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="測試" src="https://img.shields.io/badge/tests-392%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="測試" src="https://img.shields.io/badge/tests-617%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="執行時依賴" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="授權" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -156,13 +156,35 @@ agent-handoff --sweep --by-repo          # 額外依儲存庫聚合（要讀記�
 agent-handoff --sweep --out disk.md      # 匯出 md 報告
 ```
 
+### 典型流程
+
+```bash
+# 1. 先看哪個工作階段該交接了（只讀，不碰任何儲存庫）
+agent-handoff --vitals
+
+# 2. 截圖對不上是哪段對話？按 ID 前幾位 / 目錄名 / 提問關鍵詞找
+agent-handoff --find 01a00e83
+agent-handoff --find 工作流
+
+# 3. 預演：只顯示將要做什麼，不寫任何檔案
+agent-handoff /path/to/project --dry-run
+
+# 4. 勾選要傳承的工作階段，然後執行
+agent-handoff /path/to/project --pick-sessions
+
+# 5. 記錄佔了多少磁碟？哪些可以安全丟掉？（只讀中繼資料，毫秒級；不刪任何檔案）
+agent-handoff --sweep
+agent-handoff --sweep --by-repo          # 額外按儲存庫聚合（要讀記錄，慢很多）
+agent-handoff --sweep --out disk.md      # 匯出 md 報告
+```
+
 ### 全部參數
 
 | 參數 | 作用 |
 |---|---|
 | `repo` | 儲存庫路徑，預設目前目錄 |
 | `--plan PATH` | 計畫文件路徑；省略則自動探測最新的含核取方塊任務文件 |
-| `--out PATH` | 交接檔案輸出路徑；預設與計畫文件同目錄 |
+| `--out PATH` | 交接檔案輸出路徑；預設與計畫文件同目錄（同日重跑見下方說明） |
 | `-m, --message MSG` | 提交訊息；省略則自動產生 |
 | `--no-commit` | 不提交，只分析並產生交接檔案 |
 | `--skip-tests` | 不跑測試（快速模式） |
@@ -171,9 +193,11 @@ agent-handoff --sweep --out disk.md      # 匯出 md 報告
 | `--no-vitals` | 略過工作階段健檢（交接檔案裡不含體徵表） |
 | `--sweep` | 報告記錄佔了多少磁碟、哪些可以安全回收，然後結束；**不刪任何檔案** |
 | `--by-repo` | 配合 `--sweep`：額外依儲存庫聚合佔用（要讀記錄，慢很多） |
-| `--find KEYWORD` | 依工作階段 ID／目錄／話題關鍵字定位工作階段 |
+| `--find KEYWORD` | 依工作階段 ID／目錄／話題關鍵字定位工作階段；可重複或用逗號分隔，一次找多個 |
 | `--limit N` | 每個智慧代理最多掃描多少個最新記錄，預設 12 |
 | `--pick-sessions` | 互動勾選要傳承的工作階段（列出後按編號選擇） |
+| `--export-bundle [DIR]` | 打成可拷到另一台電腦的包（**含記錄副本**）；省略路徑寫到 `~/.agent-handoff/bundles/` |
+| `--import-bundle DIR` | 讀一個包，把裡面的路徑解析到本機並報告；只讀，不複製任何記錄 |
 | `--sessions PATH` | 直接指定要傳承的記錄；可重複，或用逗號分隔 |
 | `--force` | 忽略並行寫入警告強行繼續 |
 | `--dry-run` | 全程只印出將要做什麼，不寫任何檔案 |
@@ -183,10 +207,16 @@ agent-handoff --sweep --out disk.md      # 匯出 md 報告
 | `--no-browser` | 啟動網頁介面但不自動開啟瀏覽器 |
 | `--jobs N` | 並行度；0 依 CPU 核心數自動決定 |
 | `--json` | 以 JSON 輸出結果，供腳本取用 |
+| `--version` | 印出版本號後結束 |
 
 結束碼：`0` 成功 · `1` 未找到符合的工作階段 · `2` 參數或環境錯誤 · `3` 偵測到並行寫入而停止。
 
 環境變數 `AGENT_HANDOFF_LANG` 優先於系統地區設定，方便在中文系統上產出英文交接文件。
+
+**同一天重跑不會丟掉上一份。** 交接檔案名只帶日期，第二次執行會覆蓋第一次。
+覆蓋前先比位元組：內容相同就直接覆蓋（多數重跑是「調完再跑」，要的就是最新那份），
+內容不同才把舊那份留成 `<原名>.prev.md`。只保留最近一份——留成長鏈又變成
+「該讀哪個」的問題，真正的歷史歸 git 管。
 
 ## 它怎麼知道你的專案
 
@@ -227,6 +257,32 @@ Task 1 的兩個檔案都存在、兩個符號都真的被定義了，它才會�
 （`- \`x\` — 說明`）、一行可以列多個路徑、列表符 `-` `*` `+` 都算、
 標題 1–6 級且允許縮排、`Task` 與 `Phase`/`階段` 都認、
 `Produces` 之外還認 `Exports`/`Provides`/`提供`/`匯出`。
+
+### 判定的粒度是 Task，不是 Step
+
+一個 Task 的全部 Step 一起勾或一起不勾。證據只來自 Task 的 `**Files:**` 與
+`**Interfaces:**` 宣告——**Step 文字裡提到的檔案名和符號不算證據**。
+
+```markdown
+### Task 1: core
+
+**Files:**
+- Create: `mod.py`
+
+**Interfaces:**
+- Produces: `alpha`
+
+- [ ] **Step 1** 定義 alpha
+- [ ] **Step 2** 定義 gamma        ← gamma 沒在 Interfaces 裡宣告
+```
+
+上面這個 Task 裡 `mod.py` 存在、`alpha` 真被定義，於是判定為完成，**兩個 Step
+一起被勾上**——包括那個 `gamma` 還不存在的。這不是判錯，是它按宣告判：
+`gamma` 從未進入過證據集。
+
+想讓 Step 2 獨立判定，就把它拆成自己的 Task，或者把 `gamma` 寫進
+`**Interfaces:**`。粒度做在 Task 上是因為 Step 是自然語言，從「定義 gamma」
+這句話裡猜符號名必然出錯，而誤勾是不可逆的——勾掉的步驟會從待辦裡永久消失。
 
 ### 符號是怎麼判定「真的被定義」的
 
@@ -272,6 +328,27 @@ intent.undo()               // ❌ 呼叫不是定義
 有上限就算真佔用率（≥90% 立即交接，≥75% 盡快，≥55% 留意）；
 沒有上限就拿佔用量對照按 200k 視窗折算的閾值——對更大的視窗偏保守，
 寧可早提醒也不要漏掉真要滿的。
+
+**視窗大小可以自己宣告。** 任何單一絕對閾值都不可能同時對 128k 和 1M 視窗正確：
+實測本機一個 Claude 工作階段 102365 token，按 200k 折算判「健康」；若模型其實是
+128k 視窗，那已經 80%、該判「盡快交接」；若是 1M 則只有 10%，「健康」是對的。
+同一個數字，結論相反。
+
+```bash
+# Windows（當前視窗）
+set AGENT_HANDOFF_CONTEXT_WINDOW=1000000
+# Windows（持久，開新視窗也生效）
+setx AGENT_HANDOFF_CONTEXT_WINDOW 1000000
+# Linux / macOS
+export AGENT_HANDOFF_CONTEXT_WINDOW=1000000
+```
+
+優先順序：**記錄自己寫的上限 > 你宣告的 > 按 200k 折算的兜底**。記錄裡的是實測值，
+所以 Codex 工作階段不受這個變數影響。寫了不合法的值（負數、零、小數、非數字）按
+沒寫處理——一個筆誤不該把整張健檢表判成健康。
+
+工具不去猜模型型號：模型會換，而你知道自己在用什麼。官方也從未公布固定的壓縮
+觸發閾值，且自己在「把 1M 視窗按 200k 算」這件事上出過 bug。
 
 **壓縮過就按「滿過」對待。** 自動壓縮只在上下文裝不下時才觸發，
 所以它是最硬的證據，比任何百分比都清楚。壓縮一次即「盡快交接」，
@@ -408,6 +485,36 @@ agent-handoff --sweep
 的專案在哪）。Claude 的 slug 目錄名 `D--Users-bob-myproj` 同樣處理——使用者名稱嵌在
 `-` 分隔的一段裡，漏掉它就會從記錄路徑漏出去。
 
+分隔符混用（`C:\Users/devin/proj`）、POSIX 殼的寫法（Git Bash 的
+`/c/Users/devin`、WSL 的 `/mnt/c/Users/devin`）、少見的家目錄佈局
+（`/export/home/`、`C:\Documents and Settings\`、`\\?\C:\Users\`）都覆蓋了。
+
+**金鑰也會脫敏，而且是第一道。** 檔案要寫「使用者問了什麼」「最後一句輸入」
+「壓縮摘要」，而人在工作階段裡貼過 API key、`Authorization: Bearer …`、
+資料庫密碼是常態。憑證一旦被自動提交進 git 歷史，刪檔案也去不掉——只能改寫歷史
+或輪換金鑰。所以這一道不是可選項：
+
+| 形態 | 例子 | 檔案裡 |
+|---|---|---|
+| OpenAI / Anthropic | `sk-ant-api03-…` | `sk-***` |
+| GitHub | `ghp_…`、`github_pat_…` | `gh*_***` |
+| Slack / AWS / Google | `xoxb-…`、`AKIA…`、`AIza…` | `xox*-***` 等 |
+| HTTP 認證標頭 | `Authorization: Bearer eyJ…` | `Bearer ***` |
+| PEM 私鑰 | `-----BEGIN … PRIVATE KEY-----` | 整塊替換 |
+| URL 密碼 | `postgres://admin:pw@host` | `postgres://admin:***@host` |
+| 鍵值寫法 | `api_key: "…"`、`TOKEN=…` | `api_key: ***` |
+
+**保留前綴而不是整段打碼**：`sk-***` 告訴你該去輪換哪一個金鑰，`***` 什麼都沒說。
+
+**只認有明確前綴的形態，不猜高熵字串。** 那類啟發式會把 commit sha、正常的
+base64、長檔名一起打碼，把檔案毀掉。值為純數字時一律不動——`max_tokens=8192`、
+`token_count: 123` 是模型設定的常態，而上下文佔用恰恰是本工具最核心的判據。
+代價是自造格式的私有 token 可能漏掉；這是刻意的取捨，一份處處是 `***` 的交接
+檔案等於沒有檔案。
+
+**提示詞不脫敏，檔案才脫敏。** 提示詞是你在本機貼進新工作階段的，需要真實路徑
+才能用；檔案會進 git、可能被推到公開儲存庫。兩者受眾不同。
+
 **要在新機器上接著做事，看提示詞裡的儲存庫身分**，那部分本來就是可攜的：
 
 ```
@@ -420,7 +527,65 @@ agent-handoff --sweep
 
 ### 怎麼把工具和工作階段都搬過去
 
-**沒有任何一處寫死使用者名稱或磁碟機代號。** 執行時每個位置都是當場算出來的：
+**最省事的辦法：打個包帶走。**
+
+```bash
+# 在舊機器上：交接的同時打包（勾選的記錄會被複製進包裡）
+agent-handoff /path/to/project --pick-sessions --export-bundle
+
+# 拷走整個包目錄（預設在 ~/.agent-handoff/bundles/<儲存庫名>-<日期>/），然後在新機器上：
+agent-handoff --import-bundle ~/bundles/myproj-2026-08-23
+```
+
+每個被勾選的工作階段還有自己的 `sessions/<id>/` 目錄，四樣東西各回答一個問題：
+
+| 檔案 | 回答什麼 |
+|---|---|
+| `resume.txt` | 怎麼**無損**回到這個工作階段（首選路徑） |
+| `session.md` | 這個工作階段說過什麼，可直接貼給新工作階段 |
+| `locate.txt` | 工作目錄、工作階段 ID、深度連結 |
+| `meta.json` | 同一批資訊的機器可讀版本 |
+
+`session.md` **分級帶**：使用者原話與助手結論按原文進，工具呼叫壓成一行
+「名字 -> 結果摘要」，thinking / reasoning 不進。依據是實測的體積分布——
+一份 13452 行的 Codex rollout 裡 `function_call` 與其輸出佔 6746 行（50%），
+而真正的對話訊息只有 1614 行。實測壓縮比：30 MB 的 Claude 記錄 → 95 KB，
+90 MB 的 Codex → 959 KB。超限時先丟最早的工具摘要再截人話，並明說丟了多少。
+
+harness 注入的樣板不會被當成使用者原話：斜線命令回顯、背景工作通知、plugin
+清單都以 `user` 身分出現在記錄裡，實測一份記錄裡 `<command-name>` 有 28 次而
+真實訴求只有 23 條。過濾後實測 116 條使用者輪全部是真實訴求。
+
+包裡有三樣東西：`manifest.json`（含 `schema_version`）、`handoff/`（交接文件 +
+開場提示詞）、`transcripts/`（**勾選記錄的副本**）。
+
+為什麼必須帶副本：交接文件裡的記錄路徑是**這台機器上的位置**，不是內容。
+`~/.claude/projects/C--Users-devin-proj/<id>.jsonl` 這個路徑裡，目錄名本身
+編碼了來源機的 cwd——換機器後那個目錄不存在，新工作階段拿到路徑也讀不到東西。
+只給路徑不給內容，就是「換機必然失效」的根本原因。
+
+包裡的路徑存成佔位符（`{CLAUDE_ROOT}/…`、`{CODEX_ROOT}/…`、
+`{CODEX_ARCHIVED_ROOT}/…`），匯入時**按目標機器自己的根重新解析**，不做字串
+替換——新機器的 `CLAUDE_CONFIG_DIR` 可能指向完全不同的位置，甚至另一個磁碟機。
+本機沒有對應根時不編造路徑，只告訴你用包內副本。
+
+包預設寫在**儲存庫外**（`~/.agent-handoff/bundles/`）：裡面有記錄副本，而記錄可能
+含你在工作階段裡貼過的任何東西，預設寫進儲存庫就等於預設交給 `git add -A`。要放進
+儲存庫請明確給路徑。
+
+`--import-bundle` **只讀**：不往 `~/.claude` 或 `~/.codex` 寫任何東西。要不要把
+副本放進去由你決定——那會改變那個 app 的工作階段列表。（Claude Code 自 v2.1.205 起
+也明確禁止篡改工作階段記錄檔案。）
+
+> **包裡的記錄副本沒有脫敏。** 交接文件與提示詞經過脫敏（家目錄、他機使用者名稱、
+> 密鑰形態），但 `transcripts/` 裡是**原樣位元組**——副本的價值就是保真，脫過的
+> 記錄作為「那段工作的記錄」已經失真。這意味著裡面可能有你當時貼進工作階段的密鑰、
+> 權杖、口令。`manifest.json` 的 `warning` 欄位寫著這件事，命令列在真帶了副本時
+> 也會提醒。**分享包之前先自己看一眼。**
+
+---
+
+**不打包也能搬：沒有任何一處寫死使用者名稱或磁碟機代號。** 執行時每個位置都是當場算出來的：
 家目錄來自 `expanduser("~")`，檢出根來自啟動腳本自己的位置，工作階段目錄來自
 `CODEX_HOME` / `CLAUDE_CONFIG_DIR` 或家目錄。整個目錄拷到另一台電腦
 （使用者名稱不同、磁碟機代號不同）直接可用，不改一行設定。

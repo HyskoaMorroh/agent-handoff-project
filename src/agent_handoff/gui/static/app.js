@@ -276,6 +276,44 @@
       });
       btn.onclick = () => copyText(r.resume_cmd, btn, t("gui.label.resume"));      act.appendChild(btn);
     }
+    /* 逐项复制。四样东西对应四个不同的下一步动作，所以分开给而不是塞进一个
+       「复制全部」：
+         · 工作目录 —— 粘进终端 cd 过去
+         · 会话 ID   —— 贴进 issue、或喂给 --find
+         · 深度链接 —— 直接唤起 APP 回到那条线程（只有 Codex 注册了 scheme）
+         · Markdown  —— 把整段对话粘给新会话，交接的主力产出
+       Markdown 要现取（会话正文可能几十万字符），所以它是异步的。 */
+    if (!(opts && opts.noAction)) {
+      if (r.cwd) {
+        const b = el("button.link.link-quiet", { text: t("gui.copy.cwd") });
+        b.onclick = () => copyText(r.cwd, b, t("gui.copy.cwd"));
+        act.appendChild(b);
+      }
+      if (r.session_id) {
+        const b = el("button.link.link-quiet", { text: t("gui.copy.id") });
+        b.onclick = () => copyText(r.session_id, b, t("gui.copy.id"));
+        act.appendChild(b);
+      }
+      if (r.deep_link) {
+        const b = el("button.link.link-quiet", { text: t("gui.copy.deeplink") });
+        b.onclick = () => copyText(r.deep_link, b, t("gui.copy.deeplink"));
+        act.appendChild(b);
+      }
+      const md = el("button.link.link-quiet", { text: t("gui.copy.markdown") });
+      md.onclick = async () => {
+        md.disabled = true;
+        try {
+          const data = await api("/api/session-md?path=" + encodeURIComponent(r.path));
+          copyText(data.markdown || "", md, t("gui.copy.markdown"));
+        } catch (e) {
+          md.textContent = t("gui.err.title");
+          setTimeout(() => { md.textContent = t("gui.copy.markdown"); }, 1600);
+        } finally {
+          md.disabled = false;
+        }
+      };
+      act.appendChild(md);
+    }
     if (act.childNodes.length) card.appendChild(act);
     return card;
   }
@@ -372,6 +410,9 @@
 
   /* ── 找会话 ────────────────────────────────────────────── */
   let lastFind = null;
+  // 上次查找命中的仓库集合。切语言重渲染时要保留，否则跨项目的提示会消失，
+  // 而那条提示恰恰决定用户该不该把这些会话一起交接。
+  let lastFindRepos = [];
 
   async function doFind() {
     const q = $("#find-q").value.trim();
@@ -381,6 +422,7 @@
     try {
       const data = await api("/api/find?q=" + encodeURIComponent(q));
       lastFind = data.rows || [];
+      lastFindRepos = data.repos || [];
       renderFind();
     } catch (e) {
       clear(out).appendChild(errPanel(e.message));
@@ -393,6 +435,15 @@
     if (!rows.length) {
       out.appendChild(el("div.card", null, el("p.empty", { text: t("cli.find.hint") })));
       return;
+    }
+    /* 找到的会话横跨多个仓库时先说清楚：交接固化的是**一个仓库**的状态，
+       把分属不同项目的会话汇总进一份提示词，等于让新会话面对两个现场。
+       同一个仓库的多个会话才是「一起交接」的正常用法。 */
+    const repos = lastFindRepos || [];
+    if (repos.length > 1) {
+      out.appendChild(el("div.card.warn", null,
+        el("p", { text: t("gui.find.multi_repo", { count: repos.length }) }),
+        el("ul", null, ...repos.map((p) => el("li", null, el("code", { text: p }))))));
     }
     rows.forEach((r) => out.appendChild(sessionCard(r, { showAgent: true })));
   }
@@ -487,6 +538,9 @@
           no_commit: $("#o-no-commit").checked,
           no_vitals: $("#o-no-vitals").checked,
           force: $("#o-force").checked,
+          // 勾了就打包到默认位置（~/.agent-handoff/bundles/）。界面上不给路径输入框：
+          // 默认位置刻意在仓库外，而让用户在网页里填任意写入路径会把这个保护绕掉。
+          export_bundle: $("#o-bundle").checked,
           // 体检视图里勾选的会话。它们的摘要会写进交接文件，提示词会点名它们。
           sessions: Array.from(picked)
         };
@@ -714,6 +768,30 @@
     $("#scan-deep").addEventListener("change", () => { if (scanned) scanVitals(); });
     $("#run-btn").addEventListener("click", () => startHandoff(false));
     $("#dry-btn").addEventListener("click", () => startHandoff(true));
+
+    /* 运行前明示这一次会发生什么。
+       复选框的文案说的是「关掉什么」（「不提交，只分析」），读者得自己反推
+       「没勾就是会提交」——而提交是不可逆的写操作。这一行把它正过来说，
+       并且随勾选实时更新，所以按下按钮之前看到的就是即将发生的事。 */
+    const opts = ["o-skip-tests", "o-no-commit", "o-no-vitals", "o-force", "o-bundle"];
+    const syncWill = () => {
+      const node = $("#will");
+      if (!node) return;
+      const willCommit = !$("#o-no-commit").checked;
+      const parts = [t(willCommit ? "gui.will.commit" : "gui.will.no_commit")];
+      parts.push(t($("#o-skip-tests").checked ? "gui.will.no_tests" : "gui.will.tests"));
+      if ($("#o-force").checked) parts.push(t("gui.will.force"));
+      if ($("#o-bundle").checked) parts.push(t("gui.will.bundle"));
+      node.textContent = t("gui.will.head") + " " + parts.join(t("gui.will.sep"));
+      node.classList.toggle("will-write", willCommit);
+    };
+    opts.forEach((id) => {
+      const box = $("#" + id);
+      if (box) box.addEventListener("change", syncWill);
+    });
+    syncWill();
+    onLangChange(syncWill);
+
     $("#find-btn").addEventListener("click", doFind);
     $("#find-q").addEventListener("keydown", (e) => { if (e.key === "Enter") doFind(); });
     $("#repo").addEventListener("keydown", (e) => { if (e.key === "Enter") startHandoff(true); });

@@ -54,9 +54,23 @@ INTERFACE_DECL = re.compile(
     re.I,
 )
 
+# 承载「原始要求」的段落标题。两种写法都要认：粗体行内标签（`**Goal:**`）
+# 与 Markdown 标题（`## Goal`）。
+#
+# 原版把词表拆在两个分支里各写一份，于是 `Goal` 只在粗体分支出现——
+# `## Goal` 这种最常见的写法认不出来。实测：一份带 `## Goal` 的计划仍然报
+# 「没找到意图段落」，而本工具自己的计划文档用的正是 `## Goal`。
+# 提示词于是不点名目标段落，新会话把计划当待办清单读，漏掉整体目标与红线。
+#
+# 现在共用同一组词，加一个词两种写法同时生效，不会再漂移。
+_INTENT_WORDS = (
+    "Goal|Goals|Objective|Objectives|Global Constraints|Constraints"
+    "|Architecture|Background|Overview|Non-Goals|Scope"
+    r"|目标|目標|目的|全局约束|全域約束|约束|約束|架构|架構|背景|概述|范围|範圍|红线|紅線"
+)
 INTENT_RX = re.compile(
-    r"^(?:\*\*(?P<bold>Goal|Objective|目标|目標|Architecture|架构|架構|Background|背景)[:：]?\*\*|"
-    r"#{2,3}\s*(?P<head>Global Constraints|Constraints|全局约束|全域約束|约束|約束|Background|背景|Overview|概述))",
+    rf"^(?:\*\*(?P<bold>{_INTENT_WORDS})[:：]?\*\*|"
+    rf"#{{2,4}}\s*(?P<head>{_INTENT_WORDS})\s*[:：]?\s*$)",
     re.M,
 )
 

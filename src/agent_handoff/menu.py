@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 from .i18n import LANG_NAMES, Translator, available, detect, normalize
-from .platform import clear_screen, force_utf8_io, open_in_browser
+from .platform import clear_screen, find_guide, force_utf8_io, open_in_browser
 
 LINE = "─" * 62
 # 语言选择记在这里，下次启动沿用。放在用户配置目录而不是包目录：
@@ -34,6 +34,26 @@ def _save_lang(lang: str) -> None:
         CONFIG.write_text(lang, encoding="utf-8")
     except OSError:
         pass  # 存不下就算了，不该因为写配置失败而中断菜单
+
+
+def _is_yes(tr: Translator, answer: str) -> bool:
+    """这个回答算「是」吗。
+
+    确认词必须从文案表来，不能写死在代码里。原版写死成
+    `("y", "yes", "是", "好")`——只覆盖英文与简体，繁中用户输入「是」凑巧能中，
+    但输入繁体习惯的「要」「確定」就落到 else 分支，`--by-repo` 静默不生效，
+    用户以为功能坏了。而 `scripts/check_i18n.py` 的白名单以**整个文件**为粒度
+    把 menu.py 排除在 CJK 字面量检查之外，所以 CI 一直看不见这处。
+
+    英文 `y`/`yes` 始终接受：它们是终端交互的通用惯例，任何语言的用户都可能
+    习惯性地敲 y，把它们排除掉只会制造新的挫败。
+    """
+    val = answer.strip().lower()
+    if val in ("y", "yes"):
+        return True
+    # 文案表里是逗号分隔的候选词，方便译者按自己语言的习惯补充多个说法。
+    words = [w.strip().lower() for w in tr.t("menu.confirm.yes").split(",")]
+    return val in [w for w in words if w]
 
 
 def run_tool(tr: Translator, *args: str) -> int:
@@ -109,7 +129,7 @@ def menu_sweep(tr: Translator) -> None:
     except (EOFError, KeyboardInterrupt):
         return
     print()
-    if want in ("y", "yes", "是", "好"):
+    if _is_yes(tr, want):
         run_tool(tr, "--sweep", "--by-repo")
     else:
         run_tool(tr, "--sweep")
@@ -204,9 +224,10 @@ def menu_help(tr: Translator) -> None:
     # 指南只有一份 guide.html，三种语言的文案都在里面，靠 #lang= 挑。
     # 原先按 guide.{lang}.html 找文件：build_guide.py 从不产出这种文件名，
     # 于是英文和繁中用户必然落到简体那一档。
-    root = Path(__file__).resolve().parent.parent.parent
-    names = ["docs/guide.html", "使用说明.html"]
-    guide = next((root / n for n in names if (root / n).is_file()), None)
+    #
+    # 查找交给 platform.find_guide()：此前这里自己往上数三层，只认源码检出，
+    # `pip install` 之后必然落到「找不到」那一档。
+    guide = find_guide()
     if guide:
         print(f"  {guide}")
         target = f"{guide.as_uri()}#lang={tr.lang}"

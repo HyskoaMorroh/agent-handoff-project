@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parent.parent
 I18N = ROOT / "docs" / "i18n"
 TEMPLATE = ROOT / "docs" / "guide.template.html"
 OUT = ROOT / "docs" / "guide.html"
+# 包内副本，随 wheel 分发。生成物，不进 git（见 .gitignore）。
+PKG_COPY = ROOT / "src" / "agent_handoff" / "gui" / "static" / "guide.html"
 BASE = "zh-Hans"
 ORDER = ("zh-Hans", "zh-Hant", "en")
 
@@ -122,7 +124,22 @@ def main() -> int:
 
     OUT.write_text(html, encoding="utf-8", newline="")
     size = OUT.stat().st_size
+
+    # 同时写一份到包内，让 wheel 也带上图文说明。
+    #
+    # 为什么需要这一份：`docs/` 从来不进 wheel（`package-data` 只收
+    # `i18n/*.json` 与 `gui/static/*`），所以 `pip install` 之后网页界面的
+    # 「指南」入口必然 404、菜单第 6 项必然打印「找不到」——而这份 104 KB 的
+    # 三语文档正是本项目的主要说明载体。
+    #
+    # 为什么不让它进 git：那就成了同一份内容的两个真源，改一处忘另一处就漂移
+    # （这正是原先拒绝打包的理由）。它是生成物，已加进 `.gitignore`；
+    # CI 的新鲜度检查只盯 `docs/guide.html` 那一份，仍然有效。
+    PKG_COPY.parent.mkdir(parents=True, exist_ok=True)
+    PKG_COPY.write_text(html, encoding="utf-8", newline="")
+
     print(f"{OUT.relative_to(ROOT).as_posix()} — {len(base)} keys x {len(tables)} languages, {size // 1024} KB")
+    print(f"{PKG_COPY.relative_to(ROOT).as_posix()} — packaged copy for wheel installs")
     return 0
 
 

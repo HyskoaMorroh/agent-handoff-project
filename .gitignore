@@ -15,3 +15,17 @@ htmlcov/
 Thumbs.db
 .idea/
 .vscode/
+
+# 图文说明的包内副本。真源是 docs/guide.html（由 scripts/build_guide.py 生成）；
+# 这一份只在打包前生成，好让 wheel 也带上说明文档。两份都进 git 就成了两个
+# 真源，改一处忘另一处必然漂移。
+src/agent_handoff/gui/static/guide.html
+
+# graphify 的图谱产物（第三方工具生成，可随时重建）。
+graphify-out/
+
+# 交接文件的同日备份。它是「同一天重跑且内容变了」时留下的救生索，
+# 针对的正是「用了 --no-commit 所以 git 里没有上一份」这个缺口——
+# 让它自己进 git 就本末倒置了，而且会给每次重跑加一个噪声文件。
+# 真正的历史归 git 管：提交过的交接文件在历史里都能翻出来。
+*.prev.md

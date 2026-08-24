@@ -5,7 +5,7 @@
 <p align="center">
   <a href="CHANGELOG.md"><img alt="version" src="https://img.shields.io/badge/version-2.3.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="tests" src="https://img.shields.io/badge/tests-392%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="tests" src="https://img.shields.io/badge/tests-617%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -164,13 +164,37 @@ agent-handoff --sweep --by-repo        # also group by repository (reads transcr
 agent-handoff --sweep --out disk.md   # export a markdown report
 ```
 
+### A typical run
+
+```bash
+# 1. See which session needs handing off (read-only; touches no repository)
+agent-handoff --vitals
+
+# 2. Cannot tell which conversation a screenshot came from? Search by the first
+#    few characters of the id, by directory name, or by a word from the prompt
+agent-handoff --find 01a00e83
+agent-handoff --find workflow
+
+# 3. Dry run: print what would happen without writing any file
+agent-handoff /path/to/project --dry-run
+
+# 4. Pick the sessions to carry over, then run for real
+agent-handoff /path/to/project --pick-sessions
+
+# 5. How much disk do the transcripts use, and what is safe to drop?
+#    (metadata only, milliseconds; deletes nothing)
+agent-handoff --sweep
+agent-handoff --sweep --by-repo          # also group by repository (reads transcripts, much slower)
+agent-handoff --sweep --out disk.md      # export a markdown report
+```
+
 ### Every flag
 
 | Flag | What it does |
 |---|---|
 | `repo` | Repository path; defaults to the current directory |
 | `--plan PATH` | Plan document path; omit to auto-detect the newest checkbox-bearing task document |
-| `--out PATH` | Handoff file output path; defaults to the plan document's directory |
+| `--out PATH` | Handoff file output path; defaults to the plan document's directory (see below about same-day reruns) |
 | `-m, --message MSG` | Commit message; omit to generate one |
 | `--no-commit` | Do not commit; analyze and write the handoff file only |
 | `--skip-tests` | Do not run tests (fast mode) |
@@ -179,9 +203,11 @@ agent-handoff --sweep --out disk.md   # export a markdown report
 | `--no-vitals` | Skip the session check (no vitals table in the handoff file) |
 | `--sweep` | Report transcript disk usage and what is safe to reclaim, then exit; **never deletes anything** |
 | `--by-repo` | With `--sweep`: also group usage by repository (reads transcripts, much slower) |
-| `--find KEYWORD` | Locate a session by id, directory, or topic keyword |
+| `--find KEYWORD` | Locate a session by id, directory, or topic keyword; repeatable or comma-separated to find several at once |
 | `--limit N` | Maximum transcripts to scan per agent; default 12 |
 | `--pick-sessions` | Interactively tick which sessions to carry over |
+| `--export-bundle [DIR]` | Pack a directory you can copy to another machine (**includes transcript copies**); omit the path to write under `~/.agent-handoff/bundles/` |
+| `--import-bundle DIR` | Read a bundle, resolve its paths against this machine, and report; read-only, copies no transcript |
 | `--sessions PATH` | Name transcripts to carry over; repeatable or comma-separated |
 | `--force` | Ignore concurrent-write warnings and continue |
 | `--dry-run` | Print what would happen without writing any file |
@@ -191,10 +217,19 @@ agent-handoff --sweep --out disk.md   # export a markdown report
 | `--no-browser` | Start the web interface without opening a browser |
 | `--jobs N` | Parallelism; 0 decides from the CPU count |
 | `--json` | Emit results as JSON for scripts to consume |
+| `--version` | Print the version and exit |
 
 Exit codes: `0` success · `1` no session matched · `2` bad argument or environment · `3` stopped because a concurrent write was detected.
 
 `AGENT_HANDOFF_LANG` overrides the system locale, which is handy for producing an English handoff on a Chinese-locale machine.
+
+**A same-day rerun does not lose the previous file.** The handoff filename carries
+only the date, so a second run overwrites the first. Before overwriting, the bytes
+are compared: identical content is simply overwritten (most reruns are "adjust and
+run again", where the newest file is exactly what you want), and only differing
+content is preserved as `<name>.prev.md`. Just the most recent one is kept — a
+growing chain becomes its own "which one do I read" problem, and real history
+belongs to git.
 
 ## How it learns your project
 
@@ -236,6 +271,35 @@ the verb may be bold (`- **Modify**: x`), the colon optional (`- Modify x`),
 the verb absent (`- \`x\` — note`), several paths may share a line,
 `-` `*` `+` all count as list markers, headings may be levels 1–6 and indented,
 `Task` and `Phase` both count, and `Exports`/`Provides` join `Produces`.
+
+### The unit of judgement is the Task, not the Step
+
+All of a Task's steps get ticked together, or none of them do. The evidence comes
+only from that Task's `**Files:**` and `**Interfaces:**` declarations — **file names
+and symbols mentioned in step text do not count as evidence**.
+
+```markdown
+### Task 1: core
+
+**Files:**
+- Create: `mod.py`
+
+**Interfaces:**
+- Produces: `alpha`
+
+- [ ] **Step 1** define alpha
+- [ ] **Step 2** define gamma       ← gamma is not declared under Interfaces
+```
+
+In that Task `mod.py` exists and `alpha` really is defined, so the Task counts as
+complete and **both steps get ticked** — including the one whose `gamma` does not
+exist yet. That is not a misjudgement; it judges by declaration, and `gamma` never
+entered the evidence set.
+
+To have step 2 judged on its own, split it into its own Task, or declare `gamma`
+under `**Interfaces:**`. The unit is the Task because steps are natural language,
+and guessing a symbol name out of "define gamma" is bound to be wrong — while a
+wrong tick is not reversible: a ticked step disappears from the todo list for good.
 
 ### How a symbol counts as "actually defined"
 
@@ -289,6 +353,31 @@ With a limit, the real percentage is used (≥90% hand off now, ≥75% soon,
 ≥55% watch). Without one, the usage figure is compared against thresholds scaled
 for a 200k window — deliberately conservative for larger windows, because warning
 early costs less than missing a session that is about to fill.
+
+**You can declare the window size yourself.** No single absolute threshold can be
+right for both a 128k and a 1M window: one local Claude session measured 102365
+tokens, which the 200k-scaled thresholds call "healthy". If that model actually has
+a 128k window, it is already at 80% and should read "hand off soon"; at 1M it is
+only 10% and "healthy" is correct. Same number, opposite conclusions.
+
+```bash
+# Windows (current shell)
+set AGENT_HANDOFF_CONTEXT_WINDOW=1000000
+# Windows (persistent, applies to new shells too)
+setx AGENT_HANDOFF_CONTEXT_WINDOW 1000000
+# Linux / macOS
+export AGENT_HANDOFF_CONTEXT_WINDOW=1000000
+```
+
+Precedence: **the limit written in the transcript > the one you declare > the
+200k-scaled fallback.** The transcript figure is measured, so Codex sessions are
+unaffected by this variable. An invalid value (negative, zero, fractional,
+non-numeric) is treated as unset — a typo must not quietly mark the whole vitals
+table healthy.
+
+The tool does not try to guess the model: models change, and you know which one you
+are running. Anthropic has never published a fixed compaction trigger threshold
+either, and has shipped bugs from treating a 1M window as 200k.
 
 **Compaction means the context already filled up.** Automatic compaction only
 fires when the context can no longer fit, which makes it the hardest evidence
@@ -448,6 +537,41 @@ on that machine). Claude's slug directory name `D--Users-bob-myproj` is handled
 as well: the username is embedded in a `-`-separated segment there, and missing
 it leaks the name through the transcript path.
 
+Mixed separators (`C:\Users/devin/proj`), POSIX-shell spellings (Git Bash's
+`/c/Users/devin`, WSL's `/mnt/c/Users/devin`) and the less common home layouts
+(`/export/home/`, `C:\Documents and Settings\`, `\\?\C:\Users\`) are all covered.
+
+**Credentials are redacted too, and that pass runs first.** The document has to
+carry what you asked, your last prompt and the compaction summaries — and pasting
+an API key, an `Authorization: Bearer …` header or a database password into a
+session is routine. Once a credential lands in git history, deleting the file does
+not remove it: you have to rewrite history or rotate the secret. So this pass is
+not optional:
+
+| Shape | Example | In the document |
+|---|---|---|
+| OpenAI / Anthropic | `sk-ant-api03-…` | `sk-***` |
+| GitHub | `ghp_…`, `github_pat_…` | `gh*_***` |
+| Slack / AWS / Google | `xoxb-…`, `AKIA…`, `AIza…` | `xox*-***`, etc. |
+| HTTP auth header | `Authorization: Bearer eyJ…` | `Bearer ***` |
+| PEM private key | `-----BEGIN … PRIVATE KEY-----` | whole block replaced |
+| URL password | `postgres://admin:pw@host` | `postgres://admin:***@host` |
+| Key/value form | `api_key: "…"`, `TOKEN=…` | `api_key: ***` |
+
+**The prefix survives instead of the whole string being starred out**: `sk-***`
+tells you which secret to rotate; `***` tells you nothing.
+
+**Only clearly-prefixed shapes are matched — no high-entropy guessing.** That kind
+of heuristic would star out commit SHAs, ordinary base64 and long filenames, and
+ruin the document. Purely numeric values are always left alone: `max_tokens=8192`
+and `token_count: 123` are normal model config, and context usage is this tool's
+central signal. The cost is that a home-grown token format may slip through — a
+deliberate trade, because a document full of `***` is not a document.
+
+**Prompts are not redacted; documents are.** You paste the prompt into a new
+session on this machine and it needs real paths. The document goes into git and may
+be pushed to a public repo. Different audiences.
+
 **To actually continue the work on the new machine, use the repo identity in the
 prompt** — that part was portable all along:
 
@@ -462,7 +586,81 @@ a fresh clone will carry them.
 
 ### Moving the tool and the sessions across
 
-**Nothing is hardcoded to a user name or a drive letter.** Every location is
+**The easy way: pack a bundle and take it with you.**
+
+```bash
+# On the old machine: hand off and pack in one go (picked transcripts get copied in)
+agent-handoff /path/to/project --pick-sessions --export-bundle
+
+# Copy the bundle directory over (defaults to ~/.agent-handoff/bundles/<repo>-<date>/),
+# then on the new machine:
+agent-handoff --import-bundle ~/bundles/myproj-2026-08-23
+```
+
+Each picked session also gets its own `sessions/<id>/` directory, four files each
+answering one question:
+
+| File | Answers |
+|---|---|
+| `resume.txt` | how to get back **losslessly** (the preferred path) |
+| `session.md` | what this session said, ready to paste into a new one |
+| `locate.txt` | working directory, session id, deep link |
+| `meta.json` | the same facts, machine-readable |
+
+`session.md` is **tiered**, not everything and not just a digest: user asks and
+assistant conclusions go in verbatim, tool calls collapse to one line each
+(`name -> result summary`), thinking / reasoning is left out. The split follows
+measured volume — in one 13452-line Codex rollout, `function_call` plus its output
+took 6746 lines (50%) while actual conversation messages were 1614. Measured
+compression: a 30 MB Claude transcript → 95 KB, a 90 MB Codex one → 959 KB.
+Over the limit, the earliest tool summaries go first and the drop is stated.
+
+Harness boilerplate is not mistaken for what the user said: slash-command echoes,
+background task notices and plugin listings all appear under the `user` role — in
+one transcript `<command-name>` showed up 28 times against 23 real asks. After
+filtering, all 116 user turns measured were real asks.
+
+A bundle holds three things: `manifest.json` (with a `schema_version`),
+`handoff/` (the document plus the opening prompt), and `transcripts/`
+(**copies of the picked transcripts**).
+
+Why the copies are mandatory: the transcript paths in a handoff document are
+positions *on that machine*, not content. In
+`~/.claude/projects/C--Users-devin-proj/<id>.jsonl`, the directory name itself
+encodes the source machine's cwd — after a move that directory does not exist,
+so the path leads nowhere. Giving the path without the content is exactly why a
+handoff "stops working on the other machine".
+
+Paths inside a bundle are stored as placeholders (`{CLAUDE_ROOT}/…`,
+`{CODEX_ROOT}/…`, `{CODEX_ARCHIVED_ROOT}/…`) and **re-resolved against the target
+machine's own roots** on import — no string substitution, because the new
+machine's `CLAUDE_CONFIG_DIR` may point somewhere entirely different, even to
+another drive. When no matching root exists here, no path is invented; you are
+told to use the bundled copy.
+
+Bundles are written **outside the repository** by default
+(`~/.agent-handoff/bundles/`): they contain transcript copies, and a transcript
+may hold anything you ever pasted into a session — writing them into the repo by
+default would hand them straight to `git add -A`. Pass an explicit path to put one
+in the repo.
+
+`--import-bundle` is **read-only**: nothing is written to `~/.claude` or
+`~/.codex`. Whether to put the copies there is your call — it changes that app's
+session list. (Claude Code has also forbidden tampering with session transcript
+files since v2.1.205.)
+
+> **The transcript copies in a bundle are not redacted.** The handoff document and
+> the prompt are (home directory, other machines' user names, secret shapes), but
+> `transcripts/` holds **verbatim bytes** — the whole value of a copy is fidelity,
+> and a redacted transcript has already lost what made it a record of that work.
+> That means it can contain API keys, tokens, or passwords you pasted into those
+> sessions. The `warning` field in `manifest.json` says so, and the CLI reminds you
+> whenever copies were actually carried. **Review before sharing a bundle.**
+
+---
+
+**You can also move without a bundle: nothing is hardcoded to a user name or a
+drive letter.** Every location is
 worked out at runtime: the home directory from `expanduser("~")`, the checkout
 root from the launcher's own location, the session directories from
 `CODEX_HOME` / `CLAUDE_CONFIG_DIR` or the home directory. Copy the whole

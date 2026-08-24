@@ -5,7 +5,7 @@
 <p align="center">
   <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.3.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="测试" src="https://img.shields.io/badge/tests-392%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="测试" src="https://img.shields.io/badge/tests-617%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="运行时依赖" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="许可" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -117,7 +117,9 @@ scripts\agent-handoff.cmd .
 
 三种入口，功能等价，选顺手的。
 
-**🖥 网页界面**（推荐）——最好看，三语随时切换，浅色/深色/跟随系统。
+### 网页界面（推荐）
+
+最好看，三语随时切换，浅色/深色/跟随系统。
 
 ```bash
 agent-handoff --gui
@@ -125,14 +127,18 @@ agent-handoff --gui
 
 只绑定 `127.0.0.1`，每个请求校验一次性令牌。它能对任意路径跑 `git commit`，所以这不是可选项。
 
-**📋 交互菜单**——不用记参数。把项目文件夹拖进窗口就能填路径。
+### 交互菜单（不想记参数）
+
+把项目文件夹拖进窗口就能填路径。
 
 ```bash
 python -m agent_handoff.menu
 # Windows 双击 scripts\双击运行.cmd ；Linux / macOS 跑 ./scripts/run.sh
 ```
 
-**⌨ 命令行**——适合写进脚本。加 `--json` 让输出被程序消费，退出码有语义（见下）。
+### 命令行
+
+适合写进脚本。加 `--json` 让输出被程序消费，退出码有语义（见下）。
 
 ```bash
 agent-handoff --vitals
@@ -166,7 +172,7 @@ agent-handoff --sweep --out disk.md      # 导出 md 报告
 |---|---|
 | `repo` | 仓库路径，默认当前目录 |
 | `--plan PATH` | 计划文档路径；省略则自动探测最新的含复选框任务文档 |
-| `--out PATH` | 交接文件输出路径；默认与计划文档同目录 |
+| `--out PATH` | 交接文件输出路径；默认与计划文档同目录（同日重跑见下方说明） |
 | `-m, --message MSG` | 提交信息；省略则自动生成 |
 | `--no-commit` | 不提交，只分析并生成交接文件 |
 | `--skip-tests` | 不跑测试（快速模式） |
@@ -175,9 +181,11 @@ agent-handoff --sweep --out disk.md      # 导出 md 报告
 | `--no-vitals` | 跳过会话体检（交接文件里不含体征表） |
 | `--sweep` | 报告转录占了多少磁盘、哪些可以安全回收，然后退出；**不删任何文件** |
 | `--by-repo` | 配合 `--sweep`：额外按仓库聚合占用（要读转录，慢很多） |
-| `--find KEYWORD` | 按会话 ID / 目录 / 话题关键词定位会话 |
+| `--find KEYWORD` | 按会话 ID / 目录 / 话题关键词定位会话；可重复或用逗号分隔一次找多个 |
 | `--limit N` | 每个智能体最多扫描多少个最新转录，默认 12 |
 | `--pick-sessions` | 交互勾选要传承的会话（列出后按编号选择） |
+| `--export-bundle [DIR]` | 打成可拷到另一台电脑的包（**含转录副本**）；省略路径写到 `~/.agent-handoff/bundles/` |
+| `--import-bundle DIR` | 读一个包，把里面的路径解析到本机并报告；只读，不复制任何转录 |
 | `--sessions PATH` | 直接指定要传承的转录；可重复，或用逗号分隔 |
 | `--force` | 忽略并发写入警告强行继续 |
 | `--dry-run` | 全程只打印将要做什么，不写任何文件 |
@@ -187,10 +195,16 @@ agent-handoff --sweep --out disk.md      # 导出 md 报告
 | `--no-browser` | 启动网页界面但不自动打开浏览器 |
 | `--jobs N` | 并行度；0 按 CPU 核数自动决定 |
 | `--json` | 以 JSON 输出结果，供脚本消费 |
+| `--version` | 打印版本号后退出 |
 
 退出码：`0` 成功 · `1` 未找到匹配的会话 · `2` 参数或环境错误 · `3` 检测到并发写入而停止。
 
 环境变量 `AGENT_HANDOFF_LANG` 优先于系统区域设置，方便在中文系统上产出英文交接文档。
+
+**同一天重跑不会丢掉上一份。** 交接文件名只带日期，第二次运行会覆盖第一次。
+覆盖前先比字节：内容相同就直接覆盖（多数重跑是「调完再跑」，要的就是最新那份），
+内容不同才把旧那份留成 `<原名>.prev.md`。只保留最近一份——留成长链又变成
+「该读哪个」的问题，真正的历史归 git 管。
 
 ## 它怎么知道你的项目
 
@@ -231,6 +245,32 @@ Task 1 的两个文件都存在、两个符号都真的被定义了，它才会�
 （`- \`x\` — 说明`）、一行可以列多个路径、列表符 `-` `*` `+` 都算、
 标题 1–6 级且允许缩进、`Task` 与 `Phase`/`阶段` 都认、
 `Produces` 之外还认 `Exports`/`Provides`/`提供`/`导出`。
+
+### 判定的粒度是 Task，不是 Step
+
+一个 Task 的全部 Step 一起勾或一起不勾。证据只来自 Task 的 `**Files:**` 与
+`**Interfaces:**` 声明——**Step 文字里提到的文件名和符号不算证据**。
+
+```markdown
+### Task 1: core
+
+**Files:**
+- Create: `mod.py`
+
+**Interfaces:**
+- Produces: `alpha`
+
+- [ ] **Step 1** 定义 alpha
+- [ ] **Step 2** 定义 gamma        ← gamma 没在 Interfaces 里声明
+```
+
+上面这个 Task 里 `mod.py` 存在、`alpha` 真被定义，于是判定为完成，**两个 Step
+一起被勾上**——包括那个 `gamma` 还不存在的。这不是判错，是它按声明判：
+`gamma` 从未进入过证据集。
+
+想让 Step 2 独立判定，就把它拆成自己的 Task，或者把 `gamma` 写进
+`**Interfaces:**`。粒度做在 Task 上是因为 Step 是自然语言，从「定义 gamma」
+这句话里猜符号名必然出错，而误勾是不可逆的——勾掉的步骤会从待办里永久消失。
 
 ### 符号是怎么判定「真的被定义」的
 
@@ -276,6 +316,27 @@ intent.undo()               // ❌ 调用不是定义
 有上限就算真占用率（≥90% 立刻交接，≥75% 尽快，≥55% 留意）；
 没有上限就拿占用量对照按 200k 窗口折算的阈值——对更大的窗口偏保守，
 宁可早提醒也不要漏掉真要满的。
+
+**窗口大小可以自己声明。** 任何单一绝对阈值都不可能同时对 128k 和 1M 窗口正确：
+实测本机一个 Claude 会话 102365 token，按 200k 折算判「健康」；若模型其实是
+128k 窗口，那已经 80%、该判「尽快交接」；若是 1M 则只有 10%，「健康」是对的。
+同一个数字，结论相反。
+
+```bash
+# Windows（当前窗口）
+set AGENT_HANDOFF_CONTEXT_WINDOW=1000000
+# Windows（持久，开新窗口也生效）
+setx AGENT_HANDOFF_CONTEXT_WINDOW 1000000
+# Linux / macOS
+export AGENT_HANDOFF_CONTEXT_WINDOW=1000000
+```
+
+优先级：**转录自己写的上限 > 你声明的 > 按 200k 折算的兜底**。转录里的是实测值，
+所以 Codex 会话不受这个变量影响。写了非法值（负数、零、小数、非数字）按没写处理
+——一个笔误不该把整张体征表判成健康。
+
+工具不去猜模型型号：模型会换，而你知道自己在用什么。官方也从未公布固定的压缩
+触发阈值，且自己在「把 1M 窗口按 200k 算」这件事上出过 bug。
 
 **压缩过就按「满过」对待。** 自动压缩只在上下文装不下时才触发，
 所以它是最硬的证据，比任何百分比都清楚。压缩一次即「尽快交接」，
@@ -413,6 +474,36 @@ agent-handoff --sweep
 的项目在哪）。Claude 的 slug 目录名 `D--Users-bob-myproj` 同样处理——用户名嵌在
 `-` 分隔的一段里，漏掉它就会从转录路径漏出去。
 
+分隔符混用（`C:\Users/devin/proj`）、POSIX 壳的写法（Git Bash 的
+`/c/Users/devin`、WSL 的 `/mnt/c/Users/devin`）、少见的家目录布局
+（`/export/home/`、`C:\Documents and Settings\`、`\\?\C:\Users\`）都覆盖了。
+
+**密钥也会脱敏，而且是第一道。** 文档要写「用户问了什么」「最后一句输入」
+「压缩摘要」，而人在会话里粘过 API key、`Authorization: Bearer …`、数据库口令
+是常态。凭据一旦被自动提交进 git 历史，删文件也去不掉——只能改写历史或轮换密钥。
+所以这一道不是可选项：
+
+| 形态 | 例子 | 文档里 |
+|---|---|---|
+| OpenAI / Anthropic | `sk-ant-api03-…` | `sk-***` |
+| GitHub | `ghp_…`、`github_pat_…` | `gh*_***` |
+| Slack / AWS / Google | `xoxb-…`、`AKIA…`、`AIza…` | `xox*-***` 等 |
+| HTTP 认证头 | `Authorization: Bearer eyJ…` | `Bearer ***` |
+| PEM 私钥 | `-----BEGIN … PRIVATE KEY-----` | 整块替换 |
+| URL 口令 | `postgres://admin:pw@host` | `postgres://admin:***@host` |
+| 键值写法 | `api_key: "…"`、`TOKEN=…` | `api_key: ***` |
+
+**保留前缀而不是整段打码**：`sk-***` 告诉你该去轮换哪一个密钥，`***` 什么都没说。
+
+**只认有明确前缀的形态，不猜高熵字符串。** 那类启发式会把 commit sha、正常的
+base64、长文件名一起打码，把文档毁掉。值为纯数字时一律不动——`max_tokens=8192`、
+`token_count: 123` 是模型配置的常态，而上下文占用恰恰是本工具最核心的判据。
+代价是自造格式的私有 token 可能漏掉；这是刻意的取舍，一份处处是 `***` 的交接
+文档等于没有文档。
+
+**提示词不脱敏，文档才脱敏。** 提示词是你在本机粘进新会话的，需要真实路径才能
+用；文档会进 git、可能被推到公开仓库。两者受众不同。
+
 **要在新机器上接着干活，看提示词里的仓库身份**，那部分本来就是便携的：
 
 ```
@@ -425,7 +516,66 @@ agent-handoff --sweep
 
 ### 怎么把工具和会话都搬过去
 
-**没有任何一处写死用户名或盘符。** 运行时每个位置都是当场算出来的：
+**最省事的办法：打个包带走。**
+
+```bash
+# 在旧机器上：交接的同时打包（勾选的转录会被复制进包里）
+agent-handoff /path/to/project --pick-sessions --export-bundle
+
+# 拷走整个包目录（默认在 ~/.agent-handoff/bundles/<仓库名>-<日期>/），然后在新机器上：
+agent-handoff --import-bundle ~/bundles/myproj-2026-08-23
+```
+
+包里有四样东西：`manifest.json`（含 `schema_version`）、`handoff/`（交接文档 +
+开场提示词）、`transcripts/`（**勾选转录的副本**）、`sessions/<id>/`（**每个会话
+自己的四件套**）。
+
+每会话四件套各回答一个问题：
+
+| 文件 | 回答什么 |
+|---|---|
+| `resume.txt` | 怎么**无损**回到这个会话（首选路径） |
+| `session.md` | 这个会话说过什么，可直接粘给新会话 |
+| `locate.txt` | 工作目录、会话 ID、深度链接 |
+| `meta.json` | 同一批信息的机器可读版本 |
+
+`session.md` **分级带**：用户原话与助手结论按原文进，工具调用压成一行
+「名字 -> 结果摘要」，thinking / reasoning 不进。依据是实测的体积分布——
+一份 13452 行的 Codex rollout 里 `function_call` 与其输出占 6746 行（50%），
+而真正的对话消息只有 1614 行。实测压缩比：30 MB 的 Claude 转录 → 95 KB，
+90 MB 的 Codex → 959 KB。超限时先丢最早的工具摘要再截人话，并明说丢了多少。
+
+harness 注入的样板不会被当成用户原话：斜杠命令回显、后台任务通知、plugin
+清单都以 `user` 身份出现在转录里，实测一份转录里 `<command-name>` 有 28 次而
+真实诉求只有 23 条。过滤后实测 116 条用户轮全部是真实诉求。
+
+为什么必须带副本：交接文档里的转录路径是**这台机器上的位置**，不是内容。
+`~/.claude/projects/C--Users-devin-proj/<id>.jsonl` 这个路径里，目录名本身
+编码了源机的 cwd——换机器后那个目录不存在，新会话拿到路径也读不到东西。
+只给路径不给内容，就是「换机必然失效」的根本原因。
+
+包里的路径存成占位符（`{CLAUDE_ROOT}/…`、`{CODEX_ROOT}/…`、
+`{CODEX_ARCHIVED_ROOT}/…`），导入时**按目标机器自己的根重新解析**，不做字符串
+替换——新机器的 `CLAUDE_CONFIG_DIR` 可能指向完全不同的位置，甚至另一个盘。
+本机没有对应根时不编造路径，只告诉你用包内副本。
+
+包默认写在**仓库外**（`~/.agent-handoff/bundles/`）：里面有转录副本，而转录可能
+含你在会话里粘过的任何东西，默认写进仓库就等于默认交给 `git add -A`。要放进
+仓库请显式给路径。
+
+`--import-bundle` **只读**：不往 `~/.claude` 或 `~/.codex` 写任何东西。要不要把
+副本放进去由你决定——那会改变那个 app 的会话列表。（Claude Code 自 v2.1.205 起
+也明确禁止篡改会话转录文件。）
+
+> **包里的转录副本没有脱敏。** 交接文档与提示词经过脱敏（家目录、他机用户名、
+> 密钥形态），但 `transcripts/` 里是**原样字节**——副本的价值就是保真，脱过的
+> 转录作为「那段工作的记录」已经失真。这意味着里面可能有你当时粘进会话的密钥、
+> 令牌、口令。`manifest.json` 的 `warning` 字段写着这件事，命令行在真带了副本时
+> 也会提醒。**分享包之前先自己看一眼。**
+
+---
+
+**不打包也能搬：没有任何一处写死用户名或盘符。** 运行时每个位置都是当场算出来的：
 家目录来自 `expanduser("~")`，检出根来自启动脚本自己的位置，会话目录来自
 `CODEX_HOME` / `CLAUDE_CONFIG_DIR` 或家目录。整个目录拷到另一台电脑
 （用户名不同、盘符不同）直接可用，不改一行配置。

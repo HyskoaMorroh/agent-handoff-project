@@ -10,6 +10,10 @@ from typing import Any
 from ..i18n import Translator
 from ..platform import local_home_names
 
+# transcript 里的 `_redact` 是**函数内**导入的（延迟），所以这里在模块层导入它
+# 不会成环。反过来写就会。
+from .transcript import deep_link, resume_command
+
 
 # 家目录在交接**文档**里要脱敏。文档会被 git 提交、可能推送到公开仓库，
 # 而转录的绝对路径里带着操作系统用户名（`C:\Users\alice\.codex\…`）。
@@ -25,17 +29,60 @@ def _home_variants() -> list[str]:
     包含 Claude Code 的 slug 形态：它把 cwd 里的非字母数字换成 `-` 作项目
     目录名，于是 `C:\\Users\\alice` 变成 `C--Users-alice`——只换路径前缀的话，
     用户名仍留在那一段里。
+
+    还包含 POSIX 壳在 Windows 上的写法。Git Bash / MSYS 把 `HOME` 设成
+    `/c/Users/alice`，WSL 设成 `/mnt/c/Users/alice`——从这些壳里跑工具时，
+    `expanduser("~")` 返回的是那种形态，而文档里的路径来自转录、写的是
+    `C:/Users/alice`。两边形态不同，实测一条也匹配不上，用户名全量漏出去。
+    所以不能只依赖当前 HOME 的写法，要把同一个家目录的所有等价形态都列出来。
     """
     home = os.path.expanduser("~")
     if not home:
         return []
     forms = {home, home.replace("\\", "/"), home.replace("/", "\\")}
+
+    # 跨壳形态互转：Windows 盘符路径 ↔ MSYS `/c/…` ↔ WSL `/mnt/c/…`。
+    posix = home.replace("\\", "/")
+    m = re.match(r"^([A-Za-z]):/(.*)$", posix)
+    if m:
+        drive, rest = m.group(1).lower(), m.group(2)
+        forms.add(f"/{drive}/{rest}")
+        forms.add(f"/mnt/{drive}/{rest}")
+    else:
+        m = re.match(r"^(?:/mnt)?/([a-zA-Z])/(.+)$", posix)
+        if m:
+            drive, rest = m.group(1), m.group(2)
+            forms.add(f"{drive.upper()}:/{rest}")
+            forms.add(f"{drive.upper()}:\\" + rest.replace("/", "\\"))
+            forms.add(f"/{drive.lower()}/{rest}")
+            forms.add(f"/mnt/{drive.lower()}/{rest}")
+
     slug = re.sub(r"[^A-Za-z0-9]", "-", home)
     out = [f for f in forms if f]
     if len(slug) > 3:
         out.append(slug)
     # 长的先替换：slug 通常最长，且包含盘符与分隔符的编码形态。
     return sorted(out, key=len, reverse=True)
+
+
+def _sep_insensitive(form: str) -> str:
+    """把一个路径形态编成「分隔符不敏感」的正则。
+
+    为什么不能直接 `re.escape`：路径分隔符在一条路径里可以混用。
+    `os.path.join` 拼出来的、转录 JSON 里记下来的，实测常见
+    `C:\\Users/devin/proj` 与 `C:/Users\\devin\\proj` 这类混合形态。
+    整体转义只能匹配「全 `/`」或「全 `\\`」，混的一条都匹配不上，
+    于是用户名从文档里漏出去——而调用方以为已经脱敏了。
+
+    做法：按分隔符切段，段内转义，段间用 `[\\\\/]+` 连接。同时容忍重复
+    分隔符（`C:\\\\Users` 在 JSON 原文里就是这样）。
+    """
+    parts = [p for p in re.split(r"[\\/]+", form) if p]
+    if not parts:
+        return re.escape(form)
+    body = r"[\\/]+".join(re.escape(p) for p in parts)
+    # 保留开头的分隔符（POSIX 形态 `/c/Users/…` 的那一个）。
+    return (r"[\\/]+" if re.match(r"^[\\/]", form) else "") + body
 
 
 def _redact_home(text: str) -> str:
@@ -50,8 +97,83 @@ def _redact_home(text: str) -> str:
     for form in _home_variants():
         # slug 是目录名的一段，写成 `~` 会读成「这里嵌了个家目录」，
         # 而它其实只是被编码过的项目标识。
-        repl = "_HOME_" if re.fullmatch(r"[A-Za-z0-9-]+", form) else "~"
-        out = re.sub(re.escape(form), repl, out, flags=re.I)
+        if re.fullmatch(r"[A-Za-z0-9-]+", form):
+            out = re.sub(re.escape(form), "_HOME_", out, flags=re.I)
+        else:
+            out = re.sub(_sep_insensitive(form), "~", out, flags=re.I)
+    return out
+
+
+# 密钥要在**任何**外来文本进文档之前脱掉。
+#
+# 为什么这一道必须存在：会话原文（用户问了什么、最后一句输入、压缩摘要）
+# 是原样写进交接文档的，而用户在会话里粘过 API key、`Authorization: Bearer …`、
+# 数据库口令是常态。文档随后被自动提交进 git——凭据一旦进历史，删文件也去不掉，
+# 只能改写历史或轮换密钥。家目录脱敏挡不住这个：密钥不是路径。
+#
+# 只认**有明确前缀**的形态，不做「高熵字符串」猜测：那类启发式会把 commit sha、
+# base64 编码的正常内容、长文件名一起打码，把文档毁掉。宁可漏掉自造格式的私有
+# token，也不能让读者面对一份处处是 `***` 的交接文档——那等于没有文档。
+_SECRET_RULES: list[tuple[str, str]] = [
+    # OpenAI / Anthropic 及多数仿此格式的服务
+    (r"\bsk-(?:ant-|proj-|or-)?[A-Za-z0-9_-]{16,}", "sk-***"),
+    # GitHub：ghp 个人令牌、gho OAuth、ghu/ghs 应用、ghr 刷新
+    (r"\bgh[pousr]_[A-Za-z0-9]{16,}", "gh*_***"),
+    # GitHub 细粒度令牌
+    (r"\bgithub_pat_[A-Za-z0-9_]{20,}", "github_pat_***"),
+    # Slack
+    (r"\bxox[baprs]-[A-Za-z0-9-]{10,}", "xox*-***"),
+    # AWS access key id（配套的 secret 无固定前缀，靠下面的赋值规则兜）
+    (r"\bAKIA[0-9A-Z]{16}\b", "AKIA***"),
+    # Google API key
+    (r"\bAIza[A-Za-z0-9_-]{35}\b", "AIza***"),
+    # HTTP 认证头
+    (r"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{16,}", r"\1 ***"),
+    # PEM 私钥整块
+    (
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
+        "-----BEGIN PRIVATE KEY----- *** -----END PRIVATE KEY-----",
+    ),
+    # URL 里的口令：`https://user:pass@host` —— 只打码口令，保留主机名
+    (r"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/@]+):[^\s/@]{3,}@", r"\1:***@"),
+    # `KEY=value` / `key: value` 形态。键名必须含密钥类词根，避免误伤普通配置。
+    #
+    # 键名的前后缀都写成**可选**（`*` 而不是「至少一个字符」）：词根可能就是
+    # 整个键名。实测写成必需前缀时，`api_key:`、`token:`、`password=` 这类
+    # 最常见的裸键名一个都匹配不上，只有 `MY_API_KEY` 这种带前缀的能中——
+    # 而裸键名恰恰是配置文件和会话里出现最多的写法。
+    #
+    # 值排除纯数字。`token` 这个词根同时出现在密钥和**计量字段**里：
+    # `max_tokens=8192`、`tokens: 4096`、`token_count: 123` 是模型配置的常态，
+    # 把它们打成 `***` 会毁掉交接文档最有用的那部分信息（上下文占用是本工具
+    # 的核心判据）。密钥不会是纯十进制数，所以按值的形状排除最省事，
+    # 且不需要维护一张永远补不全的键名白名单。
+    #
+    # 值的三种写法都要认：双引号、单引号、裸值。裸值分支必须排在最后，
+    # 否则它会先吃掉开头的引号再停在那里，带引号的值反而漏掉。
+    (
+        r"(?i)\b([A-Za-z0-9_]*"
+        r"(?:api[_-]?key|secret|passwd|password|token|credential|private[_-]?key)"
+        r"[A-Za-z0-9_]*)"
+        r"(\s*[:=]\s*)"
+        r"(?!\d+(?:\s|$|[,;)\]}]))"
+        r"(?:\"[^\"\n]{4,}\"|'[^'\n]{4,}'|[^\s\"',;)\]}]{4,})",
+        r"\1\2***",
+    ),
+]
+
+
+def _redact_secrets(text: str) -> str:
+    """把外来文本里形状明确的凭据换成占位符。
+
+    保留前缀（`sk-***` 而不是整段 `***`）：读者需要知道「这里曾有一个
+    OpenAI 密钥」才能判断该去轮换哪一个，全打成星号反而丢掉了这条线索。
+    """
+    if not text:
+        return text
+    out = text
+    for pattern, repl in _SECRET_RULES:
+        out = re.sub(pattern, repl, out)
     return out
 
 
@@ -82,8 +204,22 @@ def _redact_foreign_users(text: str) -> str:
         return m.group(1) + "_USER_"
 
     # 分组 1 是家目录前缀（含分隔符），分组 2 是紧随其后的那一段名字。
+    #
+    # 前缀集合覆盖实际会遇到的家目录布局。原版只有四条（盘符 Users、/home/、
+    # /Users/、/mnt/x/Users/），漏掉的这些都是真实存在的形态：
+    #   · `/export/home/`、`/usr/home/` —— Solaris / 部分 BSD 的布局
+    #   · `C:\\Documents and Settings\\` —— 旧 Windows，转录可能来自老机器
+    #   · `\\\\?\\C:\\Users\\` —— Windows 长路径前缀，超过 260 字符时出现
+    # 漏一条就等于那种机器上的用户名原样进文档。
+    #
+    # `/root` 刻意不在这里。它是**家目录本身**而不是家目录的父目录：
+    # `/root/myproj` 里紧随其后的那一段是项目名，不是用户名。把它当前缀处理
+    # 会把项目名打成 `_USER_`，抹掉读者判断「那台机器上项目在哪」所需的信息，
+    # 而 `root` 这个用户名本来就没有隐私可言（容器里人人都是 root）。
     out = re.sub(
-        r"((?:[A-Za-z]:[\\/]+Users[\\/]+|/home/|/Users/|/mnt/[a-z]/Users/))"
+        r"((?:(?:\\\\\?\\)?[A-Za-z]:[\\/]+(?:Users|Documents and Settings)[\\/]+"
+        r"|/home/|/Users/|/export/home/|/usr/home/"
+        r"|/mnt/[a-z]/(?:Users|Documents and Settings)/))"
         r"([^\\/\s\"'`,;:)\]}]+)",
         sub,
         text,
@@ -100,12 +236,19 @@ def _redact_foreign_users(text: str) -> str:
 
 
 def _redact(text: str) -> str:
-    """文档里所有外来文本都过这一道：先脱本机家目录，再脱别人的用户名。
+    """文档里所有外来文本都过这一道：先脱密钥，再脱本机家目录，最后脱别人的用户名。
 
-    两者顺序要紧：`_redact_home` 会把本机家目录变成 `~`，之后
-    `_redact_foreign_users` 就不会再碰它——本机名字只被处理一次。
+    三者顺序要紧：
+      · 密钥最先——它可能嵌在路径里（`/home/bob/.config/sk-…`），
+        路径脱敏若先跑会改动上下文，让密钥正则错过匹配边界。
+      · `_redact_home` 把本机家目录变成 `~`，之后 `_redact_foreign_users`
+        就不会再碰它——本机名字只被处理一次。
+
+    这是**唯一**的对外文本出口。任何写进交接文档的外来字符串都必须过这里，
+    包括测试摘要、git 报错、pitfalls 和提交主题：它们同样可能带绝对路径，
+    而绝对路径里带着用户名。
     """
-    return _redact_foreign_users(_redact_home(text))
+    return _redact_foreign_users(_redact_home(_redact_secrets(text)))
 
 
 def _vitals_id(r: dict[str, Any]) -> str:
@@ -235,6 +378,16 @@ def build_prompt(ctx: dict[str, Any], tr: Translator) -> str:
             a(tr.t("prompt.sessions.path", path=s.get("path", "")))
             if s.get("session_id"):
                 a(tr.t("prompt.sessions.id", value=s["session_id"]))
+            # 原生续接命令要给出来：它无损，而这份交接是有损摘要。
+            # 只要那个会话还在同一台机器上、还完好，读到这里的人就该先试它。
+            cmd = resume_command(s.get("agent", ""), s.get("session_id", "") or "")
+            if cmd:
+                a(tr.t("prompt.sessions.resume", cmd=cmd))
+            link = deep_link(
+                s.get("agent", ""), s.get("session_id", "") or "", s.get("thread_id", "") or ""
+            )
+            if link:
+                a(tr.t("prompt.sessions.deeplink", url=link))
         a(tr.t("prompt.sessions.howto", handoff=ctx["handoff_rel"]))
         # 交接是有损的。不说明这一点，新会话会把「摘要里没有」当成「没发生过」，
         # 于是把上一个会话已经排除的方案重新试一遍。
@@ -296,7 +449,7 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
     a(tr.t("doc.generated"))
     a(tr.t("doc.generated2"))
     if ctx["plan_rel"]:
-        a(tr.t("doc.not_substitute", plan=ctx["plan_rel"]))
+        a(tr.t("doc.not_substitute", plan=_redact(ctx["plan_rel"])))
         a(tr.t("doc.not_substitute2") + "\n")
     else:
         a("\n")
@@ -310,7 +463,17 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
     # 分不清「没有版本控制」和「读 git 失败」。
     if ctx.get("has_git", True):
         branch_line = tr.t("doc.scene.branch", branch=ctx["branch"])
-        if ctx["branch"] not in ("main", "master"):
+        # detached HEAD 要单独说，不能只标「不是主干」。
+        #
+        # 在 detached 状态下提交，提交不属于任何分支：切走之后它就只能靠 sha
+        # 找回，`git branch` 里看不到，reflog 过期后会被 gc 掉。接续会话必须
+        # 知道这件事——否则它照常提交，而那些提交随时可能变成悬空对象。
+        #
+        # 判定用 `<detached>` 这个标记而不是字面量 `HEAD`：gitops 那边刻意
+        # 不透传 git 的字面量，正是为了让「分支」和「没有分支」可区分。
+        if ctx["branch"] == "<detached>":
+            branch_line += tr.t("doc.scene.detached")
+        elif ctx["branch"] not in ("main", "master"):
             branch_line += tr.t("doc.scene.not_trunk")
         a(branch_line)
         a(tr.t("doc.scene.head", head=ctx["head"]))
@@ -319,17 +482,17 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
     else:
         a(tr.t("doc.scene.no_git"))
     if ctx["plan_rel"]:
-        a(tr.t("doc.scene.plan", plan=ctx["plan_rel"]))
+        a(tr.t("doc.scene.plan", plan=_redact(ctx["plan_rel"])))
     a(tr.t("doc.scene.now", now=ctx["now"]) + "\n")
 
     a(tr.t("doc.h.step1") + "\n")
     a("```")
-    a(ctx["commit_result"])
+    a(_redact(ctx["commit_result"]))
     a("```")
     if ctx["protected"]:
         a("\n" + tr.t("doc.protected"))
         for p in ctx["protected"]:
-            a(f"- `{p}`")
+            a(f"- `{_redact(p)}`")
     a("")
 
     a(tr.t("doc.h.step2") + "\n")
@@ -374,9 +537,9 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
     a(tr.t("doc.h.step3") + "\n")
     if ctx["test_results"]:
         for name, line in ctx["test_results"].items():
-            a(f"**{name}** — `{ctx['test_commands'][name]}`")
+            a(f"**{name}** — `{_redact(ctx['test_commands'][name])}`")
             a("```")
-            a(line)
+            a(_redact(line))
             a("```")
     else:
         a(tr.t("doc.step3.skipped"))
@@ -385,12 +548,12 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
     if ctx["pitfalls"]:
         a(tr.t("doc.h.env") + "\n")
         for n in ctx["pitfalls"]:
-            a(f"- {n}")
+            a(f"- {_redact(n)}")
         a("")
 
     if ctx["recent_commits"]:
         a(tr.t("doc.h.commits") + "\n```")
-        a(ctx["recent_commits"])
+        a(_redact(ctx["recent_commits"]))
         a("```\n")
 
     if ctx["vitals"]:

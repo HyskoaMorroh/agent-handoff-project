@@ -18,7 +18,12 @@ import pytest
 
 from agent_handoff.core.gitops import git, head_sha
 from agent_handoff.core.handoff import EXIT_BAD_INPUT, EXIT_CONCURRENT, EXIT_OK, Options, run_handoff
-from agent_handoff.core.report import _redact, _redact_home, build_handoff
+from agent_handoff.core.report import (
+    _redact,
+    _redact_home,
+    _redact_secrets,
+    build_handoff,
+)
 from agent_handoff.i18n import Translator
 
 
@@ -142,6 +147,152 @@ def test_missing_plan_still_produces_handoff(tmp_path: Path, tr):
     assert res.ctx["report"] == {}
     assert Path(res.out_path).is_file()
     assert tr.t("doc.plan_missing") in res.body
+
+
+# ── 覆盖保护 ──────────────────────────────────────────────────────────
+
+def _mkrepo(tmp_path: Path, name: str) -> Path:
+    r = tmp_path / name
+    r.mkdir()
+    _git(r, "init", "-q")
+    _git(r, "config", "user.email", "t@e.c")
+    _git(r, "config", "user.name", "T")
+    (r / "x.py").write_text("a = 1\n", encoding="utf-8")
+    _git(r, "add", "-A")
+    _git(r, "commit", "-qm", "init")
+    return r
+
+
+def test_rerun_same_day_keeps_the_differing_previous_file(tmp_path: Path, tr):
+    """同一天重跑且内容变了，旧那份必须留得下来。
+
+    交接文件名只带日期，所以第二次运行会覆盖第一次。实测本项目自己的
+    `docs/2026-08-23-handoff.md` 一天内被覆盖过三次，前两份只能从 git 历史里
+    挖——若当时用了 `--no-commit` 就彻底没了。一个以「别丢上下文」为全部意义
+    的工具，自己把上下文丢掉是最讽刺的失败。
+    """
+    r = _mkrepo(tmp_path, "rerun")
+    first = _run(r, tr, no_commit=True)
+    assert first.code == EXIT_OK
+    out = Path(first.out_path)
+    original = out.read_bytes()
+
+    # 让内容真的不同：加一个提交，HEAD 行就会变。
+    (r / "y.py").write_text("b = 2\n", encoding="utf-8")
+    _git(r, "add", "-A")
+    _git(r, "commit", "-qm", "second")
+
+    second = _run(r, tr, no_commit=True)
+    assert second.code == EXIT_OK
+    backup = out.with_suffix(".prev" + out.suffix)
+    assert backup.is_file(), "内容不同却没留备份"
+    assert backup.read_bytes() == original, "备份必须是旧那份的原样字节"
+    assert out.read_bytes() != original, "新文件应当已经更新"
+
+
+def test_rerun_with_identical_content_leaves_no_backup(tmp_path: Path, tr):
+    """字节相同就直接覆盖，不留噪声。
+
+    多数重跑是「调完再跑一次」，要的就是最新那份。每次都攒一个 `.prev`
+    只会让人分不清该读哪个——判据必须是「内容是否不同」而不是「文件是否存在」。
+    """
+    r = _mkrepo(tmp_path, "same")
+    first = _run(r, tr, no_commit=True, skip_tests=True)
+    assert first.code == EXIT_OK
+    out = Path(first.out_path)
+    backup = out.with_suffix(".prev" + out.suffix)
+
+    # 不动仓库直接重跑。时间戳字段会变，所以这里只断言「相同则不备份」这条
+    # 逻辑本身——用 _keep_previous 直接验，避开时间戳带来的必然差异。
+    from agent_handoff.core.handoff import _keep_previous
+
+    said: list[str] = []
+    assert _keep_previous(out, out.read_bytes(), said.append, tr) is None
+    assert not backup.exists(), "字节相同不该留备份"
+    assert not said, "没做事就不该有输出"
+
+
+def test_backup_failure_does_not_block_the_handoff(tmp_path: Path, tr, monkeypatch):
+    """备份失败只提示，不阻断。
+
+    用户要的是新交接文件；为了留旧的而不产出新的是本末倒置。
+    """
+    from agent_handoff.core import handoff as H
+
+    r = _mkrepo(tmp_path, "bkfail")
+    out = r / "docs" / "2026-01-01-handoff.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(b"old content\n")
+
+    def boom(self, data):  # noqa: ANN001
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_bytes", boom)
+    said: list[str] = []
+    # 备份写不进去时返回 None 且不抛，调用方照常继续。
+    assert H._keep_previous(out, b"new content\n", said.append, tr) is None
+    assert said and "disk full" in said[0]
+
+
+def test_backup_is_not_a_concurrency_signal(tmp_path: Path, tr):
+    """我们自己写的 `.prev` 备份不能被当成「另一个会话在写」。
+
+    并发检测看的是两分钟内被改动的文件，而备份恰好是上一秒自己写的。
+    漏掉这条排除的后果是：第三次运行报冲突并建议加 `--force`，
+    而真相是没有任何别的会话——工具在跟自己的产物打架。
+    """
+    from agent_handoff.core.handoff import _prev_path
+
+    r = _mkrepo(tmp_path, "prevconc")
+    first = _run(r, tr, no_commit=True)
+    out = Path(first.out_path)
+
+    # 造出内容差异，让第二次运行留下备份。
+    (r / "z.py").write_text("c = 3\n", encoding="utf-8")
+    _git(r, "add", "-A")
+    _git(r, "commit", "-qm", "third")
+    second = _run(r, tr, no_commit=True)
+    assert _prev_path(out).is_file(), "前置条件：这一步该产生备份"
+
+    # 第三次紧接着跑：备份还在两分钟窗口里，但不该因此报冲突。
+    third = _run(r, tr, no_commit=True)
+    assert third.code == EXIT_OK
+    noise = [c for c in third.conflicts if ".prev." in c]
+    assert not noise, f"备份被当成并发信号了: {noise}"
+    assert second.code == EXIT_OK
+
+
+def test_backup_is_never_committed(tmp_path: Path, tr):
+    """`.prev` 备份不能被提交快照扫进 git。
+
+    它是同日重跑的救生索，针对的正是「用了 --no-commit 所以 git 里没有上一份」
+    这个缺口——让它自己进 git 就本末倒置，而且给每次重跑加一个噪声文件。
+
+    时序上本轮的备份在提交时还不存在（写文件是第 6 步、提交是第 4 步），
+    所以真正会被扫进去的是**上一轮**留下的那个：要跑三次才暴露。
+    """
+    r = _mkrepo(tmp_path, "nocommitprev")
+    first = _run(r, tr)                     # 第一次：正常提交
+    out = Path(first.out_path)
+    assert first.code == EXIT_OK
+
+    (r / "w.py").write_text("d = 4\n", encoding="utf-8")
+    second = _run(r, tr)                    # 第二次：内容变了，留下备份
+    assert second.code == EXIT_OK
+    backup = _prev_path_for(out)
+    assert backup.is_file(), "前置条件：这一步该产生备份"
+
+    _run(r, tr)                             # 第三次：备份已存在于工作树
+    tracked = subprocess.run(
+        ["git", "ls-files"], cwd=str(r), capture_output=True, text=True
+    ).stdout
+    assert ".prev." not in tracked, f"备份被提交了:\n{tracked}"
+
+
+def _prev_path_for(out: Path) -> Path:
+    from agent_handoff.core.handoff import _prev_path
+
+    return _prev_path(out)
 
 
 # ── 并发保护 ──────────────────────────────────────────────────────────
@@ -678,6 +829,144 @@ def test_redact_does_not_touch_the_local_username_twice(monkeypatch, tmp_path: P
     got = _redact(str(fake / "proj"))
     assert "_USER_" not in got
     assert got.startswith("~")
+
+
+# ── 密钥脱敏 ──────────────────────────────────────────────────────────
+#
+# 为什么这一组必须存在：会话原文（用户问了什么、最后一句输入、压缩摘要）
+# 原样写进交接文档，而文档随后被自动提交进 git。用户在会话里粘过 API key
+# 是常态；凭据一旦进 git 历史，删文件也去不掉，只能改写历史或轮换密钥。
+
+_XOXB = "xox" + "b-123456789012-abcdefghijklmnop"
+_GHP = "gh" + "p_AbCdEf1234567890AbCdEf12"
+_GH_PAT = "github_" + "pat_11ABCDEFG0abcdefghijkl_mnopqrstuvwxyz1234567890ABCD"
+_AKIA = "AKIA" + "IOSFODNN7EXAMPLE"
+_AIZA = "AIza" + "SyD-1234567890abcdefghijklmnopqrstu"
+_SK_ANT = "sk-" + "ant-api03-AbCdEf1234567890XyZ"
+
+
+@pytest.mark.parametrize(
+    "label,raw,leaked",
+    [
+        ("openai", f"key is {_SK_ANT}_tail", "AbCdEf1234567890"),
+        ("github-pat", f"export T={_GHP}", "AbCdEf1234567890"),
+        (
+            "github-fine",
+            _GH_PAT,
+            "mnopqrstuvwxyz",
+        ),
+        ("slack", _XOXB, "abcdefghijklmnop"),
+        ("aws-id", _AKIA, "IOSFODNN7EXAMPLE"),
+        ("google", _AIZA, "1234567890abcdef"),
+        ("bearer", 'curl -H "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9xxxx"', "eyJhbGci"),
+        ("url-password", "postgres://admin:hunter2pass@db.internal:5432/app", "hunter2pass"),
+        ("kv-bare", "token: abcd1234efgh", "abcd1234efgh"),
+        ("kv-quoted", 'api_key: "abcd1234efgh5678"', "abcd1234efgh5678"),
+        ("kv-single", "client_secret: 'abcd1234efgh'", "abcd1234efgh"),
+        ("kv-prefixed", "MY_API_KEY=abcd1234efgh", "abcd1234efgh"),
+        ("kv-password", "password=hunter2secret", "hunter2secret"),
+    ],
+)
+def test_redact_removes_credentials(label: str, raw: str, leaked: str):
+    """形状明确的凭据不能出现在文档里。"""
+    got = _redact_secrets(raw)
+    assert leaked not in got, f"{label}: 凭据泄漏"
+    assert "***" in got, f"{label}: 应当留下占位符"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # 上下文占用是本工具的核心判据，这些计量字段一个都不能被打码
+        "max_tokens=8192",
+        "tokens: 4096",
+        "token_count: 123",
+        "total_tokens=131072",
+        # 普通配置
+        "port: 8080",
+        "timeout=900",
+        "version: 2.3.0",
+        # 提交 sha 与路径不是密钥
+        "commit 8b68e7e1f2a3d4c5",
+        "path /usr/bin/python3",
+        "pytest: 491 passed in 402.11s",
+    ],
+)
+def test_redact_does_not_mangle_ordinary_text(raw: str):
+    """误伤比漏报更糟：一份处处是 `***` 的交接文档等于没有文档。
+
+    `token` 这个词根同时出现在密钥和计量字段里。`max_tokens=8192` 被打码会
+    毁掉读者判断「这个会话还能撑多久」所需的全部信息，而那正是本工具存在的理由。
+    """
+    assert _redact_secrets(raw) == raw
+
+
+def test_redact_keeps_the_secret_kind_visible():
+    """保留前缀：读者要知道该去轮换哪一个密钥，全打成星号反而丢了这条线索。"""
+    got = _redact_secrets(_SK_ANT)
+    assert got.startswith("sk-")
+    assert "AbCdEf" not in got
+
+
+def test_redact_pipeline_covers_secrets_before_paths():
+    """`_redact` 是唯一出口，密钥要在路径脱敏之前处理。
+
+    密钥可能嵌在路径里；若路径脱敏先跑，它会改动上下文让密钥正则错过边界。
+    """
+    got = _redact("/home/bob/.config/creds token: abcd1234efgh")
+    assert "abcd1234efgh" not in got
+    assert "_USER_" in got, "路径脱敏同时也要生效"
+
+
+# ── 路径脱敏的边界 ────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    "mixed",
+    [
+        r"C:\Users/devin/proj",
+        r"C:/Users\devin\proj",
+        "C:\\\\Users\\\\devin\\\\proj",
+    ],
+)
+def test_redact_home_handles_mixed_separators(mixed: str, monkeypatch, tmp_path: Path):
+    """分隔符在一条路径里可以混用，整体转义匹配不上就等于没脱敏。
+
+    `os.path.join` 拼出来的、转录 JSON 里记下来的路径实测常见混合形态。
+    原版对每种形态整体 `re.escape`，只能匹配「全 /」或「全 \\」。
+    """
+    fake = tmp_path / "Users" / "devin"
+    fake.mkdir(parents=True)
+    monkeypatch.setattr(
+        "os.path.expanduser", lambda p: r"C:\Users\devin" if p == "~" else p
+    )
+    got = _redact_home(mixed)
+    assert "devin" not in got, f"{mixed!r} 未脱敏"
+
+
+@pytest.mark.parametrize(
+    "raw,gone",
+    [
+        ("/export/home/bob/app", "bob"),
+        ("/usr/home/dave/app", "dave"),
+        (r"C:\Documents and Settings\alice\old", "alice"),
+        (r"\\?\C:\Users\carol\deep", "carol"),
+    ],
+)
+def test_redact_covers_less_common_home_layouts(raw: str, gone: str, monkeypatch):
+    """Solaris/BSD 布局、旧 Windows、长路径前缀——漏一条就漏一个用户名。"""
+    monkeypatch.setenv("USERNAME", "devin")
+    assert gone not in _redact(raw)
+
+
+def test_redact_leaves_root_project_name_alone(monkeypatch):
+    """`/root` 是家目录本身，其后是项目名而不是用户名。
+
+    把它当前缀处理会把项目名打成 `_USER_`，抹掉读者判断「那台机器上项目在哪」
+    所需的信息；而 `root` 这个名字在容器里本来就没有隐私可言。
+    """
+    monkeypatch.setenv("USERNAME", "devin")
+    assert "myproj" in _redact("/root/myproj/src/x.py")
+
 
 
 def test_redact_leaves_non_home_paths_alone(monkeypatch):

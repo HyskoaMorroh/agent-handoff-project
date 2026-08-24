@@ -46,12 +46,19 @@
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI",
           "PingFang SC", "Microsoft YaHei UI", "Noto Sans CJK SC", "Hiragino Sans GB",
           Roboto, Helvetica, Arial, sans-serif;
+
+  /* 告诉浏览器当前是哪种明暗，让它自己画的东西跟着变：滚动条、
+     下拉箭头、复选框、文本框的插入符与选中高亮。不声明的话，深色主题下
+     这些原生控件仍然是浅色的——页面配好了色，滚动条却白得刺眼。
+     一行成本，覆盖所有原生 UI，没有任何 JS 参与。 */
+  color-scheme: light;
 }
 /* 深色不是浅色反相：把纸面换成墨蓝黑，主色提亮到在深底上仍可读，
  * 语义底纹改成低饱和深色块而不是浅色块。auto 状态下靠 prefers-color-scheme，
  * 但用 :not([data-theme="light"]) 守卫，这样手动选浅色能压过系统设置。 */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --bg:        #0A1013;
     --surface:   #121B1E;
     --surface-2: #1A2528;
@@ -81,6 +88,7 @@
 }
 /* 手动选深色时同样生效，覆盖系统的浅色偏好。 */
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --bg:        #0A1013;
   --surface:   #121B1E;
   --surface-2: #1A2528;
@@ -227,6 +235,21 @@ a.nav-item[hidden] { display: none; }
 }
 .field input:focus { background: var(--surface); border-color: var(--accent); outline: none; }
 .opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px 20px; }
+
+/* 运行前明示本次会发生什么。提交是不可逆的写操作，勾选框的文字说的是
+   「关掉什么」，读者要自己反推「那默认就是会做」——这一行把它正过来说。
+   用细线左边框而不是整块底色：它是提示不是警报，喧哗会让人跳过它。 */
+.will {
+  margin: 14px 0 0; padding: 8px 0 8px 12px;
+  border-left: 2px solid var(--line-soft);
+  color: var(--ink-2); font-size: 12.5px; line-height: 1.65;
+}
+.will:empty { display: none; }
+/* 带写操作时抬高对比：颜色 + 左边框同时变化，不靠单一颜色传达信息
+   （色盲用户看不出颜色差，但看得出边框粗细与文字深浅）。
+   文案本身也把严重性说清楚（「不可逆」），不依赖粗体——屏幕阅读器
+   读不出粗体，读得出「不可逆」。 */
+.will.will-write { border-left-color: var(--warn); color: var(--ink); }
 
 .stack { display: flex; flex-direction: column; gap: 12px; margin-top: 20px; }
 

@@ -18,6 +18,7 @@ import secrets
 import socket
 import threading
 import time
+from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -27,17 +28,32 @@ from urllib.parse import parse_qs, urlparse
 from .. import __version__
 from ..core.disk import TOP_N, by_repo, scan_disk
 from ..core.gitops import git_available, is_repo
-from ..core.handoff import EXIT_CONCURRENT, Options, run_handoff
+from ..core.handoff import EXIT_CONCURRENT, EXIT_OK, Options, run_handoff
+from ..core.portable import bare_session_id
 from ..core.report import _redact_home
-from ..core.vitals import find_sessions, group_by_agent, scan_session_vitals
+from ..core.transcript import merge_tool_runs, read_turns, render_markdown
+from ..core.vitals import (
+    SessionRow,
+    find_sessions,
+    group_by_agent,
+    locate_by_id,
+    scan_session_vitals,
+)
 from ..i18n import LANG_NAMES, LANG_SHORT, Translator, available, normalize
-from ..platform import norm_path, open_in_browser
+from ..platform import (
+    agent_session_roots,
+    find_guide,
+    norm_path,
+    open_in_browser,
+    split_multi,
+)
 
 STATIC = Path(__file__).resolve().parent / "static"
-# 图文说明。它不在打包的 static 里（那是网页界面自己的资源），而在仓库的
-# docs/ 下，所以单独一条路由送它，而不是把文件系统暴露给 _serve_static。
-# 从安装好的包里跑时 docs/ 可能不存在——那种情况返回 404，前端据此隐藏入口。
-GUIDE = Path(__file__).resolve().parent.parent.parent.parent / "docs" / "guide.html"
+# 图文说明的位置由 platform.find_guide() 决定：装好的包里找 gui/static/ 下的
+# 副本（打包时从 docs/ 复制进去），源码检出里找 docs/guide.html。
+# 每次请求都重新查而不是启动时定死一个常量：用户可能在进程活着的时候才设上
+# AGENT_HANDOFF_HOME，也可能刚把检出放到位。查一次 is_file() 很便宜。
+# 找不到时返回 404，前端据此隐藏入口。
 # 一次运行只发一个令牌。页面从注入的 bootstrap 里读它，不落盘、不进 URL。
 TOKEN = secrets.token_urlsafe(24)
 # 交接任务在后台线程跑，页面轮询进度。以任务 id 为键，保留最近若干个。
@@ -65,11 +81,45 @@ def _job_log(jid: str, line: str) -> None:
             job["log"].append(line)
 
 
-def _run_job(jid: str, opts: Options, tr: Translator) -> None:
+def _run_job(jid: str, opts: Options, tr: Translator, bundle: str | None = None) -> None:
     try:
         res = run_handoff(opts, tr, log=lambda s: _job_log(jid, s))
         payload = res.to_dict()
         payload["body_bytes"] = len(res.body)
+        # 交接成功后打包。失败只记进日志，不改变任务状态：交接本身已经完成，
+        # 包是附加产物——为了打包失败而把整个任务标成 error，会让用户以为
+        # 交接也没成，那比没有包糟得多。
+        if bundle is not None and res.code == EXIT_OK and not opts.dry_run:
+            try:
+                from ..core.portable import default_bundle_dir, export_bundle
+
+                target = (
+                    Path(bundle).expanduser()
+                    if bundle
+                    else default_bundle_dir(opts.repo, datetime.now().strftime("%Y-%m-%d"))
+                )
+                mf = export_bundle(
+                    out_dir=target,
+                    doc_path=Path(res.out_path) if res.out_path else None,
+                    prompt=res.prompt,
+                    sessions=opts.sessions,
+                    meta={
+                        "name": res.ctx.get("repo_name", ""),
+                        "branch": res.ctx.get("branch", ""),
+                        "head": res.ctx.get("head_sha", ""),
+                        "remote": res.ctx.get("remote", ""),
+                    },
+                )
+                carried = sum(1 for s in mf["sessions"] if s.get("stored_name"))
+                payload["bundle"] = str(target)
+                payload["bundle_carried"] = carried
+                _job_log(jid, tr.t("cli.bundle.exported", path=str(target), count=carried))
+                if carried:
+                    # 副本是原样字节，没脱敏。只在真带了副本时说，否则这条提示
+                    # 会变成对每次运行都出现的噪声，然后被忽略。
+                    _job_log(jid, tr.t("cli.bundle.verbatim"))
+            except OSError as exc:
+                _job_log(jid, tr.t("cli.bundle.export_failed", path=bundle or "", err=str(exc)))
         with _jobs_lock:
             job = _jobs.get(jid)
             if job is not None:
@@ -227,7 +277,7 @@ class Handler(BaseHTTPRequestHandler):
             "gitAvailable": git_available(),
             # 图文说明只在仓库里跑时才有（装好的包不带 docs/）。前端据此决定
             # 显不显示入口——给一个点开是 404 的按钮比没有按钮更糟。
-            "guideAvailable": GUIDE.is_file(),
+            "guideAvailable": find_guide() is not None,
             "sep": os.sep,
         }
         # </script> 在 JSON 字符串里出现会提前关闭标签；转义掉。
@@ -238,12 +288,19 @@ class Handler(BaseHTTPRequestHandler):
     def _serve_guide(self) -> None:
         """送图文说明。不带令牌校验：它是纯静态文档，没有任何本机数据。
 
-        单独一条路由而不是塞进 static/：guide.html 是仓库文档，会随三份 JSON
-        重新生成，复制一份进包只会让两边漂移。装好的包里没有 docs/ 时返回 404，
-        前端据此隐藏入口，而不是给一个点开是空白的按钮。
+        单独一条路由而不是塞进 static/：guide.html 由 build_guide.py 从三份
+        JSON 重新生成，源码检出里它只该有一份（在 docs/ 下），仓库里放第二份
+        副本只会让两边漂移。打包时才把它复制进 gui/static/，这样 wheel 用户
+        也能看到——此前 docs/ 从不进包，`pip install` 之后这条路由必然 404。
+
+        找不到时返回 404，前端据此隐藏入口，而不是给一个点开是空白的按钮。
         """
+        guide = find_guide()
+        if guide is None:
+            self._err(HTTPStatus.NOT_FOUND, "guide not available")
+            return
         try:
-            body = GUIDE.read_bytes()
+            body = guide.read_bytes()
         except OSError:
             self._err(HTTPStatus.NOT_FOUND, "guide not available")
             return
@@ -343,12 +400,69 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/find":
-            needle = (params.get("q") or [""])[0]
-            if not needle.strip():
+            # 一次可以给多个 ID / 关键词，逗号或空格分隔。走的是与 CLI 完全相同
+            # 的两条路径（ID 全量精确定位 + 关键词受限搜索），否则同一个输入
+            # 在网页里和命令行里给出不同结果，那种不一致比任何一边慢都难查。
+            needles = split_multi((params.get("q") or [""])[0])
+            if not needles:
                 self._json({"rows": []})
                 return
+            hits: list[SessionRow] = []
+            seen: set[str] = set()
+            for row in locate_by_id(needles):
+                key = norm_path(row.path)
+                if key not in seen:
+                    seen.add(key)
+                    hits.append(row)
             rows = scan_session_vitals(limit=60)
-            self._json({"rows": [r.to_dict() for r in find_sessions(needle, rows)][:20]})
+            for needle in needles:
+                for row in find_sessions(needle, rows):
+                    key = norm_path(row.path)
+                    if key not in seen:
+                        seen.add(key)
+                        hits.append(row)
+            self._json({
+                "rows": [r.to_dict() for r in hits][:40],
+                # 多 ID 常常横跨不同项目，而交接固化的是**一个仓库**的状态。
+                # 前端据此提示「这些会话不在同一个项目里」，让用户分别交接。
+                "repos": sorted({r.repo for r in hits if r.repo}),
+            })
+            return
+
+        if path == "/api/session-md":
+            # 把一份转录渲染成可粘贴的 Markdown。
+            #
+            # 这个端点按 URL 参数读文件，所以**必须**把路径钉在 agent 的数据目录里。
+            # 不钉的后果不是「可能被滥用」而是「这就是一个任意文件读取接口」：
+            # 服务只绑 127.0.0.1 且校验令牌，但令牌会随页面进入浏览器，
+            # 而浏览器里的任何一个标签页都可能被诱导发这个请求。
+            raw = (params.get("path") or [""])[0]
+            if not raw.strip():
+                self._json({"error": "empty"}, HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                target = Path(raw).expanduser().resolve()
+            except (OSError, ValueError):
+                self._json({"error": "bad-path"}, HTTPStatus.BAD_REQUEST)
+                return
+            agent = ""
+            for name, root in agent_session_roots():
+                try:
+                    rroot = root.resolve()
+                except OSError:
+                    continue
+                if norm_path(str(target)).startswith(norm_path(str(rroot)) + "/"):
+                    agent = name
+                    break
+            if not agent or not target.is_file():
+                # 刻意不区分「不在允许的目录里」与「文件不存在」：区分开等于
+                # 提供一个探测本机文件是否存在的接口。
+                self._json({"error": "not-allowed"}, HTTPStatus.FORBIDDEN)
+                return
+            turns = merge_tool_runs(read_turns(agent, target))
+            meta = {"session_id": bare_session_id(target), "agent": agent}
+            md = render_markdown(agent, meta, turns, tr)
+            self._json({"markdown": md, "turns": len(turns)})
             return
 
         if path == "/api/check-repo":
@@ -443,7 +557,15 @@ class Handler(BaseHTTPRequestHandler):
             sessions=sessions,
         )
         jid = _new_job()
-        threading.Thread(target=_run_job, args=(jid, opts, tr), daemon=True).start()
+        # 打包开关。请求体来自浏览器，所以三种形态都要认：缺字段 / false 表示
+        # 不打包；true 表示打包到默认位置；字符串表示打包到指定目录。
+        raw_bundle = body.get("export_bundle")
+        bundle: str | None = None
+        if isinstance(raw_bundle, str) and raw_bundle.strip():
+            bundle = raw_bundle.strip()
+        elif raw_bundle is True:
+            bundle = ""
+        threading.Thread(target=_run_job, args=(jid, opts, tr, bundle), daemon=True).start()
         self._json({"job": jid})
 
 

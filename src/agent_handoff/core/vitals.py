@@ -77,12 +77,25 @@ FULLNESS_BANDS = [
 ]
 # 没有分母时的绝对阈值。按当下常见的 200k 窗口折算 FULLNESS_BANDS 得到，
 # 对更大的窗口偏保守——宁可早提醒，也不要漏掉真要满的会话。
+#
+# 这组阈值是**兜底**，不是判据的正解。任何单一绝对值都不可能同时对 128k 和
+# 1M 窗口正确：实测本机一个 Claude 会话 102365 token，按 200k 折算判「健康」，
+# 若模型其实是 128k 窗口那已经 80%、该判「尽快交接」；若是 1M 窗口则只有 10%，
+# 判「健康」是对的。同一个数字，结论相反。
+#
+# Codex 在 `token_count` 事件里直接写 `model_context_window`，所以走真实占用率。
+# Claude Code 的转录不写窗口上限（实测本机 16 个 Claude 转录全部读不到），
+# 只能落到这组绝对值。用 `AGENT_HANDOFF_CONTEXT_WINDOW` 声明真实窗口即可
+# 改按占用率判——这比让工具去猜模型型号可靠：模型会换，而用户知道自己在用什么。
 TOKEN_BANDS = [
     (180_000, "critical"),
     (150_000, "high"),
     (110_000, "watch"),
     (0, "ok"),
 ]
+# 用户声明的上下文窗口上限，覆盖读不到窗口时的兜底阈值。
+# 只接受正整数；写错了当没写，不让一个笔误把整张体征表judge成健康。
+_WINDOW_ENV = "AGENT_HANDOFF_CONTEXT_WINDOW"
 BAND_ORDER = {"critical": 0, "high": 1, "watch": 2, "ok": 3}
 
 # 开场提问里要跳过的噪声：插件清单、用户指令注入、纯标签行、caveman 模式广播。
@@ -209,6 +222,16 @@ def band_for(
         # 压缩发生过，就说明上下文真的顶到过上限——自动压缩不会在有余量时触发。
         # 压缩一次已经丢过一轮细节，两次以上就是反复丢：这类会话看着体积不大
         # （压缩本身在缩小它），实际最该交接。实测一个 1.9 MB 的会话压了 10 次。
+        #
+        # 为什么是 2 而不是官方熔断用的 3：两者目的不同。Claude Code 用「连续
+        # 3 次 auto-compact」判定 thrash loop 并**停止继续压缩**——那是保护
+        # 运行时不要空转。这里判定的是「该不该交接」，只要丢过两轮历史就已经
+        # 值得换个干净会话，不必等到运行时都认为出了问题。
+        #
+        # 实测本机 42 个转录支持这个取值：压缩 1 次的那几个会话，占用率是
+        # 98%–108%（131164/129437/118624 token 对 121600 窗口），压缩 2 次的是
+        # 96%–123%——没有一个属于「压缩次数低但余量健康」。抬升在这批数据上
+        # 从不产生假警报，因为触发压缩本身就意味着当时装不下了。
         floor = "critical" if compactions >= 2 else "high"
         if BAND_ORDER[floor] < BAND_ORDER[band]:
             band = floor
@@ -229,15 +252,44 @@ def _band_by_size(size: int) -> str:
     return "ok"
 
 
+def _declared_window() -> int:
+    """用户声明的上下文窗口上限，读不到或不合法时返回 0。
+
+    为什么需要它：Claude Code 的转录不写窗口上限（实测本机 16 个 Claude 转录
+    全部读不到），于是只能对照按 200k 折算的绝对阈值。而窗口大小在 128k 到 1M
+    之间跨了将近一个数量级——同一个 token 数在两端得到相反的结论。
+
+    官方自己也在这上面反复出过 bug：把 1M 窗口的模型按 200k 计算，会在远未装满
+    时就触发自动压缩。既然工具猜不准、官方也未公布固定阈值，就把这个事实交给
+    知道答案的人——用户清楚自己在用哪个模型。
+
+    不合法的值（负数、零、非数字）按「没声明」处理：一个笔误不该把整张体征表
+    judge 成健康，那正是这个工具存在的意义所反对的。
+    """
+    raw = os.environ.get(_WINDOW_ENV, "").strip()
+    if not raw:
+        return 0
+    try:
+        val = int(raw)
+    except ValueError:
+        return 0
+    return val if val > 0 else 0
+
+
 def _band_by_fullness(tokens: int, window: int) -> str:
     """按上下文占用率判定。
 
-    有上限就算真占用率；没有上限（Claude 转录不写）就拿占用量对照
-    `TOKEN_BANDS` 的绝对阈值——那些阈值按当下常见的 200k 窗口取，
-    对更大的窗口偏保守，宁可早提醒也不要漏掉真要满的会话。
+    有上限就算真占用率。上限有两个来源，按可信度排序：
+      1. 转录自己写的（Codex 的 `model_context_window`）——实测值，最可信
+      2. `AGENT_HANDOFF_CONTEXT_WINDOW` 环境变量——用户声明的，用于 Claude
+         转录这种读不到上限的情形
+
+    两者都没有时才退回 `TOKEN_BANDS` 的绝对阈值。那些阈值按当下常见的 200k
+    窗口取，对更大的窗口偏保守，宁可早提醒也不要漏掉真要满的会话。
     """
-    if window > 0:
-        ratio = tokens / window
+    limit = window if window > 0 else _declared_window()
+    if limit > 0:
+        ratio = tokens / limit
         for threshold, name in FULLNESS_BANDS:
             if ratio >= threshold:
                 return name
@@ -343,6 +395,27 @@ class SessionRow:
         return f"claude --resume {sid}"
 
     @property
+    def deep_link(self) -> str:
+        """能直接唤起 APP 回到这条线程的链接。没有就返回空串。
+
+        只有 Codex 注册了 URI scheme（`codex://threads/<id>`，见它自己的桌面端
+        集成代码）。Claude Code 没有，所以那边永远返回空——编一个不存在的
+        `claude://…` 会让用户点了没反应，比不给更糟：他无从判断是链接错了
+        还是 APP 没装。
+
+        边界与 `resume_cmd` 完全一致：外来转录与归档会话都不给。链接打开的是
+        APP 自己的索引，而这两种情况下那个索引里没有这条线程。
+        """
+        sid = (self.session_id or "").strip()
+        if not sid or self.is_foreign or self.agent != "Codex":
+            return ""
+        if "archived_sessions" in {p.lower() for p in self.path.parts}:
+            return ""
+        parts = sid.split("-")
+        uuid = "-".join(parts[-5:]) if len(parts) >= 5 else sid
+        return f"codex://threads/{uuid}"
+
+    @property
     def label(self) -> str:
         """人认会话时最有辨识度的一行。
 
@@ -397,6 +470,7 @@ class SessionRow:
             "asks": self.asks,
             "label": self.label,
             "resume_cmd": self.resume_cmd,
+            "deep_link": self.deep_link,
             # 这份转录是不是从别的电脑搬来的。为真时路径、原生续接、仓库推断
             # 都不可信，但内容仍然有价值——界面据此标注而不是隐藏。
             "is_foreign": self.is_foreign,
@@ -762,6 +836,13 @@ def _is_subagent(fp: Path) -> bool:
     `--limit 12` 会被子代理吃满，用户要交接的主会话被挤出列表。
 
     只看路径，不解析内容：这个判断要在「决定读哪些文件」之前做出来。
+
+    布局与官方记载一致，不是本机个例：Claude Code 的会话在磁盘上是一个**目录**
+    而不是单个文件，清理会话时删的是「整个 session 目录，含其中的 subagent
+    转录」。实测本机 `~/.claude/projects` 下 144 个 jsonl 分两种深度——55 个
+    深度 2 的主转录，89 个深度 4 的嵌套文件，后者第三层目录名 89/89 全部是
+    `subagents`，其父目录 ID 也 89/89 对应真实主会话。所以按路径判就够，
+    不需要读文件内容去猜。
     """
     parts = [p.lower() for p in fp.parts]
     return "subagents" in parts or fp.name.lower().startswith("agent-")
@@ -982,6 +1063,72 @@ def sessions_for_repo(repo: Path, rows: Iterable[SessionRow]) -> list[SessionRow
     hits = [r for r in rows if touches(r)]
     hits.sort(key=lambda r: r.mtime, reverse=True)
     return hits
+
+
+def locate_by_id(needles: Iterable[str], deep: bool = True) -> list[SessionRow]:
+    """按会话 ID 片段在**全部**转录里定位，不受 `--limit` 约束。
+
+    为什么必须绕开 limit：`--find` 的语义是「我知道 ID，帮我找到它」。而按
+    limit 扫最新若干个再在结果里搜，等于「只在最近的会话里找」——实测本机
+    467 个转录、每个根只扫 40 个，覆盖 26%，给了准确 ID 也有七成概率说
+    「没找到」。那是最坏的一种失败：用户握着正确的信息，工具告诉他信息是错的。
+
+    这里只按**文件名**匹配，不读文件内容，所以代价是一次目录遍历（实测 463 个
+    转录 14 毫秒）。命中之后才去读那几份转录的正文——一份也可能上百 MB，
+    读全量是不可接受的，读命中的几份是必要的。
+
+    多个片段一起给：返回的顺序与 `needles` 的顺序一致（同一片段命中多个时按
+    最近活动优先），因为用户列出 ID 的顺序通常就是他心里的优先级。
+    """
+    wanted = [n.strip().lower() for n in needles if n and n.strip()]
+    if not wanted:
+        return []
+
+    # 先把全部候选文件的名字与路径收齐。子代理转录也纳入：用户拿着一个具体的
+    # ID 来找，那份转录是不是子代理的不该影响「能不能找到」。
+    candidates: list[tuple[str, Path]] = []
+    for agent, root in agent_session_roots():
+        stack = [root]
+        while stack:
+            cur = stack.pop()
+            try:
+                with os.scandir(cur) as it:
+                    for e in it:
+                        try:
+                            if e.is_dir(follow_symlinks=False):
+                                stack.append(Path(e.path))
+                            elif e.name.endswith(".jsonl") and e.is_file(follow_symlinks=False):
+                                candidates.append((agent, Path(e.path)))
+                        except OSError:
+                            continue
+            except OSError:
+                # 一个根坏掉不该让其余的也找不到。
+                continue
+
+    out: list[SessionRow] = []
+    seen: set[str] = set()
+    for needle in wanted:
+        matched: list[tuple[float, str, Path]] = []
+        for agent, fp in candidates:
+            key = norm_path(fp)
+            if key in seen:
+                continue
+            if needle in fp.name.lower():
+                try:
+                    matched.append((fp.stat().st_mtime, agent, fp))
+                except OSError:
+                    continue
+        # 同一片段命中多个时最近活动在前——找会话时"最近那个"几乎总是要找的那个。
+        matched.sort(key=lambda t: t[0], reverse=True)
+        for _mtime, agent, fp in matched:
+            key = norm_path(fp)
+            if key in seen:
+                continue
+            row = _cached_scan(agent, fp, deep)
+            if row is not None:
+                seen.add(key)
+                out.append(row)
+    return out
 
 
 def find_sessions(needle: str, rows: Iterable[SessionRow]) -> list[SessionRow]:

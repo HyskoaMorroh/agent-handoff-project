@@ -23,6 +23,11 @@ GIT_TIMEOUT = 60
 # 判定"另一个会话正在写"的时间窗口。两分钟够覆盖一次工具调用的间隔，
 # 又不至于把十分钟前的手工编辑算进来。
 RECENT_WINDOW = 120
+# detached HEAD 时放在 branch 字段里的标记。不用 git 自己那个字面量 `HEAD`：
+# 那会让文档显示「分支：HEAD」，读者以为真有个叫 HEAD 的分支。
+# 下游按这个常量识别 detached 状态并给出专门的警告，所以它是接口的一部分，
+# 不能随手改字面量。
+DETACHED = "<detached>"
 # 遍历工作树时跳过的目录。缺一个就会把 node_modules 里几万个文件也 stat 一遍。
 WALK_SKIP = {
     ".git", ".hg", ".svn", "node_modules", ".venv", ".venv-win", "venv",
@@ -137,7 +142,21 @@ def repo_meta(repo: Path) -> dict[str, str]:
     上游关系，少两次进程启动。Windows 上每次 subprocess 大约 30-60 ms，
     一次交接流程里省下的不是零头。
     """
-    branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD") or "<detached>"
+    # 分支名要用 `symbolic-ref` 问，不能用 `rev-parse --abbrev-ref HEAD`。
+    #
+    # 后者在 detached HEAD 下返回**字面量** `"HEAD"`——非空、退出码 0，于是
+    # `or "<detached>"` 那种写法永远不触发（原版就是这样，那是死代码）。
+    # 文档于是显示「分支：HEAD」，接续会话被告知一个不存在的分支名。
+    #
+    # `symbolic-ref --short -q HEAD` 在 detached 时返回空并且退出码非 0，
+    # 这才是 git 用来区分两者的接口。实测：在分支上返回 `master`，
+    # detached 时返回空。
+    branch = git(repo, "symbolic-ref", "--short", "-q", "HEAD")
+    detached = not branch
+    if detached:
+        # 空仓库（还没有任何提交）也没有 symbolic-ref 的解析结果吗？有——
+        # 未出生的分支仍然是 symbolic-ref，所以走到这里就是真的 detached。
+        branch = DETACHED
     head_line = git(repo, "log", "--oneline", "-1") or "<no commits>"
     sha = head_sha(repo)
 
@@ -279,6 +298,25 @@ def detect_concurrency(
     return blocking, advisory
 
 
+def _strip_leading_dotslash(rel: str) -> str:
+    """去掉开头的 `./`，但一个字符都不多去。
+
+    原版写 `.lstrip("./")`。`str.lstrip` 收的是**字符集合**而不是前缀：
+    它会把开头所有的 `.` 和 `/` 逐个剥掉，于是点文件的名字被吃掉一截——
+    实测 `.env` 变成 `env`、`.gitignore` 变成 `gitignore`、
+    `.claude/settings.json` 变成 `claude/settings.json`。
+
+    这不是排版问题。这些路径要拼成 `:(exclude,literal)<rel>` 交给 git，
+    名字错一个字符，排除就落空：计划文档明明把 `.env` 声明为用户私有，
+    `git add -A` 仍会把它提交进去。凭据正是最常见的点文件内容，
+    所以这里必须按前缀剥，且只剥 `./`。
+    """
+    out = rel
+    while out.startswith("./"):
+        out = out[2:]
+    return out
+
+
 def _exclude_pathspecs(protected: list[str]) -> list[str]:
     """把受保护路径转成 git 排除 pathspec。
 
@@ -288,7 +326,7 @@ def _exclude_pathspecs(protected: list[str]) -> list[str]:
     """
     out = []
     for p in protected:
-        rel = str(p).replace("\\", "/").strip().lstrip("./")
+        rel = _strip_leading_dotslash(str(p).replace("\\", "/").strip())
         if rel:
             out.append(f":(exclude,literal){rel}")
     return out
@@ -384,6 +422,7 @@ def dirty_submodules(repo: Path) -> list[str]:
 
 
 __all__ = [
+    "DETACHED",
     "GIT_TIMEOUT",
     "IS_WINDOWS",
     "Proc",

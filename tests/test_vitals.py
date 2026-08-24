@@ -229,6 +229,45 @@ def test_band_accounts_for_failures():
 
 # ── 上下文占用判据 ────────────────────────────────────────────────────
 
+def test_declared_window_changes_the_verdict(monkeypatch):
+    """同一个 token 数，窗口不同结论相反——所以窗口必须可声明。
+
+    实测本机一个 Claude 会话 102365 token。按 200k 折算的兜底阈值判「健康」；
+    若模型其实是 128k 窗口，那已经 80%、该判「尽快交接」。Claude Code 的转录
+    不写窗口上限（本机 16 个 Claude 转录全部读不到），工具无从得知，
+    而用户清楚自己在用哪个模型。
+    """
+    monkeypatch.delenv("AGENT_HANDOFF_CONTEXT_WINDOW", raising=False)
+    assert band_for(0, tokens=102_365) == "ok"
+
+    monkeypatch.setenv("AGENT_HANDOFF_CONTEXT_WINDOW", "128000")
+    assert band_for(0, tokens=102_365) == "high", "80% 该报 high"
+
+    monkeypatch.setenv("AGENT_HANDOFF_CONTEXT_WINDOW", "1000000")
+    assert band_for(0, tokens=102_365) == "ok", "10% 是真的健康"
+
+
+def test_transcript_window_beats_the_declared_one(monkeypatch):
+    """转录自己写的上限是实测值，比用户声明的可信。
+
+    Codex 在 `token_count` 事件里给出 `model_context_window`。用户可能为
+    Claude 声明了 1M，但那不该改变一个 121600 窗口的 Codex 会话的判定。
+    """
+    monkeypatch.setenv("AGENT_HANDOFF_CONTEXT_WINDOW", "1000000")
+    assert band_for(0, tokens=102_365, window=121_600) == "high"
+
+
+@pytest.mark.parametrize("bad", ["0", "-5", "abc", "", "   ", "1e6", "12.5"])
+def test_bad_declared_window_is_ignored(bad: str, monkeypatch):
+    """一个笔误不该把整张体征表 judge 成健康。
+
+    非法值按「没声明」处理，退回兜底阈值——静默把 critical 变成 ok 正是
+    这个工具存在的意义所反对的。
+    """
+    monkeypatch.setenv("AGENT_HANDOFF_CONTEXT_WINDOW", bad)
+    assert band_for(0, tokens=190_000) == "critical"
+
+
 def test_tokens_outrank_size():
     """有 token 数就按它判，体积只是兜底。
 

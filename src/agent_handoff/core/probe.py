@@ -96,6 +96,29 @@ def summarize_test_output(name: str, out: str, tr: Translator) -> str:
 
     `name` 用来在多框架输出难以区分时给出提示——原版收了这个参数却从没用过。
     """
+    # 超时要**最先**判定，在任何框架摘要之前。
+    #
+    # 为什么顺序是关键：超时是把进程杀掉，被杀之前它已经打印了一部分结果。
+    # 实测 `"…3 passed\n<timeout after 900s>"` 这种输出，若先匹配 pytest 摘要，
+    # 摘要分支立刻 return `"3 passed"`——交接文档于是声称测试通过，
+    # 而真相是测试被杀、剩下的用例一个都没跑。
+    #
+    # 这是本工具最不该出的错：它存在的意义就是给出可信的实测证据，
+    # 而「把超时报成通过」比不报测试结果糟得多——后者只是缺信息，
+    # 前者是给出了假信息，接续会话会据此认为代码是好的。
+    #
+    # 保留已跑出的部分结果：它有诊断价值（知道跑到哪一步卡住），
+    # 但必须和超时标记一起出现，让读者看到这是不完整的结果。
+    if "<timeout after" in out:
+        m = re.search(r"timeout after (\d+)s", out)
+        head = tr.t("cli.tests.timeout", sec=m.group(1)) if m else tr.t("cli.tests.no_output")
+        partial = PY_PASS.search(out)
+        if partial:
+            head += tr.t("cli.tests.timeout.partial", n=partial.group(1))
+        return head
+    if out.strip() == "<command not found>":
+        return tr.t("cli.tests.not_found")
+
     passed = PY_PASS.search(out)
     failed = PY_FAIL.search(out)
     errored = PY_ERROR.search(out)
@@ -143,11 +166,6 @@ def summarize_test_output(name: str, out: str, tr: Translator) -> str:
         return f"{len(go_fails)} failed\n" + "\n".join(f"      FAILED {x}" for x in go_fails[:12])
     if re.search(r"^ok\s+\S+", out, re.M):
         return "ok"
-
-    if "<timeout after" in out:
-        return tr.t("cli.tests.timeout", sec=re.search(r"timeout after (\d+)s", out).group(1)) if re.search(r"timeout after (\d+)s", out) else tr.t("cli.tests.no_output")
-    if out.strip() == "<command not found>":
-        return tr.t("cli.tests.not_found")
 
     tail = [ln for ln in out.strip().splitlines() if ln.strip()][-2:]
     joined = " / ".join(t.strip()[:120] for t in tail)

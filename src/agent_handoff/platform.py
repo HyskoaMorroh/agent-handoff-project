@@ -214,6 +214,26 @@ def norm_path(s: str) -> str:
     return re.sub(r"[\\/]+", "/", str(s)).rstrip("/").lower()
 
 
+def split_multi(text: str) -> list[str]:
+    """把一段「多个值」的输入拆成去重后的列表。
+
+    命令行与网页界面共用同一份实现：`--find a,b` 与在网页搜索框里粘
+    `a, b` 必须给出相同结果，两处各写一份迟早会在细节上分叉。
+
+    分隔符含全角逗号、顿号与空白：中文输入法下敲出来的是 `，` 和 `、`，
+    而从别处复制一串会话 ID 时最常见的分隔就是换行或空格。只认半角逗号
+    会让「粘进来一串 ID」变成一个找不到的长字符串。
+
+    顺带去掉包裹的引号——shell 里带空格的路径常被整段引起来。
+    """
+    out: list[str] = []
+    for part in re.split(r"[,，、;；\s]+", str(text or "")):
+        cleaned = part.strip().strip('"').strip("'")
+        if cleaned and cleaned not in out:
+            out.append(cleaned)
+    return out
+
+
 def nearest_repo(start: str) -> str:
     """从一个目录往上走，直到看见 .git。都没有就返回 ''。"""
     try:
@@ -294,3 +314,58 @@ def path_is_stale(raw: str) -> bool:
         return not Path(raw).exists()
     except (OSError, ValueError):
         return False
+
+
+# 图文说明的文件名。历史上还叫过 `使用说明.html`，留着兼容旧检出。
+_GUIDE_NAMES = ("guide.html", "使用说明.html")
+
+
+def find_guide() -> Path | None:
+    """找到图文说明，找不到返回 None。
+
+    为什么要一个共用函数：这个文件此前在两处各自推断路径——`gui/server.py`
+    从自己往上数四层，`menu.py` 数三层（两者深度不同，所以层数本来就该不同，
+    各自都对）。但两处都只认「源码检出」这一种布局，于是 `pip install` 之后
+    都找不到它：`docs/` 从来没有进过 wheel，往上数几层都是 `site-packages`。
+
+    找的顺序，从最可靠到最兜底：
+      1. 包内的 `gui/static/guide.html` —— 装进 wheel 的那一份，随包走，
+         `pip install` 之后唯一还在的副本
+      2. 源码检出的 `<repo>/docs/guide.html` —— 开发时用的那份，也是
+         `build_guide.py` 实际生成的位置
+      3. `AGENT_HANDOFF_HOME` 指向的检出 —— 用户显式声明工具装在哪
+
+    返回 `None` 时调用方要降级（网页界面隐藏入口、菜单打印「找不到」），
+    不能报错：图文说明缺失不影响工具的任何实际功能。
+    """
+    here = Path(__file__).resolve().parent
+
+    # 1. 包内副本（wheel 场景）。
+    for name in _GUIDE_NAMES:
+        cand = here / "gui" / "static" / name
+        if cand.is_file():
+            return cand
+
+    # 2. 源码检出。`platform.py` 在 `<repo>/src/agent_handoff/` 下，
+    #    所以 `<repo>` 是往上两层。
+    repo = here.parent.parent
+    for name in _GUIDE_NAMES:
+        for cand in (repo / "docs" / name, repo / name):
+            if cand.is_file():
+                return cand
+
+    # 3. 用户声明的检出位置。
+    declared = os.environ.get("AGENT_HANDOFF_HOME", "").strip()
+    if declared:
+        try:
+            base = Path(declared).expanduser()
+        except (OSError, ValueError):
+            return None
+        for name in _GUIDE_NAMES:
+            for cand in (base / "docs" / name, base / name):
+                try:
+                    if cand.is_file():
+                        return cand
+                except OSError:
+                    continue
+    return None

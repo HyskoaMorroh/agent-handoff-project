@@ -21,6 +21,7 @@ from ..i18n import Translator
 from ..platform import norm_path
 from .evidence import score_tasks
 from .gitops import (
+    _strip_leading_dotslash,
     commit_paths,
     detect_concurrency,
     do_commit,
@@ -161,6 +162,58 @@ def _scan_selected(key: str, originals: list[str]) -> dict[str, Any] | None:
     return None
 
 
+def _prev_path(out_path: Path) -> Path:
+    """交接文件的备份路径。只有一处定义，避免两边拼法漂移。
+
+    这个路径有两个用途，都必须用同一个拼法：写备份时的目标，以及从并发信号里
+    排除自己产物时的排除项。两边各拼一次就会在改名时漏掉一处——那会让工具把
+    自己刚写的备份当成「另一个会话正在写」，然后建议用户加 `--force`。
+    """
+    return out_path.with_suffix(".prev" + out_path.suffix)
+
+
+def _keep_previous(
+    out_path: Path,
+    payload: bytes,
+    say: Callable[[str], None],
+    tr: Translator,
+) -> Path | None:
+    """内容真的变了才把旧的那份留一个备份，然后返回备份路径。
+
+    交接文件名只带日期（`2026-08-23-handoff.md`），所以同一天跑第二次会覆盖
+    第一次。多数时候这正是想要的——调完再跑，要的就是最新那份，攒一堆
+    `-2`、`-3` 只会让人分不清该读哪个。
+
+    但有一种情形不能覆盖：两次运行之间会话内容变了（勾了别的会话、跑了测试、
+    提交了新代码），而旧那份里有新那份没有的事实。实测本仓库的
+    `docs/2026-08-23-handoff.md` 一天内被覆盖过三次，前两份只能从 git 历史里
+    挖——如果当时用了 `--no-commit`，就彻底没了。交接文件的全部意义是**别丢
+    上下文**，它自己把上下文丢掉是最讽刺的失败。
+
+    所以判据是「内容是否不同」而不是「文件是否存在」：字节相同就直接覆盖，
+    不留噪声；不同才备份。备份名固定为 `<原名>.prev.md`，只保留最近一份——
+    留成长链又会变成新的「该读哪个」问题，而真正的历史归 git 管。
+    """
+    try:
+        if not out_path.is_file() or out_path.read_bytes() == payload:
+            return None
+    except OSError:
+        # 读不了旧文件（权限、被占用）就不备份，也不因此中断整个交接：
+        # 写不进去下一步自然会报错，这里没必要提前失败。
+        return None
+
+    backup = _prev_path(out_path)
+    try:
+        backup.write_bytes(out_path.read_bytes())
+    except OSError as exc:
+        # 备份失败只提示，不阻断。用户要的是新交接文件，
+        # 为了留旧的而不产出新的是本末倒置。
+        say(tr.t("cli.write.backup_failed", path=str(backup), err=str(exc)))
+        return None
+    say(tr.t("cli.write.kept_previous", path=str(backup)))
+    return backup
+
+
 def run_handoff(
     opts: Options,
     tr: Translator,
@@ -250,10 +303,13 @@ def run_handoff(
     head_before = head_sha(repo) if has_git else ""
     # 从并发信号里排除本工具自己的产物与计划文档声明为用户私有的文件：
     #   · 交接文件与计划文档：上一轮运行刚写过，会落在两分钟窗口里
+    #   · 交接文件的 `.prev` 备份：同一天内容变了才会出现，同样是我们自己写的
     #   · 受保护文件：本来就永不提交，它被改动跟"另一个会话在写代码"无关，
     #     报出来只会让用户以为有冲突而去加 --force
-    self_paths: set[str] = {p.replace("\\", "/").lstrip("./") for p in protected}
-    for p in (out_path, plan_path):
+    self_paths: set[str] = {
+        _strip_leading_dotslash(p.replace("\\", "/")) for p in protected
+    }
+    for p in (out_path, _prev_path(out_path), plan_path):
         if p is None:
             continue
         try:
@@ -289,7 +345,18 @@ def run_handoff(
     elif opts.no_commit:
         commit_result = tr.t("cli.commit.skipped")
     else:
-        commit_result = do_commit(repo, protected, msg, opts.dry_run, tr)
+        # 上一轮留下的 `.prev` 备份不该被提交进去。它是同日重跑的救生索，
+        # 针对的正是「用了 --no-commit 所以 git 里没有上一份」这个缺口——
+        # 让它自己进 git 就本末倒置，而且会给每次重跑加一个噪声文件。
+        #
+        # 时序上本轮的备份此刻还不存在（写交接文件在第 6 步，提交在第 4 步），
+        # 所以要排除的是**上一轮**留下的那个。
+        keep_out: list[str] = list(protected)
+        try:
+            keep_out.append(_prev_path(out_path).resolve().relative_to(repo).as_posix())
+        except ValueError:
+            pass
+        commit_result = do_commit(repo, keep_out, msg, opts.dry_run, tr)
     first_line = commit_result.splitlines()[0] if commit_result else ""
     say(f"      {first_line}")
 
@@ -379,6 +446,30 @@ def run_handoff(
         picked.sort(key=lambda v: v["mtime"], reverse=True)
         say(tr.t("cli.sessions.picked", count=len(picked)))
 
+        # 勾了分属不同项目的会话就说出来。
+        #
+        # 交接固化的是**一个仓库**的状态：提交快照、计划回填、测试取证全都针对
+        # 这一个仓库。把别的项目的会话内容汇总进同一份提示词，等于让新会话面对
+        # 两个现场——它会拿 A 项目的结论去改 B 项目的代码。
+        #
+        # 只提示不拦：同一份工作跨两个仓库（前后端分离、主仓 + 插件仓）是真实
+        # 场景，用户可能确实要带过去。但默认假设是「勾错了」，所以要说清楚
+        # 哪些会话不属于这个仓库。
+        here = norm_path(str(repo))
+        outside = [
+            v for v in picked
+            if (v.get("repo") or "").strip() and norm_path(v["repo"]) != here
+        ]
+        if outside:
+            say(tr.t("cli.sessions.cross_repo", count=len(outside), repo=repo.name))
+            for v in outside[:6]:
+                say(tr.t(
+                    "cli.sessions.cross_repo_item",
+                    agent=v.get("agent", ""),
+                    id=(v.get("session_id") or "")[:8] or "?",
+                    repo=v.get("repo", ""),
+                ))
+
     say(tr.t("cli.step.write"))
     try:
         handoff_rel = out_path.resolve().relative_to(repo).as_posix()
@@ -445,7 +536,9 @@ def run_handoff(
     # 不用 `write_text(..., newline="")`：那个参数是 Python 3.10 才加的，而
     # 本项目声明支持 3.9。在 3.9 上它会抛 TypeError——只有真的在 3.9 上跑过
     # 才会发现，Windows 上装的 3.14 一路都是绿的。直接写字节，绕开文本层。
-    out_path.write_bytes(body.encode("utf-8"))
+    payload = body.encode("utf-8")
+    _keep_previous(out_path, payload, say, tr)
+    out_path.write_bytes(payload)
     say(f"      {out_path}")
 
     if has_git and not opts.no_commit:
