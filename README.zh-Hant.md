@@ -3,9 +3,9 @@
 <p align="center"><b>工作階段卡死時，把進度從對話裡搬進儲存庫</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.3.0-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.4.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="測試" src="https://img.shields.io/badge/tests-660%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="測試" src="https://img.shields.io/badge/tests-681%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="執行時依賴" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="授權" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -323,11 +323,26 @@ intent.undo()               // ❌ 呼叫不是定義
 | 來源 | 佔用 | 上限 |
 |---|---|---|
 | Claude Code | `message.usage` 的 `input_tokens` + 兩種 cache 讀入 | 記錄裡**沒有**，按絕對閾值判 |
-| Codex | `payload.info.last_token_usage.input_tokens` | `payload.info.model_context_window`（實測 121600） |
+| Codex | `payload.info.last_token_usage.total_tokens` | `payload.info.model_context_window`（實測 121600） |
+
+Codex 那一格取 `total_tokens` 而不是 `input_tokens`，是為了跟 Codex 自己對齊：
+它顯示佔用率時走 `TokenUsage::tokens_in_context_window()`，實作就是 `total_tokens`。
+`TokenUsage` 有六個欄位（input / cached_input / cache_write_input / output /
+reasoning_output / total），只取 input 會漏掉輸出與推理——**推理密集的工作階段
+因此被系統性低估**，而這類工作階段恰恰最需要交接。同時仍然用 `last_token_usage`
+而不是 `total_token_usage`：後者是全工作階段累計，會遠超視窗，當佔用用會永遠
+判成爆滿。
 
 有上限就算真佔用率（≥90% 立即交接，≥75% 盡快，≥55% 留意）；
 沒有上限就拿佔用量對照按 200k 視窗折算的閾值——對更大的視窗偏保守，
 寧可早提醒也不要漏掉真要滿的。
+
+**讀不到正文時如實說不知道。** 壓縮歸檔的工作階段（`.jsonl.zst`）在本機缺少
+zstd 解壓實作時，判定是「讀不到正文」而不是任何一個風險區間。不走體積墊底是
+因為壓縮後的體積與閾值不可比：zstd 通常壓到十分之一上下，一個 27 MB 的爆滿
+工作階段在磁碟上只剩 2 MB 多，體積判據會說「留意」甚至「健康」——正好把最該
+交接的工作階段判成最不需要交接的。排序上它落在「留意」與「健康」之間：不算
+健康，也不擠掉有真實證據的行。
 
 **視窗大小可以自己宣告。** 任何單一絕對閾值都不可能同時對 128k 和 1M 視窗正確：
 實測本機一個 Claude 工作階段 102365 token，按 200k 折算判「健康」；若模型其實是
@@ -457,12 +472,29 @@ C 磁碟家目錄下——磁碟機代號只出現在記錄內容裡寫的 `cwd`
 | 應用 | 預設位置 | 環境變數改位置 |
 |---|---|---|
 | Claude Code | `~/.claude/projects/<cwd 的 slug>/*.jsonl` | `CLAUDE_CONFIG_DIR` |
-| Codex | `~/.codex/sessions/年/月/日/rollout-*.jsonl` | `CODEX_HOME` |
+| Codex | `~/.codex/sessions/年/月/日/rollout-*.jsonl` | `CODEX_SESSIONS_ROOT`、`CODEX_HOME` |
 | Codex（歸檔） | `~/.codex/archived_sessions/rollout-*.jsonl` | 同上 |
+| Codex（壓縮歸檔） | 同上，但擴展名是 `.jsonl.zst` | 同上 |
 
 會變的是**資料目錄本身**：兩個應用都支援用環境變數整體挪走（筆電系統磁碟小、
-指向第二顆磁碟是常見做法）。工具優先讀這兩個變數，家目錄仍作墊底——兩處都可能有
-歷史記錄，只認一邊就是丟工作階段。WSL 裡還會去 `/mnt/c/Users/<name>` 找主機的記錄。
+指向第二顆磁碟是常見做法）。工具優先讀這些變數，家目錄仍作墊底——兩處都可能有
+歷史記錄，只認一邊就是丟工作階段。Codex 的解析順序是 `CODEX_SESSIONS_ROOT`
+（直接指向工作階段目錄本身）→ `CODEX_HOME/sessions` → `~/.codex/sessions`。
+WSL 裡還會去 `/mnt/c/Users/<name>` 找主機的記錄。
+
+**壓縮歸檔的 Codex 工作階段。** Codex 會把 7 天前的 rollout 原地 zstd 壓縮成
+`.jsonl.zst`。本工具兩種擴展名都掃，讀取時自動解壓。解壓能力按可信度依次嘗試
+Python 3.14 的標準庫 `compression.zstd`、`zstandard`、`pyzstd`——**都不裝也能用**：
+工作階段仍然出現在列表裡，判定標註為「讀不到正文」而不是假裝它很健康
+（壓縮後的體積只有原文的十分之一上下，拿它對照體積閾值會把最該交接的工作階段
+判成最不需要交接的）。想讀到正文，裝其中任一個即可：
+
+```bash
+pip install zstandard        # 或 pyzstd；Python 3.14 及以上內建，無需安裝
+```
+
+這是本工具唯一的可選依賴，且**不寫進 `dependencies`**：零執行時依賴是刻意取捨——
+工具執行在剛崩掉的環境裡，任何要 pip 裝的東西都是一條失敗路徑。
 
 `--sweep` 報告佔用，**不刪任何檔案**：
 

@@ -3,9 +3,9 @@
 <p align="center"><b>When a session dies, move the progress out of the chat and into the repository</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="version" src="https://img.shields.io/badge/version-2.3.0-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="version" src="https://img.shields.io/badge/version-2.4.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="tests" src="https://img.shields.io/badge/tests-660%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="tests" src="https://img.shields.io/badge/tests-681%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -347,12 +347,33 @@ written in the transcript itself, so there is nothing to guess:
 | Source | Usage | Limit |
 |---|---|---|
 | Claude Code | `message.usage`: `input_tokens` + both cache-read fields | **not recorded**; absolute thresholds are used instead |
-| Codex | `payload.info.last_token_usage.input_tokens` | `payload.info.model_context_window` (121600 measured) |
+| Codex | `payload.info.last_token_usage.total_tokens` | `payload.info.model_context_window` (121600 measured) |
+
+The Codex row reads `total_tokens` rather than `input_tokens` to match what Codex
+itself does: its own fullness display goes through
+`TokenUsage::tokens_in_context_window()`, which is `total_tokens`. `TokenUsage`
+has six fields (input / cached_input / cache_write_input / output /
+reasoning_output / total), so taking only input drops output and reasoning —
+**reasoning-heavy sessions get systematically under-reported**, and those are
+exactly the ones most worth handing off. It still uses `last_token_usage` rather
+than `total_token_usage`: the latter is a whole-session cumulative figure that
+far exceeds the window, so using it as fullness would report every session as
+overflowing.
 
 With a limit, the real percentage is used (≥90% hand off now, ≥75% soon,
 ≥55% watch). Without one, the usage figure is compared against thresholds scaled
 for a 200k window — deliberately conservative for larger windows, because warning
 early costs less than missing a session that is about to fill.
+
+**When the content cannot be read, it says so instead of guessing.** For a
+compressed archive (`.jsonl.zst`) with no zstd decompressor available, the
+verdict is "content unreadable" rather than any risk band. Falling back to file
+size would be worse than useless here: zstd typically compresses to about a
+tenth, so a 27 MB session that was completely full occupies barely 2 MB on disk,
+and the size heuristic would call it "watch" or even "healthy" — ranking the
+session that most needs handing off as the one that least does. In the ordering
+it sits between "watch" and "healthy": not counted as healthy, but not
+displacing rows backed by real evidence either.
 
 **You can declare the window size yourself.** No single absolute threshold can be
 right for both a 128k and a 1M window: one local Claude session measured 102365
@@ -500,15 +521,37 @@ drive letter only shows up in the `cwd` recorded *inside* the transcript.
 | App | Default location | Env var to move it |
 |---|---|---|
 | Claude Code | `~/.claude/projects/<cwd slug>/*.jsonl` | `CLAUDE_CONFIG_DIR` |
-| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | `CODEX_HOME` |
+| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | `CODEX_SESSIONS_ROOT`, `CODEX_HOME` |
 | Codex (archived) | `~/.codex/archived_sessions/rollout-*.jsonl` | same |
+| Codex (compressed archive) | same, but the extension is `.jsonl.zst` | same |
 
 What *does* move is the **data directory itself**: both apps let you relocate it
 wholesale, and pointing it at a second drive is common on laptops with a small
-system disk. Those two variables take priority; the home directory is still
+system disk. Those variables take priority; the home directory is still
 scanned as a fallback, because history can exist in both places and reading only
-one of them loses sessions. Under WSL it also looks in `/mnt/c/Users/<name>` for
-the host's records.
+one of them loses sessions. Codex resolves in this order:
+`CODEX_SESSIONS_ROOT` (which points at the sessions directory itself) →
+`CODEX_HOME/sessions` → `~/.codex/sessions`. Under WSL it also looks in
+`/mnt/c/Users/<name>` for the host's records.
+
+**Compressed Codex archives.** Codex compresses rollouts older than 7 days in
+place into `.jsonl.zst`. This tool scans both extensions and decompresses on
+read, trying Python 3.14's standard-library `compression.zstd`, then
+`zstandard`, then `pyzstd`. **It works with none of them installed**: the
+session still appears in the list, with its verdict marked "content unreadable"
+rather than pretending it is healthy — a compressed transcript is roughly a
+tenth of its original size, so judging it by file size would rank the session
+that most needs handing off as the one that least does. To read the content,
+install any one of them:
+
+```bash
+pip install zstandard        # or pyzstd; Python 3.14+ ships it, nothing to install
+```
+
+This is the tool's only optional dependency, and it is deliberately **not** in
+`dependencies`: zero runtime dependencies is a considered trade-off — this tool
+runs in an environment that just broke, and anything requiring a pip install is
+one more way to fail.
 
 `--sweep` reports usage and **deletes nothing**:
 

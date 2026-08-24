@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..platform import agent_for
+from ..platform import TranscriptCompressedError, agent_for, open_transcript
 
 # 单条内容的保留长度。用户原话与助手结论给得宽，工具结果给得窄。
 #
@@ -394,14 +394,22 @@ def _lines(fp: Path):
 
     转录可能被别的进程正在写、可能有非 UTF-8 字节。`errors="replace"` 让一份
     半损的转录仍然能导出大部分内容——比整个失败有用。
+
+    压缩转录（Codex 7 天后自动生成的 `.jsonl.zst`）走同一条路径：
+    `open_transcript` 按扩展名挑解压流。本机没有 zstd 实现时它抛
+    `TranscriptCompressedError`，这里当作「读不到内容」处理——渲染方拿到空的
+    轮次列表，会照它自己的空态逻辑提示，而不是崩掉。
     """
     try:
-        with fp.open("r", encoding="utf-8", errors="replace") as fh:
+        with open_transcript(fp) as fh:
             for line in fh:
                 s = line.strip()
                 if s:
                     yield s
-    except OSError:
+    except (OSError, TranscriptCompressedError):
+        return
+    except Exception:
+        # zstd 流损坏（截断、校验失败）与 OSError 同等对待：能读多少算多少。
         return
 
 

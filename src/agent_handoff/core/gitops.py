@@ -277,12 +277,21 @@ def detect_concurrency(
     recent: list[str] = []
     for root, dirs, files in os.walk(repo):
         dirs[:] = [d for d in dirs if d not in WALK_SKIP]
-        rel_root = Path(root).relative_to(repo)
+        # `os.walk` 默认不跟随符号链接，所以 root 正常总在 repo 下面。但仓库
+        # 本身经由符号链接进入时（macOS 的 /tmp -> /private/tmp 是最常见的一种），
+        # root 拿到的是解析后的真实路径，与 repo 不同前缀，relative_to 会抛
+        # ValueError。`commit_paths` 里算相对路径时已经为此加过守卫，这里当时漏了：
+        # 一个 ValueError 会让整个并发检测中断，而并发检测正是防止两个会话
+        # 互相覆盖的那道闸。跳过算不出相对路径的目录，其余照常检查。
+        try:
+            rel_root = Path(root).relative_to(repo)
+        except ValueError:
+            continue
         if len(rel_root.parts) > 4:
             dirs[:] = []
             continue
         for fn in files:
-            rel = (rel_root / fn).as_posix().lstrip("./")
+            rel = _strip_leading_dotslash((rel_root / fn).as_posix())
             if rel in skip or rel not in tracked_changes:
                 continue
             try:

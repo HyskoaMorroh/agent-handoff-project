@@ -10,16 +10,22 @@ import pytest
 
 from agent_handoff.platform import (
     IS_WINDOWS,
+    TranscriptCompressedError,
     agent_session_roots,
+    atomic_write_bytes,
+    is_compressed_transcript,
     is_foreign_path,
+    is_transcript_name,
     iter_path_candidates,
     local_home_names,
     nearest_repo,
     norm_path,
     normalize_shell_paths,
+    open_transcript,
     path_is_stale,
     shell_quote,
     venv_interpreters,
+    zstd_opener,
 )
 
 
@@ -381,3 +387,122 @@ def test_declared_home_is_the_last_resort(tmp_path, monkeypatch):
     got = plat.find_guide()
     assert got is not None
     assert got.read_text(encoding="utf-8") == "declared"
+
+
+# --- 原子写 -----------------------------------------------------------------
+# 交接文件写到一半被打断，等于把「上一个会话死了、现场在这里」这句话本身
+# 变成半截的。这几个用例钉住的就是「要么全写、要么原文件不动」。
+
+
+def test_atomic_write_creates_file_with_exact_bytes(tmp_path):
+    target = tmp_path / "out" / "handoff.md"
+    payload = "第一行\n第二行\n".encode("utf-8")
+    atomic_write_bytes(target, payload)
+    assert target.read_bytes() == payload, "字节必须逐字一致，不能被文本层改写"
+
+
+def test_atomic_write_overwrites_in_place(tmp_path):
+    target = tmp_path / "handoff.md"
+    target.write_bytes(b"old content")
+    atomic_write_bytes(target, b"new content")
+    assert target.read_bytes() == b"new content"
+
+
+def test_atomic_write_leaves_no_temp_files(tmp_path):
+    """临时文件必须消失。它留在用户仓库里就是垃圾，还可能被 git add -A 提交。"""
+    box = tmp_path / "box"
+    target = box / "handoff.md"
+    atomic_write_bytes(target, b"x")
+    atomic_write_bytes(target, b"y")
+    names = {p.name for p in box.iterdir()}
+    assert names == {"handoff.md"}, f"残留了临时文件：{names}"
+
+
+def test_atomic_write_keeps_original_when_write_fails(tmp_path, monkeypatch):
+    """写失败时原文件一个字节都不能变——这正是不用 write_bytes 的理由。"""
+    import os as _os
+
+    box = tmp_path / "box"
+    box.mkdir()
+    target = box / "handoff.md"
+    target.write_bytes(b"precious original")
+
+    def boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(_os, "replace", boom)
+    with pytest.raises(OSError):
+        atomic_write_bytes(target, b"never lands")
+    monkeypatch.undo()
+
+    assert target.read_bytes() == b"precious original"
+    assert {p.name for p in box.iterdir()} == {"handoff.md"}, "失败路径也要清理临时文件"
+
+
+def test_atomic_write_binary_payload_survives(tmp_path):
+    """LF 必须保持 LF：交接文件在两个平台上的字节要完全一致。"""
+    target = tmp_path / "lf.md"
+    atomic_write_bytes(target, b"a\nb\nc\n")
+    assert b"\r\n" not in target.read_bytes()
+
+
+# --- 压缩转录 ---------------------------------------------------------------
+# Codex 把 7 天前的 rollout 原地压成 `.jsonl.zst`。只认 `.jsonl` 的后果是
+# 「一周以前的 Codex 会话在这个工具里完全不存在」——沉默失效，用户没有线索。
+
+
+def test_is_transcript_name_accepts_both_suffixes():
+    assert is_transcript_name("rollout-2026-08-01T00-00-00-abc.jsonl")
+    assert is_transcript_name("rollout-2026-08-01T00-00-00-abc.jsonl.zst")
+    assert is_transcript_name("ROLLOUT.JSONL.ZST"), "扩展名判断不该区分大小写"
+    assert not is_transcript_name("notes.md")
+    assert not is_transcript_name("archive.zst"), "光是 .zst 不算转录"
+
+
+def test_is_compressed_transcript_only_for_zst():
+    assert is_compressed_transcript("a.jsonl.zst")
+    assert not is_compressed_transcript("a.jsonl")
+
+
+def test_open_transcript_reads_plain_jsonl(tmp_path):
+    fp = tmp_path / "a.jsonl"
+    fp.write_text('{"k":1}\n{"k":2}\n', encoding="utf-8")
+    with open_transcript(fp) as fh:
+        assert [ln.strip() for ln in fh] == ['{"k":1}', '{"k":2}']
+
+
+def test_open_transcript_raises_when_zstd_missing(tmp_path, monkeypatch):
+    """没有 zstd 实现时抛专用异常，不是 OSError。
+
+    调用方要区分「文件读不了」（真坏了）和「文件好着但缺解压能力」
+    （装个包就能读）——给用户的话完全不同。
+    """
+    from agent_handoff import platform as plat
+
+    fp = tmp_path / "a.jsonl.zst"
+    fp.write_bytes(b"\x28\xb5\x2f\xfd not really zstd")
+    monkeypatch.setattr(plat, "zstd_opener", lambda: None)
+    with pytest.raises(TranscriptCompressedError):
+        plat.open_transcript(fp)
+
+
+def test_open_transcript_uses_available_zstd_opener(tmp_path, monkeypatch):
+    """有实现时就用它。用假的 opener 验证接线，不依赖本机装了哪个包。"""
+    import io
+
+    from agent_handoff import platform as plat
+
+    fp = tmp_path / "a.jsonl.zst"
+    fp.write_bytes(b"ignored-by-fake-opener")
+    monkeypatch.setattr(plat, "zstd_opener", lambda: lambda p: io.StringIO('{"k":9}\n'))
+    with plat.open_transcript(fp) as fh:
+        assert [ln.strip() for ln in fh] == ['{"k":9}']
+
+
+def test_zstd_opener_returns_none_or_callable():
+    """本机装没装 zstd 都可以，但返回值必须是这两种之一。
+
+    不断言「一定有」：零运行时依赖是本项目的设计取舍，没有 zstd 是正常状态。
+    """
+    got = zstd_opener()
+    assert got is None or callable(got)

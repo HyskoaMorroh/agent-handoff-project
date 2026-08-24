@@ -334,6 +334,42 @@ def test_detect_concurrency_staging_blocks_even_with_recent_edit(repo: Path, tr)
     assert blocking and advisory
 
 
+def test_detect_concurrency_sees_dotfiles_at_repo_root(repo: Path, tr):
+    """仓库根目录下的点文件也要能进提示，不能被前缀剥离吃掉名字。
+
+    根目录下 `rel_root` 是 `.`，拼出来的相对路径形如 `./.env`。用
+    `str.lstrip("./")` 剥前缀会把开头所有的 `.` 和 `/` 逐个剥掉——`./.env`
+    变成 `env`，那个名字在 `changed_paths()` 的集合里不存在，于是这个文件
+    被静默跳过。凭据类文件恰恰几乎全是点文件，而「另一个会话正在动 .env」
+    正是最该被提示的一种并发。
+    """
+    (repo / ".env").write_text("TOKEN=x\n", encoding="utf-8")
+    (repo / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    blocking, advisory = detect_concurrency(repo, tr)
+    assert blocking == []
+    joined = " ".join(advisory)
+    assert ".env" in joined, "点文件被前缀剥离吃掉了名字"
+    assert ".gitignore" in joined
+
+
+def test_detect_concurrency_survives_symlinked_repo_root(repo: Path, tr, tmp_path):
+    """经由符号链接进入仓库时不能整个中断。
+
+    `os.walk` 给出的 root 是解析后的真实路径，与传进来的 repo 不同前缀，
+    `relative_to` 会抛 ValueError。并发检测是防止两个会话互相覆盖的那道闸，
+    一个 ValueError 让它整个不工作，比少一条提示危险得多。
+    """
+    link = tmp_path / "linked-repo"
+    try:
+        link.symlink_to(repo, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("这个平台/权限下建不了符号链接")
+    (repo / "pkg" / "core.py").write_text("def build_thing():\n    return 5\n", encoding="utf-8")
+    # 不抛异常就算通过：具体提示内容取决于 git 怎么解析链接后的路径。
+    blocking, advisory = detect_concurrency(link, tr)
+    assert isinstance(blocking, list) and isinstance(advisory, list)
+
+
 def test_changed_paths_includes_untracked(repo: Path):
     (repo / "brand_new.py").write_text("z = 3\n", encoding="utf-8")
     (repo / "pkg" / "core.py").write_text("def build_thing():\n    return 9\n", encoding="utf-8")

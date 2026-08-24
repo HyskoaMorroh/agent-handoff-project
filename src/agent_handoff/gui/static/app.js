@@ -152,6 +152,12 @@
        · 没有上限  —— 只报占用量，不编一个分母出来（Claude 转录不写上限）
      读不到 token 时返回 null，卡片就只显示体积——那是兜底判据。 */
   function fullnessChip(r) {
+    // 读不到正文时必须先说这件事。否则「压缩 0 次、0 token」会被读成
+    // 「这个会话很干净」，而真相是一行都没读到——两个结论正好相反。
+    if (r.compressed_unreadable) {
+      return el("span.dim", { title: t("gui.tip.unreadable") },
+        el("b", { text: t("gui.label.unreadable") }));
+    }
     if (r.compactions) {
       const txt = t("gui.label.compacted") + " " + r.compactions + "x";
       return el("span.hot", { title: t("gui.tip.compacted", { count: r.compactions, tokens: fmtNum(r.tokens) }) },
@@ -185,6 +191,14 @@
     if (r.is_foreign) {
       top.appendChild(el("span.badge.badge-foreign", {
         text: t("gui.label.foreign"), title: t("gui.tip.foreign"),
+      }));
+    }
+    // 压缩归档且本机读不到：这不是「出事了」也不是「很健康」，而是「没有数据」。
+    // 用中性徽章，并在提示里写清装什么就能读到——用户能自己解决的问题不该
+    // 只告诉他有问题。
+    if (r.compressed_unreadable) {
+      top.appendChild(el("span.badge.badge-unknown", {
+        text: t("gui.label.archived"), title: t("gui.tip.unreadable"),
       }));
     }
     top.appendChild(el("span.when", { text: ago(r.mtime), title: r.mtime_text }));

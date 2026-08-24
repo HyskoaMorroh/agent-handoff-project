@@ -97,7 +97,12 @@ def _fullness_line(r: SessionRow, tr: Translator) -> str:
 
     有上限就报真占用率；没有上限只报占用量（不能编一个分母出来）；
     压缩过就直接说压缩过——那是最硬的证据，比任何百分比都清楚。
+
+    读不到正文时不能返回空串：空串的意思是「这份转录没写占用」，而这里是
+    「一行都没读到」。后者装个解压包就能拿到全部数据，得说出来。
     """
+    if r.compressed_unreadable:
+        return tr.t("cli.card.unreadable")
     if r.compactions:
         return tr.t("cli.card.compacted", count=r.compactions, tokens=f"{r.tokens:,}")
     if not r.tokens:

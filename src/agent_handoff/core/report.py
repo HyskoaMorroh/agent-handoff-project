@@ -272,7 +272,13 @@ def _fullness_cell(r: dict[str, Any], tr: Translator) -> str:
     三种写法对应三种可信程度：压缩次数最硬（自动压缩只在快装不下时触发），
     占用率次之（分母来自转录自己写的上限），只有占用量时不编分母。
     读不到就写破折号——空着会让人以为是 0。
+
+    压缩归档且本机没有 zstd 实现时另写一句，而不是复用破折号：破折号的意思是
+    「这份转录里没写占用」，而这里的情况是「正文一行都没读到」。两者能做的事
+    完全不同——后者装个解压包就能拿到全部数据。
     """
+    if r.get("compressed_unreadable"):
+        return tr.t("doc.vitals.cell.unreadable")
     if r.get("compactions"):
         return tr.t("doc.vitals.cell.compacted", count=r["compactions"])
     tokens = r.get("tokens") or 0

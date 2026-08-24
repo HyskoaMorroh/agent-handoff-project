@@ -68,9 +68,42 @@ def test_band_boundaries(size, band):
 
 
 def test_bands_cover_zero():
-    """末项阈值必须是 0，否则小文件会落空。原版靠这个不变式才不会 band 未设。"""
+    """末项阈值必须是 0，否则小文件会落空。原版靠这个不变式才不会 band 未设。
+
+    `BAND_ORDER` 比 `VITALS_BANDS` 多一个 `unknown`，这是**有意**的：体积判据
+    永远不会产出 `unknown`（每个体积都落在某个区间里），它只来自「正文一行都
+    没读到」。所以要求的是「每个体积区间名都在排序表里」，而不是两边相等。
+    """
     assert VITALS_BANDS[-1][0] == 0
-    assert set(BAND_ORDER) == {name for _, name in VITALS_BANDS}
+    assert {name for _, name in VITALS_BANDS} <= set(BAND_ORDER)
+    assert set(BAND_ORDER) - {name for _, name in VITALS_BANDS} == {"unknown"}
+
+
+def test_unknown_band_is_not_produced_by_size():
+    """体积判据不能产出 unknown——不然「读到了正文」和「没读到」就混了。"""
+    for size in (0, 1, 999_999, 5_000_000, 9_999_999):
+        assert band_for(size) != "unknown"
+
+
+def test_unknown_band_when_content_unreadable():
+    """读不到正文时宁可说不知道，也不要拿压缩后的体积去对照阈值。
+
+    zstd level 3 对 JSONL 通常压到十分之一上下：一个 27 MB 的爆满会话在盘上
+    只剩 2 MB 多，体积判据会说「留意」甚至「健康」——正好把最该交接的会话
+    判成最不需要交接的。
+    """
+    assert band_for(2_400_000, unknown=True) == "unknown"
+    # 连 fatal/aborted 抬档也不该把它拽回一个假装知道的区间。
+    assert band_for(2_400_000, fatal=5, aborted=5, unknown=True) == "unknown"
+
+
+def test_unknown_sorts_between_watch_and_ok():
+    """排序位置本身在表达「这条要你自己看一眼」。
+
+    不能算健康（正文没读到，可能正是最该交接的那个），也不该顶到 critical
+    前面去挤掉有真实证据的行。
+    """
+    assert BAND_ORDER["watch"] < BAND_ORDER["unknown"] < BAND_ORDER["ok"]
 
 
 # ── 跨平台路径识别 ────────────────────────────────────────────────────
@@ -416,8 +449,14 @@ def test_scan_reads_claude_usage(tmp_path: Path):
 def test_scan_reads_codex_token_count(tmp_path: Path):
     """Codex 把占用和上限都写在 token_count 事件里。
 
-    `last_token_usage` 才是当前占用；`total_token_usage` 是全会话累计，
-    会远超窗口，当占用用会永远判成爆满。
+    两个容易混的选择，这里各钉一个：
+
+    1. `last_token_usage` 才是当前占用；`total_token_usage` 是全会话累计，
+       会远超窗口，当占用用会永远判成爆满。
+    2. 在 `last_token_usage` **内部**要取 `total_tokens` 而不是 `input_tokens`。
+       Codex 自己显示占用率时走 `TokenUsage::tokens_in_context_window()`，
+       实现就是 `self.total_tokens`。只取 `input_tokens` 会漏掉 output 与
+       reasoning_output，推理密集的会话因此被系统性低估。
     """
     fp = tmp_path / "rollout-2026-08-22T06-00-00-cx.jsonl"
     _write_jsonl(fp, [
@@ -428,9 +467,28 @@ def test_scan_reads_codex_token_count(tmp_path: Path):
             "model_context_window": 121_600}}},
     ])
     row = scan_one("Codex", fp)
-    assert row.tokens == 121_407, "用 last_token_usage，不是 total"
+    assert row.tokens == 123_000, "用 last_token_usage.total_tokens"
+    assert row.tokens != 999_999, "不能用 total_token_usage（全会话累计）"
     assert row.context_window == 121_600
-    assert row.band == "critical"        # 99.8% 占用
+    assert row.band == "critical"        # 101% 占用
+
+
+def test_scan_codex_token_count_falls_back_to_input_tokens(tmp_path: Path):
+    """老转录可能不写 `total_tokens`，此时退回 `input_tokens`。
+
+    少算一点（漏掉 output 与 reasoning）也比整条记录当没看见好——后者会让
+    这个会话退回体积判据，而体积判据的误差是无界的。
+    """
+    fp = tmp_path / "rollout-2026-08-22T07-00-00-cy.jsonl"
+    _write_jsonl(fp, [
+        {"type": "session_meta", "payload": {"session_id": "cy", "cwd": "/p"}},
+        {"type": "event_msg", "payload": {"type": "token_count", "info": {
+            "last_token_usage": {"input_tokens": 60_000},
+            "model_context_window": 121_600}}},
+    ])
+    row = scan_one("Codex", fp)
+    assert row.tokens == 60_000
+    assert row.context_window == 121_600
 
 
 def test_scan_counts_claude_compaction_boundaries(tmp_path: Path):
@@ -1149,3 +1207,156 @@ def test_to_dict_is_json_serializable(tmp_path: Path):
     json.dumps(d)  # 不抛异常即通过
     assert isinstance(d["path"], str)
     assert isinstance(d["mtime"], str)
+
+
+# --- 压缩归档的 Codex 会话 ---------------------------------------------------
+# Codex 把 7 天前的 rollout 原地压成 `.jsonl.zst`。改动之前这些会话在工具里
+# 完全不存在（列表短一截，用户毫无线索）。现在的要求是：一定要出现在列表里，
+# 读不到正文时明确说明原因。
+
+
+def test_compressed_transcript_is_discovered(tmp_path, monkeypatch):
+    """`.jsonl.zst` 必须被目录遍历发现。这是最关键的一条。"""
+    import io
+
+    from agent_handoff import platform as plat
+
+    fp = tmp_path / "rollout-2026-08-01T00-00-00-old.jsonl.zst"
+    fp.write_bytes(b"compressed-bytes")
+    line = json.dumps({"type": "session_meta", "payload": {"session_id": "old", "cwd": "/p"}})
+    monkeypatch.setattr(plat, "zstd_opener", lambda: lambda p: io.StringIO(line + "\n"))
+
+    got = _newest_files(tmp_path, limit=10)
+    assert fp in got, "压缩转录没有被发现——这正是那个沉默失效"
+
+
+def test_compressed_transcript_reads_content_when_zstd_present(tmp_path, monkeypatch):
+    """有 zstd 实现时，压缩转录与普通转录一视同仁。"""
+    import io
+
+    from agent_handoff import platform as plat
+
+    fp = tmp_path / "rollout-2026-08-01T00-00-00-cz.jsonl.zst"
+    fp.write_bytes(b"compressed-bytes")
+    rows = [
+        {"type": "session_meta", "payload": {"session_id": "cz", "cwd": "/proj"}},
+        {"type": "event_msg", "payload": {"type": "token_count", "info": {
+            "last_token_usage": {"total_tokens": 118_000},
+            "model_context_window": 121_600}}},
+    ]
+    text = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
+    monkeypatch.setattr(plat, "zstd_opener", lambda: lambda p: io.StringIO(text))
+
+    row = scan_one("Codex", fp)
+    assert row is not None
+    assert row.compressed_unreadable is False
+    assert row.session_id == "cz"
+    assert row.tokens == 118_000
+    assert row.context_window == 121_600
+
+
+def test_compressed_transcript_listed_even_without_zstd(tmp_path, monkeypatch):
+    """没有 zstd 实现时**仍然列出**，并标注读不到正文。
+
+    绝不能 return None：那等于让这个会话消失，正是要修掉的失效方式。
+    """
+    from agent_handoff import platform as plat
+
+    fp = tmp_path / "rollout-2026-08-01T00-00-00-nz.jsonl.zst"
+    fp.write_bytes(b"compressed-bytes")
+    monkeypatch.setattr(plat, "zstd_opener", lambda: None)
+
+    row = scan_one("Codex", fp)
+    assert row is not None, "会话不能因为读不到正文就消失"
+    assert row.compressed_unreadable is True
+    assert row.tokens == 0, "正文没读到，来自正文的字段必须是空的"
+    assert row.digest == ""
+    assert row.band == "unknown", "不能拿压缩后的体积去对照未压缩的阈值"
+
+
+def test_compressed_session_id_strips_both_suffixes(tmp_path, monkeypatch):
+    """兜底取会话 ID 时两层扩展名都要剥掉。
+
+    `Path.stem` 只剥最后一层，留下 `xxx.jsonl` —— 那个字符串既不是会话 ID
+    也不是文件名，拼进 resume 命令必然失败。
+    """
+    from agent_handoff import platform as plat
+
+    fp = tmp_path / "rollout-2026-08-01T00-00-00-abcdef.jsonl.zst"
+    fp.write_bytes(b"x")
+    monkeypatch.setattr(plat, "zstd_opener", lambda: None)
+
+    row = scan_one("Codex", fp)
+    assert not row.session_id.endswith(".jsonl"), f"扩展名没剥干净：{row.session_id}"
+    assert row.session_id == "rollout-2026-08-01T00-00-00-abcdef"
+
+
+def test_broken_zstd_stream_does_not_kill_the_scan(tmp_path, monkeypatch):
+    """解压流本身坏了也只是「读不到正文」，不能把整轮扫描带崩。"""
+    from agent_handoff import platform as plat
+
+    def _explode(p):
+        raise RuntimeError("zstd: corrupted frame")
+
+    fp = tmp_path / "rollout-2026-08-01T00-00-00-bad.jsonl.zst"
+    fp.write_bytes(b"garbage")
+    monkeypatch.setattr(plat, "zstd_opener", lambda: _explode)
+
+    row = scan_one("Codex", fp)
+    assert row is not None
+    assert row.compressed_unreadable is True
+
+
+def test_locate_by_id_matches_compressed_files(tmp_path, monkeypatch):
+    """按 ID 片段查找也要能命中压缩转录。
+
+    `--find` 的语义是「我知道 ID，帮我找到它」。压缩归档的会话恰恰是旧会话，
+    也就是最需要靠 ID 去找的那批——如果遍历不认 `.jsonl.zst`，用户拿着正确的
+    ID 也会得到「找不到」。
+    """
+    from agent_handoff import platform as plat
+    from agent_handoff.core import vitals as v
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    fp = root / "rollout-2026-08-01T00-00-00-deadbeef.jsonl.zst"
+    fp.write_bytes(b"x")
+    monkeypatch.setattr(plat, "zstd_opener", lambda: None)
+    monkeypatch.setattr(v, "agent_session_roots", lambda: [("Codex", root)])
+    clear_cache()
+
+    got = v.locate_by_id(["deadbeef"])
+    assert [r.path for r in got] == [fp]
+    assert got[0].compressed_unreadable is True
+    clear_cache()
+
+
+# --- 缓存并发 ---------------------------------------------------------------
+
+
+def test_cached_scan_is_thread_safe(tmp_path):
+    """并发扫描时缓存不能越过上限，也不能丢结果。
+
+    `scan_session_vitals` 用线程池，多个线程同时走进 `_cached_scan`。
+    「查 → move_to_end → 写 → 循环 popitem」是四步组合，没有锁时线程在中间
+    被切走会基于过期的 `len()` 判断：两边都以为不必逐出，缓存于是越界。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from agent_handoff.core import vitals as v
+
+    files = []
+    for i in range(60):
+        fp = tmp_path / f"s{i}.jsonl"
+        _write_jsonl(fp, [{"type": "system", "sessionId": f"s{i}", "cwd": "/p"}])
+        files.append(fp)
+
+    clear_cache()
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        # 每份文件扫多次，制造真实的读-改-写交错。
+        rows = list(pool.map(lambda f: v._cached_scan("Claude Code", f, True), files * 4))
+
+    assert all(r is not None for r in rows)
+    assert len(v._cache) <= v._CACHE_MAX, "缓存越过了上限"
+    assert {r.session_id for r in rows} == {f"s{i}" for i in range(60)}
+    clear_cache()

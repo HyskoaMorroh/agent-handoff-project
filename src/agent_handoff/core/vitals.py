@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from collections import OrderedDict
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -28,12 +29,16 @@ from pathlib import Path
 from typing import Any
 
 from ..platform import (
+    TranscriptCompressedError,
     agent_evidence,
     agent_session_roots,
+    is_compressed_transcript,
     is_foreign_path,
+    is_transcript_name,
     iter_path_candidates,
     nearest_repo,
     norm_path,
+    open_transcript,
 )
 
 # --- 判据 -----------------------------------------------------------------
@@ -97,7 +102,10 @@ TOKEN_BANDS = [
 # 用户声明的上下文窗口上限，覆盖读不到窗口时的兜底阈值。
 # 只接受正整数；写错了当没写，不让一个笔误把整张体征表judge成健康。
 _WINDOW_ENV = "AGENT_HANDOFF_CONTEXT_WINDOW"
-BAND_ORDER = {"critical": 0, "high": 1, "watch": 2, "ok": 3}
+# 排序用。`unknown` 排在 watch 与 ok 之间：它不是「健康」——正文一行没读到，
+# 有可能是最该交接的那个会话；但也不该顶到 critical 前面去挤掉有真实证据的行。
+# 位置本身就是「这条需要你自己看一眼」的意思。
+BAND_ORDER = {"critical": 0, "high": 1, "watch": 2, "unknown": 3, "ok": 4}
 
 # 开场提问里要跳过的噪声：插件清单、用户指令注入、纯标签行、caveman 模式广播。
 # 这些不是人问的问题，认成开场提问会让整张卡片失去辨识度。
@@ -152,9 +160,10 @@ _ERR_MARKS = ('"is_error":true', '"isError":true')
 #     实测本会话末条 input_tokens=194183，而文件只有 1.0 MB——这就是体积判据
 #     失准的直接证据。转录里**没有**上下文上限，算不出真占用率。
 #   · Codex：`type:"event_msg"` + `payload.type:"token_count"`，
-#     `payload.info.last_token_usage.input_tokens` 是占用，
+#     `payload.info.last_token_usage.total_tokens` 是占用，
 #     `payload.info.model_context_window` 是上限（实测 121600）——两者都有，
-#     占用率可以直接算，不必猜阈值。
+#     占用率可以直接算，不必猜阈值。取 total_tokens 而不是 input_tokens 是为了
+#     跟 Codex 自己的 `tokens_in_context_window()` 对齐，见 `_feed_usage` 注释。
 # 压缩事件同样两家不同：Claude 是 `type:"system"` + `subtype:"compact_boundary"`，
 # 带 `compactMetadata.preTokens`（压缩发生时的占用，属于历史事实）；
 # Codex 是 `type:"compacted"` 记录。
@@ -195,6 +204,7 @@ def band_for(
     tokens: int = 0,
     window: int = 0,
     compactions: int = 0,
+    unknown: bool = False,
 ) -> str:
     """风险区间。有 token 数就按占用率判，没有才退回体积。
 
@@ -216,7 +226,16 @@ def band_for(
 
     fatal/aborted 的抬升逻辑不变：它们回答「已经出事了没有」，与「还能撑多久」
     是两件事。
+
+    `unknown` 为真时（压缩归档且本机没有 zstd 实现，正文一行都没读到）直接
+    返回 `unknown` 而不是走体积兜底。理由是压缩后的体积与阈值不可比：zstd
+    level 3 对 JSONL 通常能压到十分之一上下，于是一个 27 MB 的爆满会话在盘上
+    只有 2 MB 多，体积判据会说「留意」甚至「健康」——正好把最该交接的会话
+    判成最不需要交接的。宁可承认不知道。
     """
+    if unknown:
+        return "unknown"
+
     band = _band_by_fullness(tokens, window) if tokens else _band_by_size(size)
 
     if compactions:
@@ -343,6 +362,11 @@ class SessionRow:
     asks: list[str] = field(default_factory=list)  # 用户原话，逐字保留
     is_subagent: bool = False
     repos: list[str] = field(default_factory=list)
+    # 这份转录是 Codex 压缩归档的（`.jsonl.zst`，7 天后自动压缩），而本机没有
+    # 可用的 zstd 实现，所以正文一行都没读到。会话仍然列出来——用户至少知道
+    # 那里有东西；但所有来自正文的字段（体征、摘要、用户原话）都是空的，
+    # 界面必须把这一点说清楚，不能让人误以为「这个会话很干净」。
+    compressed_unreadable: bool = False
 
     @property
     def repo(self) -> str:
@@ -499,6 +523,11 @@ class SessionRow:
             # 都不可信，但内容仍然有价值——界面据此标注而不是隐藏。
             "is_foreign": self.is_foreign,
             "is_subagent": self.is_subagent,
+            # 压缩归档且本机读不到正文。为真时来自正文的字段（tokens、
+            # compactions、摘要、用户原话）全是空的——不是「这个会话很干净」，
+            # 而是「一行都没读到」。界面必须把这两种情况分开，否则会给出
+            # 完全相反的结论。
+            "compressed_unreadable": self.compressed_unreadable,
             "repos": self.repos,
             "repo": self.repo,
         }
@@ -646,7 +675,11 @@ class _Extractor:
         # Codex 用文件自身的 id 命名 rollout，但 session_meta 里可能带的是它派生自
         # 的那个线程的 id。UI 显示的是文件名，所以文件名优先；两者不一致时把 meta
         # 里的 id 并列保留。
-        file_id = re.sub(r"^rollout-[\d\-T]+-", "", fp.stem)
+        #
+        # 用 `_session_id_from_name` 而不是 `fp.stem`：压缩归档的 rollout 叫
+        # `….jsonl.zst`，`stem` 只剥最后一层，会把 `.jsonl` 留在 ID 尾巴上——
+        # 那个字符串拼进 `codex resume` 必然报「找不到会话」。
+        file_id = re.sub(r"^rollout-[\d\-T]+-", "", _session_id_from_name(fp))
         if self.agent == "Codex" and file_id and self.ident["session_id"] and file_id != self.ident["session_id"]:
             self.ident["thread_id"] = self.ident["session_id"]
             self.ident["session_id"] = file_id
@@ -835,9 +868,22 @@ class _FullnessCollector:
             self.window = win
         # last_token_usage 是「这一轮送进去多少」，也就是当前占用；
         # total_token_usage 是全会话累计，会远超窗口，不能当占用用。
+        #
+        # 取哪个字段要跟 Codex 自己一致。它显示占用率时走
+        # `TokenUsage::tokens_in_context_window()`，实现就是 `self.total_tokens`
+        # （codex-rs/protocol/src/protocol.rs:2261-2263，TUI 侧 token_usage.rs:39-41
+        # 同义）。`TokenUsage` 有六个字段（input / cached_input /
+        # cache_write_input / output / reasoning_output / total），只取
+        # input_tokens 会漏掉 output 与 reasoning_output——推理密集的会话
+        # 因此被系统性低估，而这类会话恰恰是最需要交接的。
+        #
+        # 没有 total_tokens 时才退回 input_tokens：老版本转录可能不写它，
+        # 少算一点也比整条记录当没看见好。
         last = info.get("last_token_usage")
         if isinstance(last, dict):
-            v = last.get("input_tokens")
+            v = last.get("total_tokens")
+            if not isinstance(v, int):
+                v = last.get("input_tokens")
             if isinstance(v, int) and v > self.peak_tokens:
                 self.peak_tokens = v
 
@@ -872,6 +918,20 @@ def _is_subagent(fp: Path) -> bool:
     return "subagents" in parts or fp.name.lower().startswith("agent-")
 
 
+def _session_id_from_name(fp: Path) -> str:
+    """从文件名兜底取会话标识，正文读不到时用。
+
+    不能直接用 `Path.stem`：压缩转录叫 `xxx.jsonl.zst`，`stem` 只剥最后一层，
+    留下 `xxx.jsonl` —— 那个字符串既不是会话 ID 也不是文件名，拼到 resume
+    命令里必然失败。这里两层都剥干净。
+    """
+    name = fp.name
+    for suffix in (".jsonl.zst", ".jsonl"):
+        if name.lower().endswith(suffix):
+            return name[: -len(suffix)]
+    return fp.stem
+
+
 def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
     """单遍读完一个转录，同时得到风险计数、身份卡与涉及仓库。
 
@@ -888,11 +948,12 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
     aborted = 0
     ident: dict[str, str] = {}
     repos: list[str] = []
+    unreadable = False
     ex = _Extractor(agent) if deep else None
     dg = _DigestCollector() if deep else None
     fl = _FullnessCollector() if deep else None
     try:
-        with fp.open(encoding="utf-8", errors="replace") as fh:
+        with open_transcript(fp) as fh:
             for raw in fh:
                 if FATAL_SIG.search(raw):
                     fatal += 1
@@ -914,11 +975,29 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
             if ex is not None:
                 # 文件在预算用完前就结束了，用已有的部分收尾。
                 ident, repos = ex.finish(fp)
+    except TranscriptCompressedError:
+        # 压缩归档 + 本机无 zstd 实现。不能 return None：那等于让这个会话从
+        # 列表里消失，而「消失」正是这次要修掉的沉默失效。带着空正文继续，
+        # 由 compressed_unreadable 告诉界面为什么什么都没有。
+        unreadable = True
+        ex = None
+        dg = None
+        fl = None
+        ident, repos = {"session_id": _session_id_from_name(fp)}, []
     except OSError:
         return None
+    except Exception:
+        # zstd 流本身坏了（截断、校验失败）也走「读不到正文」这条路，而不是
+        # 让一个坏文件把整轮扫描带崩。真正读不了的文件与缺解压能力的文件
+        # 在界面上的说法一样：正文拿不到。
+        unreadable = True
+        ex = None
+        dg = None
+        fl = None
+        ident, repos = {"session_id": _session_id_from_name(fp)}, []
 
-    if not deep:
-        ident, repos = {"session_id": fp.stem}, []
+    if not deep and not unreadable:
+        ident, repos = {"session_id": _session_id_from_name(fp)}, []
 
     return SessionRow(
         agent=agent,
@@ -934,6 +1013,7 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
             tokens=fl.tokens if fl else 0,
             window=fl.window if fl else 0,
             compactions=fl.compactions if fl else 0,
+            unknown=unreadable,
         ),
         aborted=aborted,
         tokens=fl.tokens if fl else 0,
@@ -953,6 +1033,7 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
         asks=list(dg.asks) if dg else [],
         is_subagent=_is_subagent(fp),
         repos=repos,
+        compressed_unreadable=unreadable,
     )
 
 
@@ -963,12 +1044,21 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
 # `/api/vitals` 都会因为 mtime 变化生成新键，旧条目永不失效——每个 SessionRow
 # 现在还带着完整的压缩摘要（实测单份可达 96 KB），一晚下来就是几百 MB。
 # 逐出最旧的：转录越新越可能被再次问到。
+#
+# 加锁的理由：`scan_session_vitals` 用 ThreadPoolExecutor 并发扫描，多个线程
+# 会同时走到这里。GIL 保证单个 `__setitem__` 不撕裂，但「查 → move_to_end →
+# 写 → 循环 popitem」是四步组合，线程在中间被切走时 `len(_cache)` 的判断就
+# 基于过期的视图：两个线程各自认为只需逐出一条，结果都不逐出，缓存越过上限；
+# 反过来也可能把对方刚写进去的热条目当成最旧的挤掉。锁只圈住这几步字典操作，
+# 真正的重活（`scan_one` 读文件）在锁外，所以并发度不受影响。
 _CACHE_MAX = 256
 _cache: OrderedDict[tuple[str, int, int, bool], SessionRow] = OrderedDict()
+_cache_lock = threading.Lock()
 
 
 def clear_cache() -> None:
-    _cache.clear()
+    with _cache_lock:
+        _cache.clear()
 
 
 def _cached_scan(agent: str, fp: Path, deep: bool) -> SessionRow | None:
@@ -977,16 +1067,21 @@ def _cached_scan(agent: str, fp: Path, deep: bool) -> SessionRow | None:
     except OSError:
         return None
     key = (str(fp), st.st_size, int(st.st_mtime), deep)
-    hit = _cache.get(key)
-    if hit is not None:
-        # 命中的挪到末尾：LRU 的「最近用过」语义，避免热点条目被冷条目挤掉。
-        _cache.move_to_end(key)
-        return hit
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit is not None:
+            # 命中的挪到末尾：LRU 的「最近用过」语义，避免热点条目被冷条目挤掉。
+            _cache.move_to_end(key)
+            return hit
+    # 读文件放在锁外：一份转录可能上百 MB，持锁读会把并发扫描退化成串行。
+    # 代价是两个线程可能同时扫同一份文件（重复工作，但结果相同），
+    # 而收益是 N 份不同转录仍然真并发——后者是常态，前者是巧合。
     row = scan_one(agent, fp, deep)
     if row is not None:
-        _cache[key] = row
-        while len(_cache) > _CACHE_MAX:
-            _cache.popitem(last=False)
+        with _cache_lock:
+            _cache[key] = row
+            while len(_cache) > _CACHE_MAX:
+                _cache.popitem(last=False)
     return row
 
 
@@ -1010,7 +1105,7 @@ def _newest_files(root: Path, limit: int, include_subagents: bool = False) -> li
                     try:
                         if e.is_dir(follow_symlinks=False):
                             stack.append(Path(e.path))
-                        elif e.name.endswith(".jsonl") and e.is_file(follow_symlinks=False):
+                        elif is_transcript_name(e.name) and e.is_file(follow_symlinks=False):
                             fp = Path(e.path)
                             if not include_subagents and _is_subagent(fp):
                                 continue
@@ -1121,7 +1216,7 @@ def locate_by_id(needles: Iterable[str], deep: bool = True) -> list[SessionRow]:
                         try:
                             if e.is_dir(follow_symlinks=False):
                                 stack.append(Path(e.path))
-                            elif e.name.endswith(".jsonl") and e.is_file(follow_symlinks=False):
+                            elif is_transcript_name(e.name) and e.is_file(follow_symlinks=False):
                                 candidates.append((agent, Path(e.path)))
                         except OSError:
                             continue

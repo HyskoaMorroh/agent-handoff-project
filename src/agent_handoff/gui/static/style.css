@@ -35,6 +35,11 @@
   --info-bg:    #E0E8F1;
   --good:       #24664A;
   --good-bg:    #DCEBE3;
+  /* 「读不到正文」用中性灰而不是任何语义色：它既不是好消息也不是坏消息，
+   * 而是「这条没有数据」。用绿色会被读成健康，用红色会被读成出事——两种
+   * 误读都比不上如实说不知道。对比度按 --ink-2 走，保证徽章文字可读。 */
+  --unk:        #4B5A5D;
+  --unk-bg:     #E6EAEA;
 
   --shadow-1: 0 1px 2px rgba(15, 23, 25, .06), 0 1px 3px rgba(15, 23, 25, .04);
   --shadow-2: 0 2px 4px rgba(15, 23, 25, .06), 0 8px 24px rgba(15, 23, 25, .07);
@@ -81,6 +86,8 @@
     --info-bg:   #17222F;
     --good:      #6BC095;
     --good-bg:   #14301F;
+    --unk:       #9AA9AB;
+    --unk-bg:    #1E2A2D;
 
     --shadow-1: 0 1px 2px rgba(0, 0, 0, .5);
     --shadow-2: 0 2px 6px rgba(0, 0, 0, .5), 0 10px 30px rgba(0, 0, 0, .45);
@@ -111,6 +118,8 @@
   --info-bg:   #17222F;
   --good:      #6BC095;
   --good-bg:   #14301F;
+  --unk:       #9AA9AB;
+  --unk-bg:    #1E2A2D;
 
   --shadow-1: 0 1px 2px rgba(0, 0, 0, .5);
   --shadow-2: 0 2px 6px rgba(0, 0, 0, .5), 0 10px 30px rgba(0, 0, 0, .45);
@@ -277,6 +286,7 @@ a.nav-item[hidden] { display: none; }
 .srow[data-band="critical"]::before { background: var(--danger); }
 .srow[data-band="high"]::before     { background: var(--warn); }
 .srow[data-band="watch"]::before    { background: var(--info); }
+.srow[data-band="unknown"]::before  { background: var(--unk); }
 .srow[data-band="ok"]::before        { background: var(--good); }
 
 .srow-top { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -290,6 +300,7 @@ a.nav-item[hidden] { display: none; }
 .badge[data-band="critical"] { background: var(--danger-bg); color: var(--danger); }
 .badge[data-band="high"]     { background: var(--warn-bg);   color: var(--warn); }
 .badge[data-band="watch"]    { background: var(--info-bg);   color: var(--info); }
+.badge[data-band="unknown"]  { background: var(--unk-bg);    color: var(--unk); }
 .badge[data-band="ok"]       { background: var(--good-bg);   color: var(--good); }
 .badge-dry { background: var(--info-bg); color: var(--info); }
 /* 外来转录：用警示色而不是危险色。它不是「出事了」，而是「这些路径在本机
@@ -299,6 +310,11 @@ a.nav-item[hidden] { display: none; }
 .metrics { display: flex; gap: 12px; margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--ink-3); }
 .metrics b { color: var(--ink-2); font-weight: 600; }
 .metrics .hot { color: var(--danger); }
+/* 「读不到正文」的指标格：中性灰，不用 --hot 也不用默认色。这一格与其他
+ * 指标的区别是「没有数据」而不是「数值高低」，颜色要把这一点说出来。 */
+.metrics .dim, .metrics .dim b { color: var(--unk); font-weight: 600; }
+/* 归档徽章与判定徽章分开：它回答「为什么没有数据」，不是「多满」。 */
+.badge-unknown { background: var(--unk-bg); color: var(--unk); cursor: help; }
 
 .kv { display: grid; grid-template-columns: minmax(72px, auto) minmax(0, 1fr); gap: 3px 14px; margin-top: 11px; font-size: 12.5px; }
 .kv dt { color: var(--ink-3); }

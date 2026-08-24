@@ -3,9 +3,9 @@
 <p align="center"><b>会话卡死时，把进度从对话里搬进仓库</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.3.0-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.4.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="测试" src="https://img.shields.io/badge/tests-660%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="测试" src="https://img.shields.io/badge/tests-681%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="运行时依赖" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="许可" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -311,11 +311,25 @@ intent.undo()               // ❌ 调用不是定义
 | 来源 | 占用 | 上限 |
 |---|---|---|
 | Claude Code | `message.usage` 的 `input_tokens` + 两种 cache 读入 | 转录里**没有**，按绝对阈值判 |
-| Codex | `payload.info.last_token_usage.input_tokens` | `payload.info.model_context_window`（实测 121600） |
+| Codex | `payload.info.last_token_usage.total_tokens` | `payload.info.model_context_window`（实测 121600） |
+
+Codex 那一格取 `total_tokens` 而不是 `input_tokens`，是为了跟 Codex 自己对齐：
+它显示占用率时走 `TokenUsage::tokens_in_context_window()`，实现就是 `total_tokens`。
+`TokenUsage` 有六个字段（input / cached_input / cache_write_input / output /
+reasoning_output / total），只取 input 会漏掉输出与推理——**推理密集的会话因此
+被系统性低估**，而这类会话恰恰最需要交接。同时仍然用 `last_token_usage` 而不是
+`total_token_usage`：后者是全会话累计，会远超窗口，当占用用会永远判成爆满。
 
 有上限就算真占用率（≥90% 立刻交接，≥75% 尽快，≥55% 留意）；
 没有上限就拿占用量对照按 200k 窗口折算的阈值——对更大的窗口偏保守，
 宁可早提醒也不要漏掉真要满的。
+
+**读不到正文时如实说不知道。** 压缩归档的会话（`.jsonl.zst`）在本机缺少 zstd
+解压实现时，判定是「读不到正文」而不是任何一个风险区间。不走体积兜底是因为
+压缩后的体积与阈值不可比：zstd 通常压到十分之一上下，一个 27 MB 的爆满会话在
+盘上只剩 2 MB 多，体积判据会说「留意」甚至「健康」——正好把最该交接的会话判成
+最不需要交接的。排序上它落在「留意」与「健康」之间：不算健康，也不挤掉有真实
+证据的行。
 
 **窗口大小可以自己声明。** 任何单一绝对阈值都不可能同时对 128k 和 1M 窗口正确：
 实测本机一个 Claude 会话 102365 token，按 200k 折算判「健康」；若模型其实是
@@ -445,13 +459,30 @@ C 盘家目录下——盘符只出现在转录内容记录的 `cwd` 里，不�
 | 应用 | 默认位置 | 环境变量改位置 |
 |---|---|---|
 | Claude Code | `~/.claude/projects/<cwd 的 slug>/*.jsonl` | `CLAUDE_CONFIG_DIR` |
-| Codex | `~/.codex/sessions/年/月/日/rollout-*.jsonl` | `CODEX_HOME` |
+| Codex | `~/.codex/sessions/年/月/日/rollout-*.jsonl` | `CODEX_SESSIONS_ROOT`、`CODEX_HOME` |
 | Codex（归档） | `~/.codex/archived_sessions/rollout-*.jsonl` | 同上 |
+| Codex（压缩归档） | 同上，但扩展名是 `.jsonl.zst` | 同上 |
 
 会变的是**数据目录本身**：两个应用都支持用环境变量整体挪走（笔记本 C 盘小、
-指向 D 盘是常见做法）。工具优先读这两个变量，家目录仍作兜底——两处都可能有
-历史记录，只认一边就是丢会话。WSL 里还会去 `/mnt/c/Users/<name>` 找宿主机的记录。
+指向 D 盘是常见做法）。工具优先读这些变量，家目录仍作兜底——两处都可能有
+历史记录，只认一边就是丢会话。Codex 的解析顺序是 `CODEX_SESSIONS_ROOT`（直接
+指向会话目录本身）→ `CODEX_HOME/sessions` → `~/.codex/sessions`。
+WSL 里还会去 `/mnt/c/Users/<name>` 找宿主机的记录。
 搬机器时怎么指过去，见[换电脑](#换电脑)。
+
+**压缩归档的 Codex 会话。** Codex 会把 7 天前的 rollout 原地 zstd 压缩成
+`.jsonl.zst`。本工具两种扩展名都扫，读取时自动解压。解压能力按可信度依次尝试
+Python 3.14 的标准库 `compression.zstd`、`zstandard`、`pyzstd`——**都不装也能用**：
+会话仍然出现在列表里，判定标注为「读不到正文」而不是假装它很健康
+（压缩后的体积只有原文的十分之一上下，拿它对照体积阈值会把最该交接的会话
+判成最不需要交接的）。想读到正文，装其中任一个即可：
+
+```bash
+pip install zstandard        # 或 pyzstd；Python 3.14 及以上自带，无需安装
+```
+
+这是本工具唯一的可选依赖，且**不写进 `dependencies`**：零运行时依赖是刻意取舍——
+工具运行在刚崩掉的环境里，任何要 pip 装的东西都是一条失败路径。
 
 `--sweep` 报告占用，**不删任何文件**：
 

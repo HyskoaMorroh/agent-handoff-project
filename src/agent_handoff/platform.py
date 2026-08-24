@@ -157,6 +157,11 @@ def agent_session_roots() -> list[tuple[str, Path]]:
     环境变量把整个数据目录挪走（`CLAUDE_CONFIG_DIR` / `CODEX_HOME`），
     笔记本上把它们指向 D 盘是常见做法。不读这两个变量的后果不是少扫几个文件，
     而是「一个转录都找不到」——所以它们优先于家目录。
+
+    Codex 还多一层：`CODEX_SESSIONS_ROOT` 直接指向**会话目录本身**，比
+    `CODEX_HOME` 更靠前（见 codex-rs 的会话路径解析顺序：CODEX_SESSIONS_ROOT
+    → CODEX_HOME/sessions → ~/.codex/sessions）。它与 CODEX_HOME 不是同一层，
+    不能拼 `sessions` 子目录上去。
     """
     roots: list[tuple[str, Path]] = []
     seen: set[str] = set()
@@ -168,6 +173,11 @@ def agent_session_roots() -> list[tuple[str, Path]]:
         seen.add(key)
         if p.is_dir():
             roots.append((name, p))
+
+    # 会话目录被直接指定时最优先：它已经是终点，不再拼子目录。
+    raw_sessions = (os.environ.get("CODEX_SESSIONS_ROOT") or "").strip().strip('"')
+    if raw_sessions:
+        add("Codex", Path(os.path.expanduser(os.path.expandvars(raw_sessions))))
 
     # 显式指定的数据目录优先。`CLAUDE_CONFIG_DIR` 指向 `.claude` 本身，
     # `CODEX_HOME` 指向 `.codex` 本身——都是目录，不是它们的父目录。
@@ -373,6 +383,169 @@ def path_is_stale(raw: str) -> bool:
         return not Path(raw).exists()
     except (OSError, ValueError):
         return False
+
+
+def atomic_write_bytes(path: Path, payload: bytes) -> None:
+    """把字节写进 path，要么全写进去，要么原文件一个字节不动。
+
+    为什么交接文件需要这个：`write_bytes` 是「截断到 0，然后写」。在这两步之间
+    读它的人看到的是空文件或半截文档——而这个工具的整个用途就是「上一个会话
+    死了，把现场交给下一个」。现场文档自己在交付途中被截断，是最不能接受的
+    失败方式。触发条件也不稀奇：磁盘满、进程被杀、另一个会话同时在跑同一条
+    命令（并发检测只警告不阻断，所以这是允许发生的）。
+
+    做法是业界标准的 temp + rename：
+      1. 同目录建唯一临时文件（必须同目录——跨文件系统的 rename 不是原子的）
+      2. 写完 flush + fsync，落到盘上，不只是落到页缓存
+      3. `os.replace` 原子替换目标；POSIX 与 Windows 都保证这一步不会留下
+         「半个文件」
+      4. POSIX 上再 fsync 父目录，让目录项本身也落盘——否则崩溃后可能出现
+         「文件内容在、但目录里还指向旧的」。Windows 没有目录 fd 的概念，
+         跳过这一步（`os.replace` 在 NTFS 上本身走事务性元数据更新）。
+
+    临时名带 pid 与计数器：同一秒里两个进程各写一份时不会撞车。撞车时
+    `O_EXCL` 会失败而不是覆盖，重试若干次；都失败就把异常抛出去——写不成
+    必须让调用方知道，静默失败比崩掉更坏。
+
+    失败路径一律删掉临时文件，不在用户仓库里留垃圾。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    last_err: OSError | None = None
+    for attempt in range(16):
+        tmp = path.parent / f".{path.name}.tmp.{os.getpid()}.{attempt}"
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError as exc:
+            last_err = exc
+            continue
+        except OSError as exc:
+            last_err = exc
+            break
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(payload)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+        except OSError:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
+        _fsync_dir(path.parent)
+        return
+    # 16 次都没拿到一个可用的临时名：不正常，交给调用方而不是假装写成了。
+    raise last_err if last_err is not None else OSError(f"cannot create temp file next to {path}")
+
+
+def _fsync_dir(directory: Path) -> None:
+    """让目录项落盘。Windows 上没有这个概念，静默跳过。
+
+    目录 fsync 失败不该让一次成功的写变成失败：内容已经在盘上了，最坏情况是
+    崩溃后目录项还指着旧文件——比「文档没写出来」轻得多。
+    """
+    if IS_WINDOWS:
+        return
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+# 转录文件的两种扩展名。
+#
+# Codex 会把**7 天前**的 rollout 原地 zstd 压缩成 `.jsonl.zst`（level 3，压缩
+# 期间用 `rollout-compression.lock` 加锁）。只认 `.jsonl` 的后果不是少读几行，
+# 而是「一周以前的 Codex 会话在这个工具里完全不存在」——而且随时间推移越来越
+# 严重，因为每天都有新的会话跨过 7 天线。这是沉默失效：列表看起来正常，只是
+# 短了一截，用户没有任何线索知道自己漏掉了什么。
+TRANSCRIPT_SUFFIXES = (".jsonl", ".jsonl.zst")
+
+
+def is_transcript_name(name: str) -> bool:
+    """文件名看起来是转录吗？只看名字，不碰磁盘。
+
+    用在「决定读哪些文件」之前的目录遍历里，所以必须便宜。
+    """
+    low = name.lower()
+    return low.endswith(".jsonl") or low.endswith(".jsonl.zst")
+
+
+def is_compressed_transcript(path: Path | str) -> bool:
+    """这份转录是压缩过的吗？"""
+    return str(path).lower().endswith(".zst")
+
+
+def zstd_opener():
+    """返回一个能打开 `.jsonl.zst` 的函数，没有可用实现时返回 None。
+
+    本项目**不引入运行时依赖**（见 pyproject.toml 里的说明：工具运行在刚崩掉的
+    环境里，任何需要 pip install 的东西都是一条失败路径）。所以这里只**利用**
+    恰好已经装好的实现，按可信度顺序尝试：
+
+      1. `compression.zstd` —— Python 3.14 起的标准库，最可靠
+      2. `zstandard` —— 事实标准的第三方绑定
+      3. `pyzstd` —— 另一个常见实现
+
+    三个都没有时返回 None。**调用方必须降级而不是报错**：会话照旧出现在列表里，
+    只是标注「已压缩归档，读不到正文」。这比假装它不存在强得多——用户至少知道
+    那里有东西，也知道装什么能读到它。
+    """
+    try:  # 1. 标准库（3.14+）
+        from compression import zstd as _czstd
+
+        return lambda p: _czstd.open(p, "rt", encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    try:  # 2. zstandard
+        import io
+
+        import zstandard as _zstd
+
+        def _open_zstandard(p):
+            fh = open(p, "rb")
+            reader = _zstd.ZstdDecompressor().stream_reader(fh)
+            return io.TextIOWrapper(reader, encoding="utf-8", errors="replace")
+
+        return _open_zstandard
+    except Exception:
+        pass
+    try:  # 3. pyzstd
+        import pyzstd as _pyzstd
+
+        return lambda p: _pyzstd.open(p, "rt", encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    return None
+
+
+def open_transcript(path: Path):
+    """打开一份转录用于逐行读取，压缩与未压缩一视同仁。
+
+    压缩转录且没有 zstd 实现时抛 `TranscriptCompressedError`，让调用方决定
+    怎么降级——不同调用方的降级方式不一样（扫描要标注，渲染要提示装什么）。
+    """
+    if is_compressed_transcript(path):
+        opener = zstd_opener()
+        if opener is None:
+            raise TranscriptCompressedError(str(path))
+        return opener(path)
+    return path.open("r", encoding="utf-8", errors="replace")
+
+
+class TranscriptCompressedError(RuntimeError):
+    """转录是 zstd 压缩的，而本机没有任何可用的 zstd 实现。
+
+    单独一个类型而不是复用 OSError：调用方要区分「文件读不了」（真的坏了）和
+    「文件好着但缺解压能力」（装个包就能读），两者给用户的话完全不同。
+    """
 
 
 # 图文说明的文件名。历史上还叫过 `使用说明.html`，留着兼容旧检出。

@@ -15,6 +15,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..platform import atomic_write_bytes
+
 CHECKBOX = re.compile(r"^(?P<indent>\s*)[-*+]\s+\[(?P<mark>[ xX~])\]\s*(?P<body>.*)$", re.M)
 # 任务标题：允许 1-6 级、允许行首缩进。原版卡死在 `#{2,4}` + 行首无空格，
 # `##### Task 5` 与缩进过的标题会被整段忽略，那个任务的全部步骤随之消失。
@@ -329,5 +331,8 @@ def update_plan(
         if newline != "\n":
             # 先归一化再统一替换，避免把已有的 \r\n 变成 \r\r\n。
             body = body.replace("\r\n", "\n").replace("\r", "\n").replace("\n", newline)
-        plan_path.write_bytes(body.encode("utf-8"))
+        # 原子写：计划文档是**用户手写**的，回填只是在它上面勾几个复选框。
+        # 半截写入会毁掉用户自己的文档，而这份文档往往没有别的副本
+        # （交接文件至少还有 `.prev` 备份，计划文档一份都没有）。
+        atomic_write_bytes(plan_path, body.encode("utf-8"))
     return changed, total

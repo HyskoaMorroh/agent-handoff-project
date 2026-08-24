@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..i18n import Translator
-from ..platform import agent_for, norm_path
+from ..platform import agent_for, atomic_write_bytes, norm_path
 from .evidence import score_tasks
 from .gitops import (
     _strip_leading_dotslash,
@@ -536,7 +536,11 @@ def run_handoff(
     # 才会发现，Windows 上装的 3.14 一路都是绿的。直接写字节，绕开文本层。
     payload = body.encode("utf-8")
     _keep_previous(out_path, payload, say, tr)
-    out_path.write_bytes(payload)
+    # 原子写：写不完整比不写更坏。`write_bytes` 先把文件截断到 0 再写，中间
+    # 被打断就留下一份半截的交接现场——而这份文档存在的全部意义就是「上一个
+    # 会话没了，现场在这里」。并发检测只警告不阻断，所以两个会话同时跑到这里
+    # 是允许发生的情况，不是理论可能。
+    atomic_write_bytes(out_path, payload)
     say(f"      {out_path}")
 
     if has_git and not opts.no_commit:
