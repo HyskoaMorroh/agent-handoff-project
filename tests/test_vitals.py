@@ -21,6 +21,7 @@ from agent_handoff.core.vitals import (
     VITALS_BANDS,
     _newest_files,
     band_for,
+    band_reason,
     clear_cache,
     find_sessions,
     group_by_agent,
@@ -1444,6 +1445,93 @@ def test_error_text_keeps_only_the_last_few(tmp_path):
     assert row.errors == _ERR_KEEP + 5, "个数要全数"
     assert len(row.errors_text) == _ERR_KEEP, "原文只留最后几条"
     assert f"number {_ERR_KEEP + 4}" in row.errors_text[-1], "留下的不是最后几条"
+
+
+# --- 判定理由 -------------------------------------------------------------
+# 抬档地板（压缩 ≥2 → critical、事故 ≥3 → high）此前在界面上完全不可见：
+# 用户看到一个 30% 占用率的会话被判「立刻交接」，只能以为工具在瞎猜。
+
+
+@pytest.mark.parametrize("kw", [
+    dict(size=1_000_000, tokens=118624, window=121600, compactions=1),
+    dict(size=2_000_000, tokens=194183, window=0),
+    dict(size=9_000_000),
+    dict(size=100, unknown=True),
+    dict(size=500, tokens=10, window=200000, fatal=2, aborted=2),
+    dict(size=1_900_000, tokens=60000, window=200000, compactions=10),
+])
+def test_band_reason_always_agrees_with_band_for(kw):
+    """理由与结论必须出自同一套判定。
+
+    两处各算一遍是这类功能最容易出的错：界面说「因为压缩」，命令行说
+    「因为体积」，而两个数字都对不上徽章。所以 `band_reason` 复用
+    `band_for` 的全部判据，这条测试钉住它们不许漂移。
+    """
+    assert band_reason(**kw)["band"] == band_for(**kw)
+
+
+def test_band_reason_names_the_basis_and_its_source():
+    r = band_reason(size=1_000_000, tokens=118624, window=121600)
+    assert r["basis"] == "fullness"
+    assert r["detail"]["percent"] == pytest.approx(97.6, abs=0.1)
+    # 上限是转录自己写的还是用户声明的，影响可信度——必须分开。
+    assert r["detail"]["window_from"] == "transcript"
+
+    import os
+    os.environ["AGENT_HANDOFF_CONTEXT_WINDOW"] = "200000"
+    try:
+        r2 = band_reason(size=1_000_000, tokens=100000, window=0)
+        assert r2["detail"]["window_from"] == "declared"
+    finally:
+        del os.environ["AGENT_HANDOFF_CONTEXT_WINDOW"]
+
+
+def test_band_reason_marks_a_raised_band():
+    """`raised` 回答「数字看着还行却被判成危险」的唯一原因。"""
+    r = band_reason(size=1_900_000, tokens=60000, window=200000, compactions=10)
+    assert r["band"] == "critical"
+    assert r["raised"] is True, "抬档了却没标出来"
+    applied = [f for f in r["floors"] if f["applied"]]
+    assert len(applied) == 1
+    assert applied[0]["kind"] == "compactions"
+    assert applied[0]["count"] == 10
+
+
+def test_band_reason_lists_floors_that_did_not_apply_as_not_applied():
+    """没生效的规则要标 applied=False。
+
+    前端只渲染生效的那些——把没生效的也列出来会让人以为它生效了，
+    而那正是「理由与徽章对不上」的另一种形式。
+    """
+    r = band_reason(size=1_000_000, tokens=120000, window=121600, compactions=1)
+    assert r["band"] == "critical"      # 占用率本身已经到顶
+    floors = [f for f in r["floors"] if f["kind"] == "compactions"]
+    assert floors and floors[0]["applied"] is False
+    assert r["raised"] is False
+
+
+def test_band_reason_for_unreadable_says_nothing_can_be_judged():
+    r = band_reason(size=100, unknown=True)
+    assert r["band"] == "unknown"
+    assert r["basis"] == "unreadable"
+    assert r["floors"] == []
+    assert r["raised"] is False
+
+
+def test_band_reason_is_carried_in_to_dict(tmp_path):
+    """网页界面靠 to_dict 拿理由，所以它必须在里面且可 JSON 化。"""
+    fp = tmp_path / "rollout-2026-08-25T05-00-00-br.jsonl"
+    _write_jsonl(fp, [
+        {"type": "session_meta", "payload": {"session_id": "br", "cwd": "/p"}},
+        {"type": "compacted", "payload": {"message": "m1"}},
+        {"type": "compacted", "payload": {"message": "m2"}},
+    ])
+    d = scan_one("Codex", fp).to_dict()
+    json.dumps(d)
+    why = d["band_reason"]
+    assert why["band"] == d["band"], "理由里的档位与卡片上的徽章不一致"
+    applied = [f for f in why["floors"] if f["applied"]]
+    assert applied and applied[0]["kind"] == "compactions"
 
 
 def test_error_text_never_falls_back_to_raw_json(tmp_path):

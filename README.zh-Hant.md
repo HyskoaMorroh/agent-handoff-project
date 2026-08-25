@@ -3,9 +3,9 @@
 <p align="center"><b>工作階段卡死時，把進度從對話裡搬進儲存庫</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.5.0-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.6.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="測試" src="https://img.shields.io/badge/tests-704%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="測試" src="https://img.shields.io/badge/tests-745%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="執行時依賴" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="授權" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -190,6 +190,7 @@ agent-handoff --sweep --out disk.md      # 匯出 md 報告
 | `--skip-tests` | 不跑測試（快速模式） |
 | `--test-timeout N` | 單條測試命令逾時秒數，預設 900 |
 | `--vitals` | 只健檢本機工作階段記錄並結束，不動儲存庫 |
+| `--doctor` | 先看這台機器缺什麼，然後結束；不動儲存庫也不動記錄 |
 | `--no-vitals` | 略過工作階段健檢（交接檔案裡不含體徵表） |
 | `--sweep` | 報告記錄佔了多少磁碟、哪些可以安全回收，然後結束；**不刪任何檔案** |
 | `--by-repo` | 配合 `--sweep`：額外依儲存庫聚合佔用（要讀記錄，慢很多） |
@@ -404,6 +405,69 @@ B 最能說明問題：**它體積小恰恰因為壓縮一直在丟歷史**。�
 **中斷輪次**（`turn_aborted`）單獨計數：實測 Codex 側 `is_error` 在 40 個
 rollout 裡只有 3 次，而 `turn_aborted` 有 6 次。把半成品當成已完成，
 是交接裡最貴的誤判。
+
+### 判定依據可以展開看
+
+抬檔規則在介面上此前完全不可見：一個佔用率顯示 30% 的工作階段被判成「立刻交接」，
+使用者只能以為工具在瞎猜。而抬檔恰恰是這套判定裡最硬的部分——它依據的是**已經
+發生過的事實**（壓縮過就是滿過），比任何佔用率推斷都可靠。
+
+現在每張工作階段卡片下有「為什麼是這一檔」可展開，內容是結構化事實而非句子：
+
+- **主判據**來自哪裡：佔用率 / 絕對 token / 體積兜底 / 讀不到正文。
+- **上下文上限的來源**：記錄自己寫的（實測值）還是 `AGENT_HANDOFF_CONTEXT_WINDOW`
+  宣告的（宣告錯了整列佔用率都會偏）。
+- **哪條抬檔規則真正生效**、抬到了哪一檔。沒生效的規則不列——列出來只會讓人
+  以為它生效了。
+- 最終檔位是否來自抬檔而非主判據。這一條單獨標出，因為它正是「數字看著還行
+  卻被判成危險」的唯一原因。
+
+命令列卡片、網頁介面、交接文件三處共用同一份判據，不可能出現「介面說因為壓縮、
+命令列說因為體積」。
+
+### 佔用是怎麼漲起來的
+
+`tokens` 只回答「最滿的時候有多滿」。同樣是 97% 佔用，一路平穩爬上去和最後兩輪
+突然翻倍是兩種處境——後者說明剛才那一步塞進了巨量內容（讀了個大檔案、貼了份
+日誌），而那正是下一個工作階段要避開的。壓縮點同理：知道「壓過 3 次」不如知道
+「三次都擠在最後十輪裡」，那是 thrash 的形狀。
+
+工作階段卡片上因此有一條按輪次取樣的佔用走勢小圖，壓縮點畫成豎線（跨過一條豎線，
+之前的原始歷史已經被摘要取代）。知道上下文上限時縱軸用上限，兩個工作階段的圖可以
+直接對比；不知道時用實測峰值，此時圖形只表示相對走勢，提示裡會說明是哪一種。
+
+取樣上限 120 點，超了等距抽稀，但**首尾與壓縮點永不抽掉**——末點是「現在有多
+滿」，首點是基線，壓縮點是這條線上唯一的事件標記。
+
+圖用內嵌 SVG 手繪（本專案零依賴零建置），不用 `<canvas>`：canvas 裡的東西對讀螢幕
+軟體完全不存在。圖本身標 `aria-hidden` 只作視覺補充，同樣的資訊在佔用率徽章與
+壓縮次數裡另有文字版——不讓它成為唯一的資訊通道。
+
+## 先看這台機器缺什麼
+
+```bash
+agent-handoff --doctor
+```
+
+這個工具此前幾乎每次失敗都是靜默的：環境裡少了什麼，然後某一步的結果悄悄變空。
+`--doctor` 在跑任何東西之前把檢查清單擺出來，不動儲存庫也不動記錄：
+
+| 檢查項 | 缺了會怎樣 |
+|---|---|
+| Python 版本 | 低於宣告的最低版本，行為不可預期 |
+| git 是否在 PATH 及版本 | 提交快照、計畫回填、並行偵測三項全部不可用 |
+| zstd 解壓能力及命中的實作 | 讀不到 `.jsonl.zst`（Codex 會就地壓縮 7 天前的 rollout） |
+| stdout 是否 UTF-8 | 記錄裡總有 emoji 與非拉丁文字，編碼不對會中途崩 |
+| 暫存目錄可寫性 | 原子寫拿不到暫存檔案 |
+| 各 agent 資料根 | 存在性、記錄計數、其中壓縮數；目錄在但 0 份記錄會單獨提示 |
+| `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `CODEX_SESSIONS_ROOT` | 設了但指向不存在的目錄，比沒設更難發現 |
+| `AGENT_HANDOFF_CONTEXT_WINDOW` | 非正整數時佔用率會靜默退回絕對閾值 |
+
+整體檔位取最壞項。**「留意」不會讓結束碼非零**——缺 zstd 只是讀不到壓縮歸檔，
+不該擋住整次執行；只有真正阻塞的項才是 blocking。
+
+網頁介面有對應的「自檢」檢視，判據與命令列完全共用。介面上的路徑與環境變數值
+經去識別後再顯示：錄影和截圖會把使用者名稱帶走。
 
 ## 工作階段內容是怎麼傳承的
 

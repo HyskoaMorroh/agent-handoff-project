@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-handoff"
-version = "2.5.0"
+version = "2.6.0"
 description = "Freeze an AI coding session into a lossless handoff: commit snapshot, plan backfill, handoff document, opening prompt."
 readme = "README.md"
 requires-python = ">=3.9"

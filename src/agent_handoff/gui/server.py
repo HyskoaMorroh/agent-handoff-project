@@ -367,6 +367,22 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/api/doctor":
+            # 环境自检。只读，且最贵的一步是一次目录遍历（实测 481 份转录
+            # 十几毫秒），所以同步执行——不必像交接那样起后台任务。
+            #
+            # 路径要脱敏：这份结果会显示在界面上，而用户可能在录屏或截图。
+            # 数据根与临时目录的路径里带用户名。
+            from ..core.doctor import run_doctor
+
+            result = run_doctor()
+            for c in result["checks"]:
+                for key in ("path", "value"):
+                    if key in c["data"]:
+                        c["data"][key] = _redact_home(str(c["data"][key]))
+            self._json(result)
+            return
+
         if path == "/api/disk":
             # 磁盘报告只 stat 不读内容，所以同步执行也就十几毫秒——不需要像
             # 交接那样起后台任务。按仓库聚合要读内容（慢几个数量级），

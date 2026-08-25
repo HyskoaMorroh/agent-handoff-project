@@ -123,6 +123,32 @@
       const on = b.getAttribute("data-view") === name;
       b.classList.toggle("is-active", on);
       b.setAttribute("aria-selected", String(on));
+      // ARIA 的 tab 模式要求整组只有一个可 Tab 到的入口：选中的为 0、
+      // 其余 -1。这样 Tab 键一次跳过整组进入内容区，组内移动交给方向键——
+      // 键盘用户否则要按四次 Tab 才能走出侧栏。
+      b.setAttribute("tabindex", on ? "0" : "-1");
+    });
+  }
+
+  /* 方向键在标签组内移动焦点并切换视图。
+   *
+   * Home / End 跳到首尾。用 roving tabindex（见 showView）而不是让每个 tab
+   * 都可 Tab——那是 ARIA tab 模式的规定行为，也是读屏用户的肌肉记忆。 */
+  function bindTabKeys() {
+    const tabs = $$(".nav-item[data-view]");
+    tabs.forEach((tab) => {
+      tab.addEventListener("keydown", (e) => {
+        const i = tabs.indexOf(tab);
+        let j = -1;
+        if (e.key === "ArrowDown" || e.key === "ArrowRight") j = (i + 1) % tabs.length;
+        else if (e.key === "ArrowUp" || e.key === "ArrowLeft") j = (i - 1 + tabs.length) % tabs.length;
+        else if (e.key === "Home") j = 0;
+        else if (e.key === "End") j = tabs.length - 1;
+        if (j < 0) return;
+        e.preventDefault();
+        showView(tabs[j].getAttribute("data-view"));
+        tabs[j].focus();
+      });
     });
   }
 
@@ -178,6 +204,170 @@
     // 千分位。Intl 在所有目标浏览器里都有，但它会按 locale 变分隔符，
     // 而这里要的是稳定可比的数字，所以自己插。
     return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  }
+
+  /* 占用走势小图。
+   *
+   * 为什么需要它：`tokens` 回答「最满的时候有多满」，但交接决策还要知道
+   * **怎么涨的**。同样是 97% 占用，一路平稳爬上去和最后两轮突然翻倍是两种
+   * 处境——后者说明刚才那一步塞进了巨量内容（读了个大文件、粘了份日志），
+   * 而那正是下一个会话要避开的。压缩点同理：知道「压过 3 次」不如知道
+   * 「三次都挤在最后十轮里」，那是 thrash 的形状。
+   *
+   * 用内联 SVG 手绘而不是引图表库：这个项目零依赖、零构建，而一条折线加几根
+   * 竖线用不着几十 KB 的库。SVG 也天生跟着 CSS 变量走主题色。
+   *
+   * 不做 <canvas>：canvas 里的东西对读屏软件完全不存在，而 SVG 可以带
+   * <title>。这张图的信息也在别处有文字版（占用率徽章、压缩次数），
+   * 所以它标 aria-hidden，只作为视觉补充——不让它成为唯一的信息通道。 */
+  function sparkline(r) {
+    const tl = r.timeline;
+    if (!tl || !tl.points || tl.points.length < 2) return null;
+    const pts = tl.points;
+    const W = 240, H = 34, PAD = 2;
+    const xs = pts.map((p) => p.i);
+    const lo = Math.min.apply(null, xs), hi = Math.max.apply(null, xs);
+    const span = Math.max(1, hi - lo);
+    // 纵轴上界：有上下文上限就用它（那样两个会话的图可以直接对比），
+    // 没有就用实测峰值。用峰值时图形只表示相对走势，不表示绝对满度——
+    // 所以 title 里要说清楚是哪一种。
+    const top = r.context_window > 0
+      ? Math.max(r.context_window, Math.max.apply(null, pts.map((p) => p.tokens)))
+      : Math.max.apply(null, pts.map((p) => p.tokens));
+    const sx = (i) => PAD + (i - lo) / span * (W - PAD * 2);
+    const sy = (v) => H - PAD - (v / Math.max(1, top)) * (H - PAD * 2);
+
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.setAttribute("class", "spark");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("preserveAspectRatio", "none");
+
+    const mk = (tag, attrs) => {
+      const n = document.createElementNS("http://www.w3.org/2000/svg", tag);
+      for (const k in attrs) n.setAttribute(k, String(attrs[k]));
+      return n;
+    };
+
+    // 上下文上限那条线：只在真的知道上限时画。画一条"想象的"上限比不画更糟。
+    if (r.context_window > 0) {
+      svg.appendChild(mk("line", {
+        x1: PAD, y1: sy(r.context_window), x2: W - PAD, y2: sy(r.context_window),
+        class: "spark-cap",
+      }));
+    }
+    // 压缩点画成竖线。它们是这条线上唯一的事件，也是「阶段边界」——
+    // 跨过一条竖线，之前的原始历史已经被摘要取代了。
+    (tl.compactions_at || []).forEach((at) => {
+      if (at < lo || at > hi) return;
+      svg.appendChild(mk("line", {
+        x1: sx(at), y1: PAD, x2: sx(at), y2: H - PAD, class: "spark-compact",
+      }));
+    });
+    // 折线本体。用 polyline 而不是 path：点数已经抽稀到 120 以内，
+    // polyline 的坐标串更短也更容易读。
+    svg.appendChild(mk("polyline", {
+      class: "spark-line",
+      points: pts.map((p) => sx(p.i).toFixed(1) + "," + sy(p.tokens).toFixed(1)).join(" "),
+    }));
+
+    const capNote = r.context_window > 0
+      ? t("gui.spark.cap", { window: fmtNum(r.context_window) })
+      : t("gui.spark.nocap");
+    const desc = t("gui.spark.tip", {
+      turns: tl.turns, points: pts.length,
+      compactions: (tl.compactions_at || []).length, cap: capNote,
+    });
+    // 三个通道都要有，不只靠 title：
+    //   · title    —— 鼠标悬停
+    //   · aria-label + role="img" —— 读屏软件（title 在 div 上读不出来）
+    //   · tabindex="0" —— 键盘用户能聚焦到它，触屏与键盘否则完全拿不到这段信息
+    // 这正是此前「title 是唯一 tooltip 通道」那条缺陷：鼠标以外的用户什么都没有。
+    const box = el("div.spark-box", {
+      title: desc,
+      role: "img",
+      "aria-label": desc,
+      tabindex: "0",
+    });
+    box.appendChild(svg);
+    return box;
+  }
+
+  /* 「为什么是这一档」。
+   *
+   * 此前判定只有一个徽章，抬档规则（压缩 ≥2 次 → 立刻交接、致命+中断 ≥3 →
+   * 尽快交接）在界面上完全不可见——用户看到一个 30% 占用率的会话被判成
+   * 「立刻交接」，只能以为工具在瞎猜。而抬档恰恰是这套判定里最有价值的部分：
+   * 它依据的是**已经发生过的事实**（压缩过就是满过），比任何占用率推断都硬。
+   *
+   * 结构化理由由后端给（`band_reason`），这里只渲染。两处共用同一份判据，
+   * 不可能出现「界面说因为压缩、命令行说因为体积」。
+   *
+   * 用 <details> 而不是常驻展开：多数时候用户只需要那个徽章，理由是他质疑
+   * 徽章时才要看的。折叠起来首屏能多放两张卡片。 */
+  function bandWhy(r) {
+    const why = r.band_reason;
+    if (!why) return null;
+    const box = el("details.why");
+    box.appendChild(el("summary", { text: t("band.why") }));
+    const list = el("ul.list");
+
+    // 主判据：占用率 / 绝对 token / 体积兜底 / 读不到。
+    const d = why.detail || {};
+    let basis = "";
+    if (why.basis === "fullness") {
+      basis = t("band.basis.fullness", {
+        percent: d.percent, tokens: fmtNum(d.tokens), window: fmtNum(d.window),
+        source: t("band.source." + (d.window_from === "declared" ? "declared" : "transcript")),
+      });
+    } else if (why.basis === "tokens") {
+      basis = t("band.basis.tokens", { tokens: fmtNum(d.tokens) });
+    } else if (why.basis === "size") {
+      basis = t("band.basis.size");
+    } else {
+      basis = t("band.basis.unreadable");
+    }
+    list.appendChild(el("li", { text: basis }));
+
+    // 抬档规则：只列真正生效的那些，并说明抬到哪一档。没生效的规则列出来
+    // 只会让人以为它生效了。
+    (why.floors || []).forEach((f) => {
+      if (!f.applied) return;
+      const key = f.kind === "compactions" ? "band.floor.compactions" : "band.floor.incidents";
+      list.appendChild(el("li", {
+        text: t(key, {
+          count: f.count, fatal: f.fatal, aborted: f.aborted,
+          floor: t("band." + f.floor),
+        }),
+      }));
+    });
+    box.appendChild(list);
+    if (why.raised) box.appendChild(el("p.hint", { text: t("band.raised") }));
+    return box;
+  }
+
+  /* 上一个会话踩过的坑。
+   *
+   * 只给个数（「工具错误 10 次」）对下一个会话没有任何行动价值——它会按同样的
+   * 方式再错一次。报错原文里有路径、有行号、有被挡住的具体操作，那才是能用上
+   * 的东西。实测本机一份转录里 13 条报错，其中 3 条是「文件在项目根之外被
+   * 拒绝」——下一个会话看到这条就不会再试第四次。
+   *
+   * 默认折叠：它是排查时才看的东西，不该占掉扫读会话列表的视线。 */
+  function errorList(r) {
+    const rows = r.errors_text || [];
+    if (!rows.length) return null;
+    const box = el("details.why");
+    box.appendChild(el("summary", { text: t("gui.errors.title", { count: rows.length }) }));
+    const list = el("ul.list");
+    rows.forEach((x) => {
+      // 报错正文是会话原文，语言由当时的工具决定，不跟随界面语言。
+      const li = el("li", { text: x });
+      li.setAttribute("lang", "");
+      list.appendChild(li);
+    });
+    box.appendChild(list);
+    return box;
   }
 
   function sessionCard(r, opts) {
@@ -258,8 +448,27 @@
       const extra = r.repos.length > 1 ? t("cli.card.repos_more", { count: r.repos.length - 1 }) : "";
       row(t("gui.label.repos"), r.repos[0] + extra);
     }
+    // 停下来时的运行配置。这几项是逐轮记录的（Codex 的 turn_context），
+    // 不在会话元数据里——同一个会话中途换模型是常态，而新会话要重现上一个
+    // 会话的结果，得知道它当时在什么配置下跑。Claude 侧没有这种记录。
+    if (r.turn_context) {
+      const bits = Object.keys(r.turn_context).map((k) => k + "=" + r.turn_context[k]);
+      if (bits.length) row(t("gui.label.turn_context"), bits.join(", "));
+    }
     row(t("gui.label.file"), r.path);
     card.appendChild(kv);
+
+    // 走势图排在键值表之后：它是对上面那些数字的补充说明（「怎么涨到这个数的」），
+    // 放在数字前面会让人先看图再找数，而判断顺序恰好相反。
+    const spark = sparkline(r);
+    if (spark) card.appendChild(spark);
+
+    // 判定理由与报错原文都排在键值表之后、操作行之前：它们是「要不要处理这个
+    // 会话」的依据，而操作行是「怎么处理」。顺序跟着决策顺序走。
+    const why = bandWhy(r);
+    if (why) card.appendChild(why);
+    const errs = errorList(r);
+    if (errs) card.appendChild(errs);
 
     const act = el("div.srow-act");
     // 只有带摘要或带话题的会话才值得传承：没有这两样时，能传下去的只有
@@ -425,6 +634,72 @@
       }
       group.appendChild(sessionCard(r));
     });
+  }
+
+  /* ── 环境自检 ──────────────────────────────────────────── */
+  let lastDoctor = null;
+
+  async function runDoctor() {
+    const btn = $("#doctor-btn");
+    const out = clear($("#doctor-out"));
+    btn.disabled = true;
+    out.appendChild(el("div.card", null, el("div.progress", null, el("span"))));
+    try {
+      lastDoctor = await api("/api/doctor");
+      renderDoctor();
+    } catch (e) {
+      clear(out).appendChild(errPanel(e.message));
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  /* 每一项的文案：正常态与异常态用**不同的键**，因为要说的话完全不同——
+   * 正常态报个事实就够，异常态必须说清「会导致什么」与「怎么办」。
+   * 键名与 CLI 侧（cli.py 的 cmd_doctor）一致，两处说法不可能漂移。 */
+  const DOCTOR_BAD = {
+    python: "doctor.python.old",
+    git: "doctor.git.missing",
+    zstd: "doctor.zstd.missing",
+    stdio: "doctor.stdio.bad",
+    writable: "doctor.writable.no",
+    root: "doctor.root.empty",
+    "root.unreadable": "doctor.root.unreadable",
+    "roots.none": "doctor.roots.none",
+  };
+
+  function renderDoctor() {
+    const out = clear($("#doctor-out"));
+    const res = lastDoctor;
+    if (!res) return;
+    const tally = { ok: 0, warn: 0, fail: 0 };
+    const list = el("div.stack");
+    (res.checks || []).forEach((c) => {
+      tally[c.level] = (tally[c.level] || 0) + 1;
+      let text;
+      if (c.level === "ok") {
+        text = t("doctor." + c.key, c.data);
+      } else if (c.key === "env") {
+        // 环境变量的异常有两种：路径不存在，或者数字不合法。
+        text = t("parsed" in c.data ? "doctor.env.bad_number" : "doctor.env.missing", c.data);
+      } else {
+        text = t(DOCTOR_BAD[c.key] || ("doctor." + c.key), c.data);
+      }
+      // 左侧竖条承载严重度，与会话卡片同一套视觉语言；同时给文字徽章，
+      // 不让颜色成为唯一的信息通道。
+      const row = el("div.srow", { "data-level": c.level });
+      row.appendChild(el("div.srow-top", null,
+        el("span.badge", { text: t("doctor." + c.level), "data-level": c.level })));
+      row.appendChild(el("p.dtext", { text: text }));
+      list.appendChild(row);
+    });
+    out.appendChild(list);
+    out.appendChild(el("p.hint", {
+      text: t("doctor.summary", {
+        total: res.transcripts, ok: tally.ok || 0,
+        warn: tally.warn || 0, fail: tally.fail || 0,
+      }),
+    }));
   }
 
   /* ── 找会话 ────────────────────────────────────────────── */
@@ -733,6 +1008,7 @@
   async function rerender() {
     if (lastVitals) renderVitals();
     if (lastFind) renderFind();
+    if (lastDoctor) renderDoctor();
     if (!lastResult) return;
     if (lastResult.error || !lastRunReq) {
       renderResult(lastResult.error ? "error" : "done", lastLog);
@@ -774,6 +1050,9 @@
     // 只给真正的 tab 绑切换。说明文档是 <a href> 外部链接，绑上去会让
     // showView(null) 把三个视图全部隐藏。
     $$(".nav-item[data-view]").forEach((b) => b.addEventListener("click", () => showView(b.getAttribute("data-view"))));
+    // 方向键 / Home / End 在标签组内移动。鼠标能做的事键盘也要能做，
+    // 而 tab 模式下方向键是读屏用户的默认预期。
+    bindTabKeys();
     // 说明文档只在仓库里跑时存在；装好的包不带 docs/，那时不显示这个入口。
     const guide = $("#nav-guide");
     if (guide && BOOT.guideAvailable) {
@@ -785,6 +1064,7 @@
     }
     $("#scan-btn").addEventListener("click", scanVitals);
     $("#scan-deep").addEventListener("change", () => { if (scanned) scanVitals(); });
+    $("#doctor-btn").addEventListener("click", runDoctor);
     $("#run-btn").addEventListener("click", () => startHandoff(false));
     $("#dry-btn").addEventListener("click", () => startHandoff(true));
 

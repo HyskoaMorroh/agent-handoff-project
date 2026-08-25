@@ -14,6 +14,23 @@ from ..platform import local_home_names
 # 不会成环。反过来写就会。
 from .transcript import deep_link, resume_command
 
+# 单个会话的压缩摘要在交接文档里的上限。
+#
+# 摘要此前**不设上限**，理由是「每个窗口只总结它自己那一段，丢一个就少一个
+# 阶段」——那个理由对，但代价被漏算了。实测本机一份 70 窗口的 rollout：摘要
+# 320,024 字符，约 8 万 token。交接文档存在的意义是救一个快满的会话，而把
+# 这份文档粘进新会话会**当场吃掉它 40% 的 200k 窗口**——工具本身成了它要
+# 解决的那个问题。
+#
+# 6 万字符（约 1.5 万 token）的取值依据：实测 22 窗口以下的摘要都在 10 万
+# 字符以内，而 22 窗口已经是「压缩过很多次」的会话；超过这个量级的摘要，
+# 早期窗口讲的是几百轮之前的事，对「接下来做什么」几乎没有信息量。
+#
+# 超限时**保留最后的窗口**而不是最前的：最新的窗口讲的是当前进度，而交接要
+# 回答的正是「上一个会话停在哪」。丢掉的部分明确告知，不静默截断——静默截断
+# 会让读者以为看到了全部，然后据此推断「那件事没发生过」。
+DIGEST_DOC_CHARS = 60_000
+
 
 # 家目录在交接**文档**里要脱敏。文档会被 git 提交、可能推送到公开仓库，
 # 而转录的绝对路径里带着操作系统用户名（`C:\Users\alice\.codex\…`）。
@@ -451,6 +468,48 @@ def _block(add, text: str) -> None:
     add(close_fence)
 
 
+# 摘要里窗口之间的分隔行，形如 `===== [2/3] =====`。
+# 与 `vitals._digest_sep` 生成的形态配对——那边刻意不带任何语言，所以这条
+# 识别式在三种界面语言下都成立。不从 vitals 导入是为了不让渲染层依赖采集层：
+# 交接文档也可能从导入的包（`--import-bundle`）渲染，那时没有采集器参与。
+_DIGEST_SEP = re.compile(r"^=+\s*\[\d+\s*/\s*\d+\]\s*=+$", re.M)
+
+
+def _clip_digest(digest: str, limit: int = DIGEST_DOC_CHARS) -> tuple[str, int]:
+    """摘要超限时保留**最新的**窗口，返回 (保留的正文, 丢掉的字符数)。
+
+    为什么保留最新而不是最早：交接要回答「上一个会话停在哪」，那写在最后一个
+    窗口里。最早的窗口讲的是几百轮之前的事——实测一份 70 窗口的 rollout 里，
+    第 1 个窗口说的是「先调研同类项目」，而第 70 个说的是当前正在改哪个函数。
+
+    按**窗口边界**切而不是按字符数硬切：硬切会把一个窗口劈成两半，读者拿到
+    半句话开头的一段文字，既不知道它属于哪个阶段，也无法判断它是否完整。
+    单个窗口就已经超限时才退回字符截断——那时没有更好的选择。
+    """
+    if len(digest) <= limit:
+        return digest, 0
+    # 按分隔行切成若干块。`_DIGEST_SEP` 是多行模式，split 后偶数位是分隔行
+    # 本身（第一块可能是没有分隔行的单窗口摘要）。
+    marks = list(_DIGEST_SEP.finditer(digest))
+    if not marks:
+        # 单个窗口就超限：只能字符截断，且保留尾部。
+        kept = digest[-limit:]
+        return kept, len(digest) - len(kept)
+
+    # 从后往前累加窗口，直到再加一个就超限。
+    starts = [m.start() for m in marks]
+    cut_at = starts[-1]
+    for pos in reversed(starts):
+        if len(digest) - pos > limit:
+            break
+        cut_at = pos
+    kept = digest[cut_at:]
+    if not kept.strip():
+        # 极端情况：最后一个窗口自己就超限。退回字符截断，仍然保尾。
+        kept = digest[-limit:]
+    return kept, len(digest) - len(kept)
+
+
 def _rule(head: str) -> str:
     """按表头的实际列数生成分隔行。
 
@@ -666,7 +725,13 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
                 # 摘要是 Markdown（带 # 标题与代码块），整段放进代码围栏，
                 # 避免它的标题层级与本文档打架、列表被当成本文档的结构。
                 # 摘要来自转录，里面照抄了大量绝对路径，同样要脱敏。
-                _block(a, _redact(s["digest"]))
+                digest, cut = _clip_digest(s["digest"])
+                if cut:
+                    # 先说被截了多少，再给正文。顺序很重要：读者要在读之前
+                    # 就知道这不是全部，否则他会把「最早的阶段」当成不存在。
+                    a(tr.t("doc.sessions.digest_clipped", dropped=f"{cut:,}",
+                           kept=f"{len(digest):,}"))
+                _block(a, _redact(digest))
             a("")
 
     a(tr.t("doc.h.prompt") + "\n")

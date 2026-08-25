@@ -198,6 +198,62 @@ def cmd_find(args: argparse.Namespace, tr: Translator) -> int:
     return 0
 
 
+def cmd_doctor(args: argparse.Namespace, tr: Translator) -> int:
+    """环境自检。只读，不装东西、不改配置。
+
+    退出码只在有 **fail** 项时才非零。缺 zstd 是 warn——工具照常工作，只是
+    压缩归档的会话读不到正文；让它把退出码搞成非零，会逼人在 CI 里关掉整条
+    检查，那比不检查更糟。
+    """
+    from .core.doctor import FAIL, OK, WARN, run_doctor
+
+    result = run_doctor()
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 1 if result["level"] == FAIL else 0
+
+    # 每一项的文案键：正常态与异常态用不同的键，因为要说的话完全不同——
+    # 正常态只需报个事实，异常态要说清「会导致什么」和「怎么办」。
+    bad_key = {
+        "python": "doctor.python.old",
+        "git": "doctor.git.missing",
+        "zstd": "doctor.zstd.missing",
+        "stdio": "doctor.stdio.bad",
+        "writable": "doctor.writable.no",
+        "root": "doctor.root.empty",
+        "root.unreadable": "doctor.root.unreadable",
+        "roots.none": "doctor.roots.none",
+    }
+    mark = {OK: "+", WARN: "!", FAIL: "x"}
+    tally = {OK: 0, WARN: 0, FAIL: 0}
+
+    print(tr.t("doctor.head"))
+    print(tr.t("doctor.lead"))
+    print("")
+    for c in result["checks"]:
+        tally[c["level"]] += 1
+        key = c["key"]
+        if c["level"] == OK:
+            text = tr.t(f"doctor.{key}", **c["data"])
+        elif key == "env":
+            # 环境变量的异常有两种：路径不存在，或者数字不合法。
+            data = c["data"]
+            text = tr.t(
+                "doctor.env.bad_number" if "parsed" in data else "doctor.env.missing",
+                **data,
+            )
+        else:
+            text = tr.t(bad_key.get(key, f"doctor.{key}"), **c["data"])
+        print(f"  {mark[c['level']]} {text}")
+    print("")
+    print(tr.t(
+        "doctor.summary",
+        total=result["transcripts"],
+        ok=tally[OK], warn=tally[WARN], fail=tally[FAIL],
+    ))
+    return 1 if result["level"] == FAIL else 0
+
+
 def cmd_sweep(args: argparse.Namespace, tr: Translator) -> int:
     """磁盘占用报告。**只统计，不删任何文件。**
 
@@ -556,6 +612,10 @@ def build_parser(tr: Translator) -> argparse.ArgumentParser:
     ap.add_argument("--test-timeout", type=int, default=900, help=tr.t("cli.arg.test_timeout"))
     ap.add_argument("--vitals", action="store_true", help=tr.t("cli.arg.vitals"))
     ap.add_argument("--no-vitals", action="store_true", help=tr.t("cli.arg.no_vitals"))
+    # 环境自检。排在这里是因为它与 --sweep / --vitals 同类：只读、不碰仓库、
+    # 不需要 git，所以在 git 检查之前就能跑——而「git 缺失」恰恰是它要报的
+    # 结论之一，放在 git 检查之后就永远看不到那句话了。
+    ap.add_argument("--doctor", action="store_true", help=tr.t("cli.arg.doctor"))
     ap.add_argument("--sweep", action="store_true", help=tr.t("cli.arg.sweep"))
     ap.add_argument("--by-repo", action="store_true", help=tr.t("cli.arg.by_repo"))
     # 可重复、可逗号分隔：一次找多个会话是常态（要把几段对话一起交接时，
@@ -608,6 +668,10 @@ def main(argv: list[str] | None = None) -> int:
 
     from .core.gitops import git_available
 
+    if args.doctor:
+        # 必须排在 `git_available()` 之前：git 缺失是自检要报告的结论之一，
+        # 放在检查之后就永远打不到那一行——用户拿不到「为什么跑不起来」的答案。
+        return cmd_doctor(args, tr)
     if args.find:
         return cmd_find(args, tr)
     if args.sweep:

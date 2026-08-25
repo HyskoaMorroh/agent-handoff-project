@@ -3,9 +3,9 @@
 <p align="center"><b>会话卡死时，把进度从对话里搬进仓库</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.5.0-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.6.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="测试" src="https://img.shields.io/badge/tests-704%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="测试" src="https://img.shields.io/badge/tests-745%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="运行时依赖" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="许可" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -178,6 +178,7 @@ agent-handoff --sweep --out disk.md      # 导出 md 报告
 | `--skip-tests` | 不跑测试（快速模式） |
 | `--test-timeout N` | 单条测试命令超时秒数，默认 900 |
 | `--vitals` | 只体检本机会话转录并退出，不碰仓库 |
+| `--doctor` | 先看这台机器缺什么，然后退出；不碰仓库也不碰转录 |
 | `--no-vitals` | 跳过会话体检（交接文件里不含体征表） |
 | `--sweep` | 报告转录占了多少磁盘、哪些可以安全回收，然后退出；**不删任何文件** |
 | `--by-repo` | 配合 `--sweep`：额外按仓库聚合占用（要读转录，慢很多） |
@@ -391,6 +392,69 @@ B 最能说明问题：**它体积小恰恰因为压缩一直在丢历史**。�
 **中断轮次**（`turn_aborted`）单独计数：实测 Codex 侧 `is_error` 在 40 个
 rollout 里只有 3 次，而 `turn_aborted` 有 6 次。把半成品当成已完成，
 是交接里最贵的误判。
+
+### 判定依据可以展开看
+
+抬档规则在界面上此前完全不可见：一个占用率显示 30% 的会话被判成「立刻交接」，
+用户只能以为工具在瞎猜。而抬档恰恰是这套判定里最硬的部分——它依据的是**已经
+发生过的事实**（压缩过就是满过），比任何占用率推断都可靠。
+
+现在每张会话卡片下有「为什么是这一档」可展开，内容是结构化事实而非句子：
+
+- **主判据**来自哪里：占用率 / 绝对 token / 体积兜底 / 读不到正文。
+- **上下文上限的来源**：转录自己写的（实测值）还是 `AGENT_HANDOFF_CONTEXT_WINDOW`
+  声明的（声明错了整列占用率都会偏）。
+- **哪条抬档规则真正生效**、抬到了哪一档。没生效的规则不列——列出来只会让人
+  以为它生效了。
+- 最终档位是否来自抬档而非主判据。这一条单独标出，因为它正是「数字看着还行
+  却被判成危险」的唯一原因。
+
+命令行卡片、网页界面、交接文档三处共用同一份判据，不可能出现「界面说因为压缩、
+命令行说因为体积」。
+
+### 占用是怎么涨起来的
+
+`tokens` 只回答「最满的时候有多满」。同样是 97% 占用，一路平稳爬上去和最后两轮
+突然翻倍是两种处境——后者说明刚才那一步塞进了巨量内容（读了个大文件、粘了份
+日志），而那正是下一个会话要避开的。压缩点同理：知道「压过 3 次」不如知道
+「三次都挤在最后十轮里」，那是 thrash 的形状。
+
+会话卡片上因此有一条按轮次采样的占用走势小图，压缩点画成竖线（跨过一条竖线，
+之前的原始历史已经被摘要取代）。知道上下文上限时纵轴用上限，两个会话的图可以
+直接对比；不知道时用实测峰值，此时图形只表示相对走势，提示里会说明是哪一种。
+
+采样上限 120 点，超了等距抽稀，但**首尾与压缩点永不抽掉**——末点是「现在有多
+满」，首点是基线，压缩点是这条线上唯一的事件标记。
+
+图用内联 SVG 手绘（本项目零依赖零构建），不用 `<canvas>`：canvas 里的东西对读屏
+软件完全不存在。图本身标 `aria-hidden` 只作视觉补充，同样的信息在占用率徽章与
+压缩次数里另有文字版——不让它成为唯一的信息通道。
+
+## 先看这台机器缺什么
+
+```bash
+agent-handoff --doctor
+```
+
+这个工具此前几乎每次失败都是静默的：环境里少了什么，然后某一步的结果悄悄变空。
+`--doctor` 在跑任何东西之前把检查清单摆出来，不碰仓库也不碰转录：
+
+| 检查项 | 缺了会怎样 |
+|---|---|
+| Python 版本 | 低于声明的最低版本，行为不可预期 |
+| git 是否在 PATH 及版本 | 提交快照、计划回填、并发检测三项全部不可用 |
+| zstd 解压能力及命中的实现 | 读不到 `.jsonl.zst`（Codex 会就地压缩 7 天前的 rollout） |
+| stdout 是否 UTF-8 | 转录里总有 emoji 与非拉丁文字，编码不对会中途崩 |
+| 临时目录可写性 | 原子写拿不到临时文件 |
+| 各 agent 数据根 | 存在性、转录计数、其中压缩数；目录在但 0 份转录会单独提示 |
+| `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `CODEX_SESSIONS_ROOT` | 设了但指向不存在的目录，比没设更难发现 |
+| `AGENT_HANDOFF_CONTEXT_WINDOW` | 非正整数时占用率会静默退回绝对阈值 |
+
+整体档位取最坏项。**「留意」不会让退出码非零**——缺 zstd 只是读不到压缩归档，
+不该挡住整次运行；只有真正阻塞的项才是 blocking。
+
+网页界面有对应的「自检」视图，判据与命令行完全共用。界面上的路径与环境变量值
+经脱敏后再显示：录屏和截图会把用户名带走。
 
 ## 会话内容是怎么传承的
 

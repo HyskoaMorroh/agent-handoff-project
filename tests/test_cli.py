@@ -414,3 +414,72 @@ def test_gui_sets_security_headers(gui_server):
     with urllib.request.urlopen(f"{base}/", timeout=10) as r:
         assert "default-src 'none'" in r.headers["Content-Security-Policy"]
         assert r.headers["X-Content-Type-Options"] == "nosniff"
+
+
+# --- 环境自检 --------------------------------------------------------------
+
+
+def test_doctor_flag_is_accepted():
+    args = build_parser(Translator("en")).parse_args(["--doctor"])
+    assert args.doctor is True
+
+
+def test_doctor_defaults_to_off():
+    """新开关默认不改变任何原有行为。"""
+    assert build_parser(Translator("en")).parse_args([]).doctor is False
+
+
+@pytest.mark.parametrize("lang", ["zh-Hans", "en", "zh-Hant"])
+def test_doctor_prints_a_checklist_in_each_language(capsys, lang):
+    code = main(["--doctor", "--lang", lang])
+    out = capsys.readouterr().out
+    # 退出码只在有阻断项时非零。conftest 把 HOME 指向空临时目录，
+    # 所以这里必然有 roots.none 那条阻断——重点是它**报出来了**。
+    assert code in (0, 1)
+    assert out.strip(), "自检什么都没打印"
+    # 三种标记至少出现一种，且不能出现缺键占位符。
+    assert any(m in out for m in ("+ ", "! ", "x ")), out[:400]
+    assert "??" not in out, f"有文案键没进字符串表：{out[:400]}"
+
+
+def test_doctor_json_is_machine_readable(capsys):
+    code = main(["--doctor", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code in (0, 1)
+    assert payload["level"] in ("ok", "warn", "fail")
+    assert isinstance(payload["checks"], list) and payload["checks"]
+    assert isinstance(payload["transcripts"], int)
+
+
+def test_doctor_runs_before_the_git_check(monkeypatch, capsys):
+    """git 缺失是自检要报告的结论之一。
+
+    排在 `git_available()` 之后就永远打不到那一行——用户拿不到「为什么跑不
+    起来」的答案，只会看到一句「找不到 git」然后退出。
+    """
+    monkeypatch.setattr("agent_handoff.core.gitops.git_available", lambda: False)
+    code = main(["--doctor", "--lang", "en", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code in (0, 1)
+    # 真正的证据：即使 git 不可用，自检本身仍然产出了完整结果。
+    assert any(c["key"] == "git" for c in payload["checks"])
+
+
+def test_doctor_does_not_need_a_repo(tmp_path, capsys):
+    """自检不碰仓库，所以在任何目录下都能跑。"""
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+    assert main([str(plain), "--doctor", "--lang", "en"]) in (0, 1)
+    assert capsys.readouterr().out.strip()
+
+
+def test_gui_doctor_endpoint_redacts_home(gui_server):
+    """自检结果会显示在界面上，而用户可能在录屏或截图。"""
+    base, token = gui_server
+    code, body = _get(f"{base}/api/doctor", token=token)
+    assert code == 200
+    payload = json.loads(body)
+    assert payload["level"] in ("ok", "warn", "fail")
+    home = str(Path.home())
+    blob = json.dumps(payload, ensure_ascii=False)
+    assert home not in blob, "家目录原样出现在自检结果里"

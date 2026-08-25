@@ -3,9 +3,9 @@
 <p align="center"><b>When a session dies, move the progress out of the chat and into the repository</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="version" src="https://img.shields.io/badge/version-2.5.0-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="version" src="https://img.shields.io/badge/version-2.6.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="tests" src="https://img.shields.io/badge/tests-704%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="tests" src="https://img.shields.io/badge/tests-745%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -200,6 +200,7 @@ agent-handoff --sweep --out disk.md      # export a markdown report
 | `--skip-tests` | Do not run tests (fast mode) |
 | `--test-timeout N` | Timeout in seconds per test command; default 900 |
 | `--vitals` | Only check local session transcripts and exit; never touches the repository |
+| `--doctor` | Check what this machine is missing, then exit; touches neither the repository nor any transcript |
 | `--no-vitals` | Skip the session check (no vitals table in the handoff file) |
 | `--sweep` | Report transcript disk usage and what is safe to reclaim, then exit; **never deletes anything** |
 | `--by-repo` | With `--sweep`: also group usage by repository (reads transcripts, much slower) |
@@ -443,6 +444,86 @@ those words as *occurrences*: of 239 raw matches across 14 main transcripts,
 **Aborted turns** (`turn_aborted`) are counted separately: `is_error` fired only
 3 times across 40 Codex rollouts while `turn_aborted` fired 6. Treating
 half-finished work as finished is the most expensive misread in a handoff.
+
+### The reasoning behind a band is expandable
+
+Raise rules used to be invisible in the UI: a session showing 30% fullness would
+be judged "hand off now" and the user could only assume the tool was guessing.
+Yet raising is the hardest part of this judgement — it rests on **something that
+already happened** (a compaction means it *was* full), which beats any fullness
+estimate.
+
+Every session card now carries an expandable "Why this band", holding structured
+facts rather than sentences:
+
+- **Where the primary basis comes from**: fullness ratio / absolute token count /
+  size fallback / content unreadable.
+- **Where the context ceiling came from**: the transcript itself (measured) or
+  `AGENT_HANDOFF_CONTEXT_WINDOW` (declared — a wrong declaration skews the whole
+  fullness column).
+- **Which raise rule actually fired**, and which band it raised to. Rules that did
+  not fire are not listed — listing them only suggests they applied.
+- Whether the final band came from a raise rather than the primary basis. That one
+  is called out separately because it is the *only* reason a session with
+  reasonable-looking numbers gets flagged as dangerous.
+
+The CLI card, the web UI and the handoff document all read the same evidence, so
+"the UI says compaction, the CLI says file size" cannot happen.
+
+### How the context filled up
+
+`tokens` only answers "how full did it get at peak". At the same 97%, climbing
+steadily and doubling in the last two turns are different situations — the latter
+means one recent step pushed in an enormous amount of content (a large file was
+read, a log was pasted), and that is precisely what the next session should avoid.
+Same for compactions: knowing "compacted 3 times" matters less than knowing "all
+three landed in the last ten turns", which is the shape of thrashing.
+
+Session cards therefore carry a fullness sparkline sampled per turn, with
+compactions drawn as vertical lines (crossing one means the raw history before it
+has been replaced by a summary). When the context ceiling is known the Y axis uses
+it, so two sessions' charts are directly comparable; when it is not, the measured
+peak is used and the chart shows relative trend only — the tooltip says which.
+
+Sampling caps at 120 points and thins evenly beyond that, but **the endpoints and
+every compaction survive**: the last point is "how full it is now", the first is
+the baseline, and compactions are the only events on the line.
+
+The chart is hand-drawn inline SVG (this project has zero dependencies and no
+build step), not `<canvas>`: canvas content does not exist at all for screen
+readers. The chart itself is `aria-hidden` and purely a visual supplement — the
+same information exists as text in the fullness badge and the compaction count, so
+it is never the only channel carrying it.
+
+## Check what this machine is missing first
+
+```bash
+agent-handoff --doctor
+```
+
+Almost every failure in this tool used to be silent: something was missing from
+the environment, and then one step's result quietly came back empty. `--doctor`
+lays the checklist out before anything runs, touching neither the repository nor
+any transcript:
+
+| Check | What breaks without it |
+|---|---|
+| Python version | Below the declared minimum, behaviour is unpredictable |
+| git on PATH, and its version | The commit snapshot, plan backfill and concurrency check all stop working |
+| zstd decompression, and which implementation answered | `.jsonl.zst` is unreadable (Codex compresses rollouts older than 7 days in place) |
+| stdout is UTF-8 | Transcripts always hold emoji and non-Latin text; the wrong encoding crashes midway |
+| Temp directory is writable | Atomic writes cannot get a temporary file |
+| Each agent data root | Existence, transcript count, how many are compressed; a directory that exists but holds nothing is called out separately |
+| `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `CODEX_SESSIONS_ROOT` | Set but pointing at a missing directory is harder to spot than not set at all |
+| `AGENT_HANDOFF_CONTEXT_WINDOW` | A non-positive integer silently drops fullness back to absolute thresholds |
+
+The overall level is the worst item. **"To watch" never makes the exit code
+non-zero** — a missing zstd only means compressed archives are unreadable, which
+should not block the whole run; only genuinely blocking items are blocking.
+
+The web UI has a matching "Check" view sharing exactly the same criteria. Paths
+and environment variable values are redacted before display there: screenshots and
+screen recordings carry the username away with them.
 
 ## How session content travels
 

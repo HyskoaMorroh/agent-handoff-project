@@ -214,6 +214,13 @@ _COMPACT_MARKS = ('"compact_boundary"', '"compacted"')
 # 取**最后一条**而不是第一条：交接要交代的是「停下来时是什么状态」。
 _TURNCTX_MARK = '"turn_context"'
 
+# 时间线最多留多少个采样点。
+#
+# 120 是按显示宽度定的：卡片里的时间线宽约 600 CSS 像素，再多的点在屏幕上
+# 挤成一团，抽稀反而让线更好读。而画一条趋势线用不着更高的分辨率——这条线
+# 要回答的是「怎么涨的」，不是「第 837 轮精确是多少」。
+_TIMELINE_MAX = 120
+
 
 def _looks_pathy(raw: str) -> bool:
     """这一行有没有可能含绝对路径？只用来省掉正则，判错方向必须偏保守。
@@ -364,6 +371,91 @@ def _band_by_fullness(tokens: int, window: int) -> str:
     return "ok"
 
 
+def band_reason(
+    size: int,
+    fatal: int = 0,
+    aborted: int = 0,
+    tokens: int = 0,
+    window: int = 0,
+    compactions: int = 0,
+    unknown: bool = False,
+) -> dict[str, Any]:
+    """`band_for` 判成这一档的**依据**，拆成结构化事实。
+
+    为什么必须有这个：判定逻辑里有两条**抬档地板**——压缩过 2 次直接抬到
+    `critical`、致命错误加打断合计 ≥3 抬到 `high`。抬档之后界面上只剩一个
+    「立刻交接」的红徽章，而占用率那一格可能显示 62%。用户看到的是自相矛盾的
+    两个数字，无从判断工具是算错了还是有别的道理。实测本机一个 1.9 MB 的会话
+    压缩过 10 次、占用率读出来只有中位——正是这种情形。
+
+    返回的是**事实而不是句子**：`basis` 说明主判据来自哪里（占用率／绝对
+    token／体积／读不到），`floors` 列出实际生效的抬档及其原因。文案由 i18n
+    负责，这样三种语言共用同一份判定证据，也让「为什么是这一档」可以进
+    交接文档、进网页界面、进 JSON 输出，三处说法完全一致。
+
+    `raised` 为真表示最终档位来自抬档而不是主判据——这一条单独给出来，
+    因为它正是「数字看着还行却被判成危险」的唯一原因。
+    """
+    if unknown:
+        return {
+            "band": "unknown",
+            "basis": "unreadable",
+            "detail": {},
+            "floors": [],
+            "raised": False,
+        }
+
+    limit = window if window > 0 else _declared_window()
+    if tokens and limit > 0:
+        basis = "fullness"
+        detail: dict[str, Any] = {
+            "tokens": tokens,
+            "window": limit,
+            "percent": round(tokens / limit * 100, 1),
+            # 上限是转录自己写的还是用户声明的。这一点影响可信度：前者是实测值，
+            # 后者是声明值，声明错了整列占用率都会偏。
+            "window_from": "transcript" if window > 0 else "declared",
+        }
+    elif tokens:
+        basis = "tokens"
+        detail = {"tokens": tokens}
+    else:
+        basis = "size"
+        detail = {"size": size}
+
+    base = _band_by_fullness(tokens, window) if tokens else _band_by_size(size)
+    band = base
+    floors: list[dict[str, Any]] = []
+
+    if compactions:
+        floor = "critical" if compactions >= 2 else "high"
+        applied = BAND_ORDER[floor] < BAND_ORDER[band]
+        floors.append({"kind": "compactions", "count": compactions, "floor": floor, "applied": applied})
+        if applied:
+            band = floor
+
+    if fatal or aborted:
+        floor = "high" if (fatal + aborted) >= 3 else "watch"
+        applied = BAND_ORDER[floor] < BAND_ORDER[band]
+        floors.append({
+            "kind": "incidents",
+            "fatal": fatal,
+            "aborted": aborted,
+            "floor": floor,
+            "applied": applied,
+        })
+        if applied:
+            band = floor
+
+    return {
+        "band": band,
+        "basis": basis,
+        "detail": detail,
+        "floors": floors,
+        "raised": band != base,
+    }
+
+
 @dataclass
 class SessionRow:
     """一个转录的体检结果。字段名与原版 dict 保持一致，便于逐字迁移。"""
@@ -412,6 +504,13 @@ class SessionRow:
     # （/model 切换、供应商降级）。新会话要重现上一个会话的结果，得知道它
     # 当时在什么配置下跑。Claude 侧不写这种记录，为空。
     turn_context: dict[str, str] = field(default_factory=dict)
+    # 上下文占用随轮次的走势 + 压缩发生的位置。空字典表示采样点不足两个
+    # （读不到 token，或者会话太短），此时界面不画线——一个点画出来会被
+    # 读成「一直是这个值」。
+    #
+    # 为什么峰值不够：同样是 97% 占用，一路平稳爬上去和最后两轮突然翻倍是
+    # 两种处境，后者说明刚才那一步塞进了巨量内容，而那正是下一个会话要避开的。
+    timeline: dict[str, Any] = field(default_factory=dict)
     is_subagent: bool = False
     repos: list[str] = field(default_factory=list)
     # 这份转录是 Codex 压缩归档的（`.jsonl.zst`，7 天后自动压缩），而本机没有
@@ -548,6 +647,19 @@ class SessionRow:
             "aborted": self.aborted,
             "errors": self.errors,
             "band": self.band,
+            # 判定的**理由**，结构化给出。此前界面只显示徽章与几个指标，
+            # 而抬档地板（压缩 ≥2 直接 critical、fatal+aborted ≥3 直接 high）
+            # 完全不可见——用户看到「1.0 MB 却判 critical」无从判断是工具在
+            # 按体积瞎猜还是真有依据。这里把主依据与每一次抬档都列出来。
+            "band_reason": band_reason(
+                size=self.size,
+                fatal=self.fatal,
+                aborted=self.aborted,
+                tokens=self.tokens,
+                window=self.context_window,
+                compactions=self.compactions,
+                unknown=self.compressed_unreadable,
+            ),
             # 判定的主依据。GUI 要能显示「凭什么这么判」，否则用户只看到体积
             # 和一个徽章，会以为工具在按文件大小瞎猜。
             "tokens": self.tokens,
@@ -573,6 +685,9 @@ class SessionRow:
             "errors_text": self.errors_text,
             # 停下来时的模型与策略。逐轮字段，不在 session_meta 里。
             "turn_context": self.turn_context,
+            # 占用走势 + 压缩位置。界面画成一条小线（sparkline），让「怎么涨的」
+            # 与「涨到多少」一起可见——后者已经在 tokens 里了。
+            "timeline": self.timeline,
             "label": self.label,
             "resume_cmd": self.resume_cmd,
             "deep_link": self.deep_link,
@@ -842,6 +957,88 @@ class _DigestCollector:
                     self.asks.append(one[:_ASK_CHARS])
 
 
+class _TimelineCollector:
+    """按轮次采样「上下文怎么涨起来的」，供界面画时间线。
+
+    为什么单看一个峰值不够：`tokens` 回答「最满的时候有多满」，但交接决策还要
+    知道**怎么涨的**。同样是 97% 占用，一路平稳爬上去和最后两轮突然翻倍，是
+    两种完全不同的处境——后者说明刚才那一步塞进了巨量内容（读了个大文件、
+    粘了份日志），下一个会话该避开的正是那一步。压缩点同理：知道「压过 3 次」
+    不如知道「三次都挤在最后十轮里」，那是 thrash 的形状。
+
+    采样而不是全留：一份转录可以有几千轮，而画一条线用不了那么多点。上限
+    `_TIMELINE_MAX` 个点，超了就**等距抽稀**（保留首尾与压缩点）。压缩点永不
+    抽掉——它们是这条线上唯一的「事件」，抽掉就看不出阶段边界了。
+
+    独立成类而不是把这些字段塞进 `_FullnessCollector`：那个类维护的是几个标量
+    （峰值、上限、次数），职责是「有多满」；这里维护的是序列，职责是「怎么涨的」。
+    混在一起会让一个类同时管两种形状的状态。
+
+    但**不自己解析 JSON**：由 `_FullnessCollector` 在它已经 `json.loads` 出来的
+    对象上调 `feed_usage` / `feed_compaction`。两者的预筛标记完全相同，各自再
+    解析一遍等于把这条路径上最贵的一步付两次——实测每份转录命中几十到几百行。
+    """
+
+    __slots__ = ("points", "_compact_at", "_n")
+
+    def __init__(self) -> None:
+        # 每个点是 (轮次序号, 占用 token)。用轮次而不是墙钟时间：Claude 的
+        # 转录里逐轮时间戳并非每行都有，而轮次序号一定单调。
+        self.points: list[tuple[int, int]] = []
+        # 压缩发生在第几个点上。用集合而不是标记位，因为抽稀时要按这个集合
+        # 决定哪些点不能丢。
+        self._compact_at: set[int] = set()
+        self._n = 0
+
+    def feed_usage(self, tokens: int) -> None:
+        """记一个占用采样点。由 `_FullnessCollector` 解析出来之后调过来。"""
+        if tokens <= 0:
+            return
+        self._n += 1
+        self.points.append((self._n, tokens))
+
+    def feed_compaction(self) -> None:
+        """记一次压缩。位置就是当前轮次——压缩之后占用会掉回低位。"""
+        self._compact_at.add(self._n)
+
+    def as_dict(self) -> dict[str, Any]:
+        """给界面的形态：抽稀后的点 + 压缩位置。
+
+        点数少于两个时返回空——一条线至少要两个点，一个点画出来是误导
+        （看起来像「一直是这个值」）。
+        """
+        if len(self.points) < 2:
+            return {}
+        pts = self._thin()
+        return {
+            "points": [{"i": i, "tokens": v} for i, v in pts],
+            "compactions_at": sorted(self._compact_at),
+            "turns": self._n,
+        }
+
+    def _thin(self) -> list[tuple[int, int]]:
+        """等距抽稀到 `_TIMELINE_MAX` 个点，但保留首尾与压缩点。
+
+        为什么不直接取前 N 个：那会把一条长会话画成「开头那段」，而交接最关心
+        的恰恰是**结尾**的走势。也不能取后 N 个——那会丢掉「从哪儿开始涨的」。
+        """
+        if len(self.points) <= _TIMELINE_MAX:
+            return self.points
+        keep: dict[int, tuple[int, int]] = {}
+        step = len(self.points) / _TIMELINE_MAX
+        for k in range(_TIMELINE_MAX):
+            idx = min(len(self.points) - 1, int(k * step))
+            keep[idx] = self.points[idx]
+        # 首尾必留：末点是「现在有多满」，首点是基线。
+        keep[0] = self.points[0]
+        keep[len(self.points) - 1] = self.points[-1]
+        # 压缩点必留：它们是这条线上唯一的事件标记。
+        for pos, pt in enumerate(self.points):
+            if pt[0] in self._compact_at:
+                keep[pos] = pt
+        return [keep[k] for k in sorted(keep)]
+
+
 class _FullnessCollector:
     """收集上下文占用与压缩次数——判断「还能撑多久」的真实依据。
 
@@ -857,13 +1054,17 @@ class _FullnessCollector:
     先用子串预筛，命中了才付 json.loads 的代价——实测每份转录命中几十到几百行。
     """
 
-    __slots__ = ("peak_tokens", "window", "compactions", "pre_tokens")
+    __slots__ = ("peak_tokens", "window", "compactions", "pre_tokens", "timeline")
 
     def __init__(self) -> None:
         self.peak_tokens = 0
         self.window = 0          # 上下文上限；只有 Codex 在转录里写
         self.compactions = 0     # 已发生的压缩次数——压缩过就是满过
         self.pre_tokens = 0      # 压缩发生时的占用峰值（Claude 的 preTokens）
+        # 时间线采样。挂在这里而不是单独一个 feed 循环，是为了复用已经解析好的
+        # JSON——两个采集器的预筛标记完全相同，各自再 json.loads 一遍是白付
+        # 一倍最贵的代价（实测每份转录命中几十到几百行）。
+        self.timeline = _TimelineCollector()
 
     def feed(self, raw: str) -> None:
         has_usage = any(m in raw for m in _USAGE_MARKS)
@@ -887,6 +1088,7 @@ class _FullnessCollector:
         # compactMetadata.preTokens 是压缩时的占用，属于历史事实。
         if d.get("subtype") == "compact_boundary":
             self.compactions += 1
+            self.timeline.feed_compaction()
             meta = d.get("compactMetadata")
             if isinstance(meta, dict):
                 pre = meta.get("preTokens")
@@ -896,6 +1098,7 @@ class _FullnessCollector:
         # 这里只数次数。
         elif d.get("type") == "compacted":
             self.compactions += 1
+            self.timeline.feed_compaction()
 
     def _feed_usage(self, d: dict) -> None:
         msg = d.get("message")
@@ -911,6 +1114,7 @@ class _FullnessCollector:
                         total += v
                 if total > self.peak_tokens:
                     self.peak_tokens = total
+                self.timeline.feed_usage(total)
                 return
 
         # Codex：event_msg / token_count，占用与上限都在 payload.info 里。
@@ -941,8 +1145,10 @@ class _FullnessCollector:
             v = last.get("total_tokens")
             if not isinstance(v, int):
                 v = last.get("input_tokens")
-            if isinstance(v, int) and v > self.peak_tokens:
-                self.peak_tokens = v
+            if isinstance(v, int):
+                if v > self.peak_tokens:
+                    self.peak_tokens = v
+                self.timeline.feed_usage(v)
 
     @property
     def tokens(self) -> int:
@@ -1273,6 +1479,7 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
         asks=list(dg.asks) if dg else [],
         errors_text=list(err_texts),
         turn_context=tc.as_dict() if tc else {},
+        timeline=fl.timeline.as_dict() if fl else {},
         is_subagent=_is_subagent(fp),
         repos=repos,
         compressed_unreadable=unreadable,

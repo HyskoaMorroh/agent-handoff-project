@@ -47,6 +47,26 @@
   --r-md: 10px;
   --r-lg: 14px;
 
+  /* 字阶。原先各处直接写 14.5 / 13.5 / 12.5 / 11.5 / 9.5px 这些随手取的小数，
+   * 改一次正文字号要在四十几处逐个找。这里把实测调好的那几个值命名下来——
+   * **数值一个都没动**，只是给了名字，所以渲染结果与之前完全一致。
+   * 9.5px 那一档只用于引文标记，它有对比度约束（见 .stopic.is-quote::before）。 */
+  --fs-lg:   21px;    /* 视图标题 */
+  --fs-md:   14.5px;  /* 正文、按钮 */
+  --fs-sm:   13.5px;  /* 次级正文、导航项 */
+  --fs-xs:   12.5px;  /* 键值表、提示 */
+  --fs-2xs:  11.5px;  /* 徽章、表头 */
+  --fs-3xs:  9.5px;   /* 引文标记 */
+
+  /* 间距。同样是把散落的字面量命名，不改数值。4px 基准，因为原有的值
+   * （6/10/14/18/22）本来就大致落在这个网格上。 */
+  --sp-1: 4px;
+  --sp-2: 6px;
+  --sp-3: 10px;
+  --sp-4: 14px;
+  --sp-5: 18px;
+  --sp-6: 22px;
+
   --mono: ui-monospace, SFMono-Regular, "Cascadia Mono", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI",
           "PingFang SC", "Microsoft YaHei UI", "Noto Sans CJK SC", "Hiragino Sans GB",
@@ -448,8 +468,77 @@ ul.list { margin: 0; padding-left: 18px; font-size: 13px; color: var(--ink-2); }
 ul.list li { margin: 3px 0; }
 ul.list code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); padding: .5px 4px; border-radius: 3px; }
 
-.hint { font-size: 12.5px; color: var(--ink-3); margin-top: 9px; }
-.empty { padding: 28px; text-align: center; color: var(--ink-3); font-size: 13.5px; }
+.hint { font-size: var(--fs-xs); color: var(--ink-3); margin-top: 9px; }
+.empty { padding: 28px; text-align: center; color: var(--ink-3); font-size: var(--fs-sm); }
+
+/* ── 判定理由 / 报错原文 ───────────────────────────────────── */
+/* 折叠而不是常驻：多数时候用户只需要那个判定徽章，理由是他**质疑**徽章时才
+ * 要看的东西。折叠起来首屏能多放两张卡片，而展开的代价只是一次点击。
+ *
+ * 用原生 <details> 而不是自己写开合：它自带键盘操作（Enter / 空格）、自带
+ * 可访问语义（读屏软件会念「已折叠 / 已展开」），也自带浏览器内查找时
+ * 自动展开。手写一套只会比它少几样。 */
+details.why { margin-top: var(--sp-3); font-size: var(--fs-xs); }
+details.why > summary {
+  cursor: pointer; color: var(--ink-2); font-weight: 550;
+  padding: var(--sp-1) 0; list-style: none;
+  display: flex; align-items: center; gap: 6px;
+}
+/* Safari 用 ::-webkit-details-marker，其他浏览器用 ::marker——两个都要盖掉，
+ * 否则一个浏览器上有三角、另一个上有两个三角。 */
+details.why > summary::-webkit-details-marker { display: none; }
+details.why > summary::marker { content: ""; }
+/* 自己画三角，展开时旋转。用 CSS 生成而不是放个 SVG：它是纯装饰，
+ * 读屏软件不该念它，而 ::before 天然不进无障碍树。 */
+details.why > summary::before {
+  content: ""; flex: none;
+  width: 0; height: 0;
+  border-left: 4.5px solid currentColor;
+  border-top: 3.5px solid transparent;
+  border-bottom: 3.5px solid transparent;
+  transition: transform .14s ease;
+}
+details.why[open] > summary::before { transform: rotate(90deg) translateX(1px); }
+details.why > summary:hover { color: var(--ink); }
+details.why > ul.list { margin-top: var(--sp-2); }
+/* 报错原文可能很长（每条上限 600 字符）。给一个滚动上限，避免一条报错把
+ * 整张卡片撑到半屏——那会让长列表没法扫读。 */
+details.why > ul.list li { max-height: 8em; overflow-y: auto; }
+
+/* ── 环境自检 ───────────────────────────────────────────────── */
+/* 复用会话卡片的左侧竖条：同一套视觉语言表达「这条有多要紧」。
+ * 语义色与体征分档刻意用不同的属性名（data-level 而不是 data-band）——
+ * 那边说的是「会话有多满」，这边说的是「这台机器缺什么」，混用会让
+ * 同一个绿色在两处表示不同的意思。 */
+.srow[data-level="ok"]::before   { background: var(--good); }
+.srow[data-level="warn"]::before { background: var(--warn); }
+.srow[data-level="fail"]::before { background: var(--danger); }
+.badge[data-level="ok"]   { background: var(--good-bg);   color: var(--good); }
+.badge[data-level="warn"] { background: var(--warn-bg);   color: var(--warn); }
+.badge[data-level="fail"] { background: var(--danger-bg); color: var(--danger); }
+/* 自检说明经常是整段话（要讲清「会导致什么」和「怎么办」），所以按正文
+ * 排版而不是按指标排版：不用等宽字体、允许正常换行。 */
+.dtext { margin-top: var(--sp-2); font-size: var(--fs-xs); color: var(--ink-2); line-height: 1.65; }
+
+/* ── 占用走势小图 ───────────────────────────────────────────── */
+/* 这张图是对上面那些数字的补充，不是替代：占用率、压缩次数都另有文字版。
+ * 所以 SVG 标 aria-hidden，说明文字挂在外层容器的 aria-label 上。 */
+.spark-box {
+  margin-top: var(--sp-3); padding: var(--sp-1) 0;
+  border-radius: var(--r-sm); cursor: help;
+}
+.spark-box:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.spark { display: block; width: 100%; height: 34px; }
+/* 折线用强调色。stroke-width 用 1.4 而不是全局的 1.6：这条线有几十个转折，
+ * 更细一点才看得出形状。 */
+.spark-line { fill: none; stroke: var(--accent); stroke-width: 1.4; }
+/* 上下文上限：虚线，因为它是参照而不是数据。 */
+.spark-cap {
+  stroke: var(--danger); stroke-width: 1; stroke-dasharray: 3 3; opacity: .55;
+}
+/* 压缩点：竖线，比折线淡——它们是背景事件，折线才是主体。数量可以很多
+ * （实测一份转录 114 次），太显眼会把折线盖住。 */
+.spark-compact { stroke: var(--warn); stroke-width: 1; opacity: .38; }
 
 /* ── 窄屏：侧栏折成顶栏 ────────────────────────────────────── */
 @media (max-width: 860px) {

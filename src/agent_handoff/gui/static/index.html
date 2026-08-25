@@ -23,18 +23,31 @@
       </div>
     </div>
 
-    <nav class="nav" role="tablist">
-      <button class="nav-item is-active" role="tab" data-view="vitals" aria-selected="true">
+    <!-- role="tablist" 要配齐：每个 tab 用 aria-controls 指向自己的面板，
+         面板带 role="tabpanel" 与 aria-labelledby 指回来。此前只有 tablist 与
+         aria-selected，读屏软件会念出「标签页」却找不到对应面板，用户听到的是
+         一组孤立按钮。tabindex 由 JS 维护（选中的为 0、其余 -1），这样 Tab 键
+         一次跳过整组、方向键在组内移动——这是 ARIA 的 tab 模式要求的行为。 -->
+    <nav class="nav" role="tablist" aria-label="Views" data-i18n-aria="gui.a11y.views">
+      <button class="nav-item is-active" role="tab" id="tab-vitals"
+              aria-controls="panel-vitals" data-view="vitals" aria-selected="true" tabindex="0">
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 12h3.2l1.8-5 2.6 9L12.6 8l1.4 4H18"/></svg>
         <span data-i18n="gui.nav.vitals"></span>
       </button>
-      <button class="nav-item" role="tab" data-view="handoff" aria-selected="false">
+      <button class="nav-item" role="tab" id="tab-handoff"
+              aria-controls="panel-handoff" data-view="handoff" aria-selected="false" tabindex="-1">
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 15V5h7l5 5v5z"/><path d="M11 5v5h5"/></svg>
         <span data-i18n="gui.nav.handoff"></span>
       </button>
-      <button class="nav-item" role="tab" data-view="find" aria-selected="false">
+      <button class="nav-item" role="tab" id="tab-find"
+              aria-controls="panel-find" data-view="find" aria-selected="false" tabindex="-1">
         <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5.2"/><path d="M13 13l4 4"/></svg>
         <span data-i18n="gui.nav.find"></span>
+      </button>
+      <button class="nav-item" role="tab" id="tab-doctor"
+              aria-controls="panel-doctor" data-view="doctor" aria-selected="false" tabindex="-1">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v14M3 10h14"/><circle cx="10" cy="10" r="7.5"/></svg>
+        <span data-i18n="gui.nav.doctor"></span>
       </button>
       <!-- 说明文档是外部链接而不是一个视图：它自带三语与完整渲染逻辑，
            塞进这里只会有两套语言切换互相打架。仓库里没有 docs/ 时由 JS 隐藏。 -->
@@ -64,7 +77,8 @@
   <main class="main">
 
     <!-- ── 体检 ─────────────────────────────────────────────── -->
-    <section class="view is-active" data-view="vitals">
+    <section class="view is-active" data-view="vitals"
+             id="panel-vitals" role="tabpanel" aria-labelledby="tab-vitals" tabindex="0">
       <header class="head">
         <h1 data-i18n="gui.vitals.title"></h1>
         <p data-i18n="gui.vitals.lead"></p>
@@ -91,7 +105,8 @@
     </section>
 
     <!-- ── 交接 ─────────────────────────────────────────────── -->
-    <section class="view" data-view="handoff">
+    <section class="view" data-view="handoff"
+             id="panel-handoff" role="tabpanel" aria-labelledby="tab-handoff" tabindex="0">
       <header class="head">
         <h1 data-i18n="gui.handoff.title"></h1>
         <p data-i18n="gui.handoff.lead"></p>
@@ -120,7 +135,8 @@
     </section>
 
     <!-- ── 找会话 ───────────────────────────────────────────── -->
-    <section class="view" data-view="find">
+    <section class="view" data-view="find"
+             id="panel-find" role="tabpanel" aria-labelledby="tab-find" tabindex="0">
       <header class="head">
         <h1 data-i18n="gui.find.title"></h1>
         <p data-i18n="gui.find.lead"></p>
@@ -133,6 +149,25 @@
         <div class="bar"><button class="btn btn-primary" id="find-btn" data-i18n="gui.find.go"></button></div>
       </div>
       <div id="find-out" class="stack"></div>
+    </section>
+
+    <!-- ── 环境自检 ─────────────────────────────────────────── -->
+    <!-- 首次上手要回答的第一个问题是「这个工具能看见我的会话吗」。此前没有
+         任何地方回答它：后端把 gitAvailable 广播给了前端，前端从不读，于是
+         git 缺失只在交接跑到第四步时才暴露；缺 zstd 更糟——7 天前的 Codex
+         会话整批变成空壳，而列表看起来完全正常。这一屏把这些提前摆出来。 -->
+    <section class="view" data-view="doctor"
+             id="panel-doctor" role="tabpanel" aria-labelledby="tab-doctor" tabindex="0">
+      <header class="head">
+        <h1 data-i18n="doctor.head"></h1>
+        <p data-i18n="doctor.lead"></p>
+      </header>
+      <div class="bar">
+        <button class="btn btn-primary" id="doctor-btn" data-i18n="gui.doctor.run"></button>
+      </div>
+      <!-- 结果区是 aria-live：自检是用户主动触发的异步动作，完成时屏幕阅读器
+           必须听到结论，否则按下按钮之后毫无反馈。 -->
+      <div id="doctor-out" class="stack" role="status" aria-live="polite"></div>
     </section>
 
   </main>
