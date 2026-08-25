@@ -3,9 +3,9 @@
 <p align="center"><b>When a session dies, move the progress out of the chat and into the repository</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="version" src="https://img.shields.io/badge/version-2.6.1-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="version" src="https://img.shields.io/badge/version-2.7.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="tests" src="https://img.shields.io/badge/tests-772%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="tests" src="https://img.shields.io/badge/tests-789%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -364,6 +364,82 @@ the former is never allowed to mark a task complete, because ticking writes to t
 plan document and is irreversible.
 
 ## Where the vitals thresholds come from
+
+### Which repo a session was editing is decided by evidence, not by the launch directory
+
+A session can start in directory A and spend the whole time editing repo B — you
+paste another project's path in to ask about it, or the launch directory is just a
+container. The tool used to have only two levels of evidence: `cwd` walked up to a
+`.git`, falling back to "the first path mentioned in the text". **That answers
+"where it started", not "what it was editing".**
+
+Measured on this machine, the two disagree far more often than they agree:
+
+| Side | Sample | Agreed |
+|---|---|---|
+| Claude Code | 12 transcripts with file-write evidence | **1** |
+| Codex | 151 rollouts carrying `exec_command.workdir` | **16** |
+
+One concrete case: a session made 614 tool calls, of which **258 file writes all
+landed in one repo and not one landed in the directory `cwd` pointed at**. The repo
+behind "Hand off this repository" was one the session never changed a single byte
+of — copy that into a new session and it edits the wrong project.
+
+Codex is worse: it sets `cwd` to its own session sandbox
+(`~/Documents/Codex/<date>/<name>`), which contains no `.git` at all, so repo
+inference fell straight through to the weakest "mentioned in text" evidence.
+
+Attribution is now **layered by evidence**:
+
+| Rank | Evidence | Means |
+|---|---|---|
+| Strongest | Codex `turn_context.workspace_roots` | the harness declared these roots itself |
+| Strong | `file_path` of `Edit` / `Write` / `MultiEdit` / `NotebookEdit`, and `apply_patch` | **it changed this file** |
+| Medium | Codex `exec_command` `workdir` | a command actually ran in this directory |
+| Weak | paths from `Read` / `Grep` / `Glob` | it looked at this file |
+| Weaker | `cwd` plus a walk up to `.git` | where it was launched |
+| Weakest | paths mentioned in the text | it said this path out loud |
+
+Rank comes first, hit count only breaks ties within a rank. One real file write says
+more about what a session was editing than a hundred mentions of a path.
+
+**"Read files" needs at least 5 hits to become the verdict.** Reading another repo is
+normal — comparing against a reference implementation, checking a doc, following a
+dependency's source. Measured: a session that spent its entire length discussing a
+different project's deployment was attributed to this repo purely because it
+incidentally read 2 files here; whereas genuinely working in a repo produces reads in
+the dozens or hundreds (61, 95, 105 in real transcripts). Two reads are noise, not
+attribution.
+
+The verdict carries a confidence, and **an honest "uncertain" beats a confident wrong
+answer**:
+
+| Confidence | When |
+|---|---|
+| certain | a single strong signal (write / workspace / exec) |
+| probably | the top strong signal leads the runner-up by 3x or more |
+| uncertain | a close race, or only weak signals (launch directory, mentions) |
+| no evidence | nothing was collected at all |
+
+Working across repos (a main repo plus a plugin repo, a split front and back end) is a
+real situation. When the counts are close the tool does **not** pretend to know — the
+candidate list opens by default so you can decide.
+
+Every piece of evidence is inspectable: which kind, how many hits, which repo, and
+sample files. The card, the CLI card and the handoff document all list it, from the
+same source of truth.
+
+**The launch directory is not replaced, it just stops being the verdict.** Native
+resume (`--resume`) has to run from the launch directory — both apps index sessions by
+directory. When the two differ the card shows both, says so explicitly, and offers two
+hand-off buttons: one for the repo being edited, one for the directory you can resume
+in. Neither is preselected and neither is hidden.
+
+Evidence collection has its own line budget (1500 lines, far larger than the 260/400
+used for the identity card) because **file writes usually happen in the later part of a
+session** — read the code, discuss the approach, then start changing things. Past the
+budget the verdict still stands but is marked "only the first N lines were read",
+because "no write evidence" and "no write evidence seen" are different claims.
 
 ### "Last active" comes from the transcript, not the file time
 
@@ -942,6 +1018,31 @@ export AGENT_HANDOFF_HOME=/opt/agent-handoff-project   # or D:\tools\agent-hando
 ```
 
 ## Repo identity vs local path
+
+### The resume command carries a directory change, because resume goes by directory
+
+`claude --resume <id>` / `codex resume <id>` only finds the session when run from the
+**launch directory** — both apps index sessions by directory. And the repo a session was
+editing is often not that directory, so copying a bare command and pasting it where you
+happen to be gives you "session not found".
+
+So there is a second button, "copy resume command (with cd)":
+
+```text
+pushd "e:\output\proj" && claude --resume 809adf54-2839-4eab-9c9f-e17c3841ee22
+```
+
+It uses `pushd`, not `cd`, because **cmd's `cd` changes the directory but not the
+drive**. Run `cd "E:\proj"` while sitting on C: and the prompt looks right while the
+working directory is still on C:, so the resume runs in the wrong project — worse than
+an error, because it looks like it worked. `pushd` changes both, and is an alias for
+`Push-Location` in PowerShell, so one form covers all three shells.
+
+If the path contains a newline or a double quote, **this command is not offered**:
+multi-line clipboard content is executed line by line when pasted into a terminal, and
+quotes cannot contain a newline. The plain command is unchanged; both are available.
+
+### Across machines, go by identity, not by path
 
 The prompt states both:
 

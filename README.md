@@ -3,9 +3,9 @@
 <p align="center"><b>会话卡死时，把进度从对话里搬进仓库</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.6.1-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.7.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="测试" src="https://img.shields.io/badge/tests-772%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="测试" src="https://img.shields.io/badge/tests-789%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="运行时依赖" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="许可" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -324,6 +324,70 @@ intent.undo()               // ❌ 调用不是定义
 因为勾选会写进计划文档且不可逆。
 
 ## 会话体检的判据
+
+### 「在改哪个仓库」按证据判，不按启动目录
+
+一个会话可以在 A 目录启动、整场在改 B 仓库——把某个项目的路径粘进来问问题，
+或者启动目录本身只是个容器。此前工具只有两级依据：`cwd` 往上找 `.git`，找不到
+就退回「正文里提到过的第一个路径」。**那回答的是「在哪启动」，不是「在改什么」。**
+
+本机实测这两者差多远：
+
+| 侧 | 样本 | 一致的 |
+|---|---|---|
+| Claude Code | 12 份有文件写入证据的转录 | **1 份** |
+| Codex | 151 份含 `exec_command.workdir` 的 rollout | **16 份** |
+
+一个具体例子：某会话 614 次工具调用，其中 **258 次文件写入全部落在一个仓库，
+一次都没落在 `cwd` 所在的目录**。卡片上「用这个仓库交接」指向的那个仓库，
+这个会话从头到尾没改过一个字节——复制进新会话就在错的项目里改代码。
+
+Codex 侧更彻底：它把 `cwd` 设成自己的会话沙箱目录
+（`~/Documents/Codex/<日期>/<名字>`），那里根本没有 `.git`，于是仓库推断直接
+落到最弱的「提到过」证据上。
+
+现在按**证据分层**判定：
+
+| 级别 | 证据 | 语义 |
+|---|---|---|
+| 最强 | Codex `turn_context.workspace_roots` | harness 自己声明的工作区根 |
+| 强 | `Edit` / `Write` / `MultiEdit` / `NotebookEdit` 的 `file_path`、`apply_patch` | **改过这个文件** |
+| 中 | Codex `exec_command` 的 `workdir` | 命令在这个目录里跑过 |
+| 弱 | `Read` / `Grep` / `Glob` 的路径 | 看过这个文件 |
+| 更弱 | `cwd` + 往上找 `.git` | 在哪启动 |
+| 最弱 | 正文提到的路径 | 提过这个路径 |
+
+排序先比等级、同级才比命中数。一次真实的文件写入比一百次「提到路径」更能说明
+这个会话在改什么。
+
+**「读过文件」要至少 5 次命中才够资格当结论。** 读别的仓库是常态——对比参考
+实现、查文档、看依赖源码。实测一个整场在讨论别的项目部署的会话，只因为顺手读了
+2 个本仓库的文件就被判成在改本仓库；而真的在某仓库工作时读取次数通常是几十上百
+（实测 61、95、105）。2 次是噪声，不是归属。
+
+结论带置信度，**宁可说不准也不给看起来确定的错答案**：
+
+| 置信度 | 什么情况 |
+|---|---|
+| 确定 | 唯一的强证据（写入 / workspace / exec） |
+| 大概是 | 强证据里第一名领先第二名 3 倍以上 |
+| 说不准 | 势均力敌，或者只有弱证据（启动目录、提到过） |
+| 无证据 | 一条都没收集到 |
+
+跨仓库工作（主仓 + 插件仓、前后端分离）是真实场景，两边命中数接近时**不该**
+假装知道答案——那时候界面会默认展开候选列表，让人自己判断。
+
+依据可以逐条展开核实：哪种证据、命中几次、哪个仓库、代表文件。卡片、命令行
+卡片、交接文档三处都列，共用同一份判据。
+
+**启动目录不会被替换掉，只是不再当结论。** 原生续接（`--resume`）必须在启动
+目录下执行——两个 APP 都按目录给会话建索引。两者不一致时卡片同时显示、明确说明
+差异，并给两个交接按钮：「用这个仓库交接」走判定结论，「用启动目录交接」走
+能 resume 的地方。不预选、不隐藏。
+
+收集证据有独立的行预算（1500 行，比身份卡的 260/400 大得多）：**文件写入通常
+发生在会话中后段**——先读代码、讨论方案，然后才动手改。超预算时结论仍然给出，
+但会标注「只看了前 N 行」，因为「没有写入证据」与「没看到写入证据」是两回事。
 
 ### 「最后活动」取的是转录里最后一条记录，不是文件时间
 
@@ -805,6 +869,28 @@ export AGENT_HANDOFF_HOME=/opt/agent-handoff-project   # 或 D:\tools\agent-hand
 ```
 
 ## 仓库身份 vs 本机路径
+
+### 续接命令带切目录，因为 resume 认目录
+
+`claude --resume <id>` / `codex resume <id>` 只在**启动目录**下才找得到那个
+会话——两个 APP 都按目录给会话建索引。而卡片上「在改哪个仓库」跟启动目录经常
+不是一个，复制一条纯命令、在当前目录粘贴执行，得到的是「找不到会话」。
+
+所以另给一条「复制续接命令（含切目录）」：
+
+```text
+pushd "e:\output\proj" && claude --resume 809adf54-2839-4eab-9c9f-e17c3841ee22
+```
+
+用 `pushd` 而不是 `cd`：**cmd 的 `cd` 换目录但不换盘符**。在 C: 上执行
+`cd "E:\proj"`，提示符看着变了，实际工作目录还在 C:，紧跟的 resume 于是跑在
+错的项目里——那比直接报错更糟，因为它看起来成功了。`pushd` 两者都换，在
+PowerShell 里也是 `Push-Location` 的别名，一条形态覆盖三种壳。
+
+路径里含换行或双引号时**不给这条命令**：多行内容粘进终端会被逐行立即执行，
+引号包不住换行。原来的纯命令保持不变，两条都给。
+
+### 换机器时靠身份，不靠路径
 
 提示词同时给出两样东西：
 

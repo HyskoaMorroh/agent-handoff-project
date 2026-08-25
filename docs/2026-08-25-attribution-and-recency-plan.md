@@ -1,8 +1,8 @@
 # 会话归属与最后活动的取证式重建：方案书
 
 - 文档日期：2026-08-25
-- 状态：**方案待确认，尚未改动任何源码**
-- 版本基线：agent-handoff 2.5.0（工作树另有 P2 未提交改动 1055 行，见 §0.3）
+- 状态：**P7–P10 全部已实施并验证**（2.6.1 与 2.7.0 两次发布）
+- 版本基线：agent-handoff 2.5.0 → 2.6.0（P2）→ 2.6.1（P7/P8）→ 2.7.0（P9/P10）
 - 前置文档：`docs/superpowers/plans/ccs-ui-notes.md`（截图勘查 + 10 项磁盘取证）、`docs/2026-08-25-cross-project-uplift-plan.md`（六项目对比，P1/P3 已实施）
 
 ---
@@ -459,11 +459,74 @@ agent-handoff --version             # 版本号一致
 
 ---
 
-## 10. 待确认事项
+## 10. 实施记录
 
-动手前需要确认：
+### P7 + P8（发布为 2.6.1，提交 `5ed9b56`）
 
-1. **阶段顺序与范围**：是否按 P7 → P8 → P9 → P10 推进？是否要先只做 P7+P8（两个确定的 bug）再评估？
-2. **工作树里的 P2 改动**：那 1055 行未提交改动是否先提交为 2.5.1 的一部分，还是与 P7/P8 一并提交？
-3. **`conflict` 时的默认动作**：界面"用这个仓库交接"按钮默认走 `work_repo`（改了什么）还是 `repo`（在哪启动）？我的建议是 `work_repo`，但把 `repo` 摆在旁边一键可选 —— 因为 resume 必须在 cwd 下跑，两者用途不同。
-4. **`ATTRIBUTION_LINE_BUDGET` 取值**：建议 1200。太小会漏掉后段的写操作，太大影响大转录扫描速度。是否接受？
+- `platform.py` 新增 `last_record_time`，尾读 32 KB 找最后一条记录时间戳（实测 8 KB 只命中 57/63，32 KB 全部命中；首窗不中加倍重试，上限 512 KB）。丢弃尾读窗口第一个残行。
+- `SessionRow` 新增 `last_active_ts` / `time_source` / `active_at`，`mtime` 字段语义一字未改。排序键、"最差会话"推荐、界面、CLI 卡片、交接文档六处改用 `active_at`，非 `record` 来源时标注。
+- `core/plan.py` 的 `find_plan` 两道收紧：文件名负面清单（README / CHANGELOG / …）、围栏代码块内的 Task 标题与复选框不计数（剥围栏时保持行号不变，因为回填复选框靠行号定位）。刻意不加"必须有目标段落"这第三道——只有任务与步骤的计划文档是合法的。
+- 试运行也显示输出路径，文案区分"将写入"与"已写入"。
+- 验证：772 passed / 3 skipped；533 键三语对齐；463 份真实转录尾读与全量解析比对 462 份完全一致。
+
+### P9 + P10（发布为 2.7.0）
+
+| 文件 | 改动 |
+| --- | --- |
+| `core/attribution.py` | **新文件**。`LEVEL_RANK` 六级证据、`RepoEvidence`、`RepoVerdict`、`AttributionCollector`、`ATTRIBUTION_LINE_BUDGET = 1500`、`_READ_MIN = 5`、`_DOMINANCE = 3` |
+| `core/vitals.py` | `SessionRow` 增 `verdict` 字段与 `work_repo` property；`resume_cmd_cd` property（`pushd` 形态）；`scan_one` 接入 `AttributionCollector`（仅 deep）；`to_dict` 增 `work_repo` / `verdict` / `resume_cmd_cd` |
+| `core/report.py` | 交接文档写入归属结论 + 冲突提示 + 逐条证据（最多 4 条）+ 预算截断说明 |
+| `core/handoff.py` | 跨仓库警告改用 `work_repo` 判定——用 `repo` 会对几乎每个会话误报，真正跨仓库的淹没在噪声里 |
+| `cli.py` | 卡片显示「在改仓库」+ 置信度 + 依据，冲突时启动目录行换文案；证据逐条列出 |
+| `gui/server.py` | bootstrap 广播 `attributionBudget`（不让前端自己写死一份） |
+| `gui/static/app.js` | `attribution()` 折叠面板（`weak`/`none` 默认展开）；「在改哪个仓库」行排在启动目录前；「用这个仓库交接」改走 `work_repo`，冲突时并列「用启动目录交接」；「复制续接命令（含切目录）」 |
+| `i18n/*.json` | 三语各 +14 键（现 563 键，全部对齐） |
+| `tests/test_attribution.py` | **新文件**，17 例：无证据不编结论、写入胜过 cwd、只有 cwd 判 weak、2 次读取不夺权、9 次读取夺权、势均力敌判 weak、压倒性领先判 likely、Bash/MCP 不参与、盘符大小写合并为一个候选、预算越界标 truncated 且不计入、坏行不崩、Codex workspace_roots 最强、Codex workdir 胜过沙箱 cwd、坏 arguments 跳过、mention 最弱、`to_dict` 可序列化、空 verdict 字段完整 |
+| `CHANGELOG.md`、`pyproject.toml`、`__init__.py`、三份 README | 2.6.1 → 2.7.0；测试徽章 772 → 789；三份 README 各新增两节（证据分层判定、续接命令带切目录） |
+| `docs/guide.html` + 打包副本 | `build_guide.py` 重新生成，两份哈希一致 |
+
+**实施中发现并修掉的一个真 bug**：Codex 侧预筛最初写成 `'"workdir"' in raw`（带引号）。而 Codex 的 `arguments` 是 JSON **字符串**，内部引号在外层是转义的 —— `workdir` 在原始行里长成 `\"workdir\"`，带引号一次也命中不了。测试直接抓出来了：`test_codex_exec_workdir_beats_sandbox_cwd` 断言失败，`primary` 为空。若没有这条测试，151 份含 workdir 的 rollout 会一条证据都采集不到，而且**完全静默**。
+
+### 真实数据验证结果
+
+| 项 | 结果 |
+| --- | --- |
+| 截图会话 `1ee778a2` | `work_repo` = `agent-handoff-project`，`certain`，`basis=edit`，155 次写入 + 61 次读取，`conflict=True` |
+| 截图会话 `6640504f`（讨论 CLIProxyAPI） | 只有 2 次读取 → 不夺权，退回 `cwd`，`weak`，`basis=cwd` —— 正是 `_READ_MIN` 要防的误判 |
+| 本会话 `809adf54` | `work_repo` = `agent-handoff-project`，`certain`，102 次写入 + 105 次读取 |
+| 40 份最近 Codex rollout | **38 份**由强证据判定（`workspace` / `exec`），2 份无证据；0 份退回 cwd |
+| 3 份 `cwd` 指向 Codex 沙箱目录的大 rollout | 由 118 / 152 / 75 次 `exec` 证据判到 `kirara-ai3.3.0a5`，`certain` |
+| 交接文档渲染 | 归属结论 + 冲突提示 + 4 条证据 + 预算说明全部落地，路径经 `_redact` 脱敏（`C:\Users\devin\…` → `~\…`） |
+| 端到端试运行 | 退出码 0，输出路径 `docs/2026-08-26-handoff.md`（P8 的回落生效） |
+
+### 全套门禁
+
+- `pytest`：**789 passed, 3 skipped**（2.6.1 是 772；新增 17 例）
+- `check_i18n.py`：3 languages, **563 keys each — all aligned**
+- `compileall src scripts`：exit 0
+- `build_guide.py`：156 keys × 3 languages，`docs/guide.html` 与打包副本哈希一致
+- 版本漂移门禁（本地复现 CI 逻辑）：pyproject / `__init__` / 三份 README 徽章全部 **2.7.0**
+- `ruff`：**本机未安装，未运行**（未擅自安装）。行长与导入顺序按 `line-length = 110` 与既有分组人工核对，CI 的 ruff 作业仍是权威。
+- wheel 装进干净 venv 的冒烟门禁：本机跑不了（该 venv 无 pip），CI 上会跑。
+
+### 未改动的既有行为
+
+函数与变量名一个没改，注释一条没删。`SessionRow.repo`、`SessionRow.cwd`、`SessionRow.mtime`、`resume_cmd` 四者语义逐字保留 —— 新增的都是并行字段（`work_repo` / `verdict` / `active_at` / `time_source` / `resume_cmd_cd`），没有证据时全部退回原行为。
+
+## 11. 已确认的决策
+
+动手前问过、并已按答案实施：
+
+1. **阶段范围**：按「先修两个确定的 bug」推进 —— P7（最后活动）+ P8（输出目录漂移）先发 2.6.1，随后 P9（归属重建）+ P10（resume 带 cd）发 2.7.0。
+2. **工作树里的 P2 改动**：先单独提交为基线（`18819dc`），再在其上做 P7/P8。
+3. **`conflict` 时的默认动作**：「用这个仓库交接」走 `work_repo`（改了什么），把 `repo`（在哪启动）摆在旁边一键可选。已实现为两个并列按钮，不预选、不隐藏。
+4. **`ATTRIBUTION_LINE_BUDGET`**：取 1500。
+
+## 12. 剩下没做的
+
+- **Codex `apply_patch` 的 diff 正文不解析**。它的目标路径写在 `*** Update File: x` 这种正文里，解析 diff 是另一个问题，解析错了会污染强证据层。实测样本里 `apply_patch` 只出现 2 次（Codex 主要走 `exec_command`），收益不足以承担风险。
+- **Bash / MCP 工具的路径不采集**。前者的路径埋在命令行里要靠猜，后者的参数结构各服务器不同。宁可少一条证据。
+- **`evidence.py:270-288` `_python_scan` whole-file 无大小上限**（沿自 P1 的遗留项）。
+- **`transcript.py:258` 轮次全量物化无上限**：O(n²) 已在 P3 修掉，但 70 MB transcript 的内存峰值仍在，需要改成流式渲染。
+- **持久化会话索引、内容寻址工作树快照、格式版本化**（原计划书的 P6 三项）。
+- **时间线画布的交互部分**：P2 已给出 sparkline，但滚轮缩放、拖拽平移、类型过滤仍未做。

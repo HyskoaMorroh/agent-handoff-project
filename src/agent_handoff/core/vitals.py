@@ -41,6 +41,7 @@ from ..platform import (
     norm_path,
     open_transcript,
 )
+from .attribution import ATTRIBUTION_LINE_BUDGET, AttributionCollector, RepoVerdict
 
 # --- 判据 -----------------------------------------------------------------
 # 真正杀死过会话的签名，不是只让人烦躁的那些。
@@ -528,6 +529,32 @@ class SessionRow:
     #   · `mtime`             —— 尾部没找到时间戳，回落文件时间
     #   · `mtime-compressed`  —— 压缩转录不能 seek 尾部，直接回落
     time_source: str = "mtime"
+    # 「这个会话在哪个仓库工作」的结论与全部依据。空的 verdict（`primary` 为
+    # 空串）表示一条证据都没收集到——那与「结论是 cwd」不同，界面要区分。
+    #
+    # 与 `repo` 并存而不是替换它：`repo` 回答「在哪启动」，那个值本身有用
+    # （resume 必须在 cwd 下执行）。这里回答「在改什么」。两者不一致是常态，
+    # 明说比挑一个显示更诚实。
+    verdict: RepoVerdict = field(default_factory=RepoVerdict)
+
+    @property
+    def work_repo(self) -> str:
+        """这个会话**实际在改**的仓库。没有证据时退回 `repo`。
+
+        为什么需要它：`repo` 取 `cwd` 再往上找 `.git`，而 cwd 是「在哪启动」，
+        不是「在改什么」。实测本机 12 份有文件写入证据的 Claude 转录，两者一致
+        的只有 1 份；Codex 侧 151 份含 `workdir` 的 rollout 里一致的只有 16 份
+        （它的 cwd 是会话沙箱目录，根本不在任何 git 仓库里）。
+
+        具体到一个例子：某会话 614 次工具调用，258 次文件写入**全部**落在
+        `agent-handoff-project`，而 cwd 指向 kirara 目录——卡片上「用这个仓库
+        交接」指向的仓库，这个会话从头到尾没改过一个字节。
+
+        没有证据时退回 `repo` 而不是留空：纯讨论、纯搜索、早期被打断的会话确实
+        没有文件证据，那时启动目录是唯一线索，仍然比空白有用。`verdict` 的
+        `confidence` 会说明这一点。
+        """
+        return self.verdict.primary or self.repo
 
     @property
     def active_at(self) -> datetime:
@@ -625,6 +652,41 @@ class SessionRow:
             uuid = "-".join(parts[-5:]) if len(parts) >= 5 else sid
             return f"codex resume {uuid}"
         return f"claude --resume {sid}"
+
+    @property
+    def resume_cmd_cd(self) -> str:
+        """续接命令，**带上切到启动目录那一步**。没有可用命令或路径时返回空串。
+
+        为什么必需：`claude --resume <id>` / `codex resume <id>` 只在**启动目录**
+        下才能找到那个会话——两个 APP 都按目录给会话建索引。而卡片上另一行显示的
+        是「在改哪个仓库」，那两个路径经常不同（实测本机三个会话全部不同）。
+        用户复制了纯命令、在当前目录粘贴执行，得到的是「找不到会话」。
+
+        用 `pushd` 而不是 `cd`：cmd 的 `cd` 换目录但**不换盘符**。在 C: 上执行
+        `cd "E:\\proj"`，提示符看着变了，实际工作目录还在 C:，紧跟的 resume 于是
+        跑在错的项目里——这比直接报错更糟，因为它看起来成功了。`pushd` 两者都换，
+        在 PowerShell 里也是 `Push-Location` 的别名，一条命令覆盖三种壳。
+        （这条 Windows 细节来自 claude-code-log 的 resume 命令拼装，它在注释里
+        记下了同一个坑。）
+
+        路径里带换行时**不给命令**：多行内容粘进终端会被逐行立即执行，引号包不住
+        换行。这种情况下宁可不给，也不能给一条会执行意料之外内容的命令行。
+
+        POSIX 路径不需要换盘符，但 `pushd` 在 sh / bash / zsh 里同样存在且语义
+        一致（压栈 + cd），所以两边共用一条形态，不为平台分叉。
+        """
+        cmd = self.resume_cmd
+        if not cmd:
+            return ""
+        where = self.cwd.strip()
+        if not where or "\n" in where or "\r" in where:
+            return ""
+        # 双引号里的反斜杠在 cmd 与 PowerShell 里都是字面量，Windows 路径可以
+        # 原样放进去。路径自带双引号时不处理——那种路径在任何壳里都需要另一套
+        # 转义，而实测从未出现，编一套没验证过的转义比不给更危险。
+        if '"' in where:
+            return ""
+        return f'pushd "{where}" && {cmd}'
 
     @property
     def deep_link(self) -> str:
@@ -732,6 +794,9 @@ class SessionRow:
             "timeline": self.timeline,
             "label": self.label,
             "resume_cmd": self.resume_cmd,
+            # 带 `pushd` 的那一条。两条都给：纯命令给已经在正确目录里的人，
+            # 带 pushd 的给从别处复制走的人（那是多数情况）。
+            "resume_cmd_cd": self.resume_cmd_cd,
             "deep_link": self.deep_link,
             # 这份转录是不是从别的电脑搬来的。为真时路径、原生续接、仓库推断
             # 都不可信，但内容仍然有价值——界面据此标注而不是隐藏。
@@ -744,6 +809,10 @@ class SessionRow:
             "compressed_unreadable": self.compressed_unreadable,
             "repos": self.repos,
             "repo": self.repo,
+            # 「在改哪个仓库」与「在哪启动」分开给。前者是用户真正在问的，
+            # 后者是 resume 必须用的——两个都要，不一致时界面同时显示并说明。
+            "work_repo": self.work_repo,
+            "verdict": self.verdict.to_dict(),
         }
 
 
@@ -1436,6 +1505,9 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
     dg = _DigestCollector() if deep else None
     fl = _FullnessCollector() if deep else None
     tc = _TurnContextCollector() if deep else None
+    # 归属证据只在 deep 时收：非 deep 是「只要个数」的快速模式，而这一项要
+    # 解析工具调用的入参，比数错误便宜不了多少。
+    at = AttributionCollector(agent, ATTRIBUTION_LINE_BUDGET) if deep else None
     try:
         with open_transcript(fp) as fh:
             for raw in fh:
@@ -1456,11 +1528,17 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
                     fl.feed(raw)
                 if tc is not None:
                     tc.feed(raw)
+                if at is not None:
+                    at.feed(raw)
                 if ex is not None:
                     ex.feed(raw)
                     if ex.done:
                         # 深度信息已齐：收尾并丢掉提取器，剩下的行走廉价分支
                         # （子串查找 + 一次正则，摘要预筛也只是子串查找）。
+                        #
+                        # 归属收集器**不**在这里丢：写文件通常发生在会话中后段，
+                        # 而身份卡在开头几行就齐了。跟着 ex 一起丢等于系统性地
+                        # 漏掉这个会话真正在改什么。
                         ident, repos = ex.finish(fp)
                         ex = None
             if ex is not None:
@@ -1475,6 +1553,7 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
         dg = None
         fl = None
         tc = None
+        at = None
         ident, repos = {"session_id": _session_id_from_name(fp)}, []
     except OSError:
         return None
@@ -1487,10 +1566,19 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
         dg = None
         fl = None
         tc = None
+        at = None
         ident, repos = {"session_id": _session_id_from_name(fp)}, []
 
     if not deep and not unreadable:
         ident, repos = {"session_id": _session_id_from_name(fp)}, []
+
+    # 归属结论。`cwd` 与 `repos` 由 `_Extractor` 收集，直接传进来参与分层，
+    # 不重复解析——它们分别是「在哪启动」与「提到过」，是分层里最弱的两级。
+    verdict = (
+        at.verdict(cwd=ident.get("cwd", ""), mentioned=repos)
+        if at is not None
+        else RepoVerdict()
+    )
 
     return SessionRow(
         agent=agent,
@@ -1532,6 +1620,7 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
         compressed_unreadable=unreadable,
         last_active_ts=last_ts,
         time_source=time_src,
+        verdict=verdict,
     )
 
 

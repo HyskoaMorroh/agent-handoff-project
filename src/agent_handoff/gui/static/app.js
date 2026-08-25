@@ -12,6 +12,10 @@
   const BOOT = JSON.parse(document.getElementById("bootstrap").textContent);
   let S = BOOT.strings || {};
   let LANG = BOOT.lang;
+  // 归属证据的采集行预算。由后端广播而不是在这里写死：那个数字是后端的判定
+  // 参数，两处各写一份必然漂移——界面会说「只看了前 1500 行」而后端其实改成了
+  // 别的值。取不到时回落 0，文案里显示 0 也比显示一个编造的数字好。
+  const ATTR_BUDGET = BOOT.attributionBudget || 0;
 
   const $ = (sel, root) => (root || document).querySelector(sel);
   const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
@@ -346,6 +350,45 @@
     return box;
   }
 
+  /* 归属依据。
+   *
+   * 为什么必须能展开看：此前卡片只显示一个仓库路径，取自 `cwd`——而 `cwd` 是
+   * 「在哪启动」不是「在改什么」。真答案其实一直在数据里，只是被折叠进了
+   * 「（另有 N 个）」那句纯文本，点不开、看不见。实测截图里那句「另有 1 个」
+   * 藏着的正是用户在找的仓库。
+   *
+   * 所以这里把每一条证据都摊开：哪种证据、命中几次、哪个仓库。用户能自己核实
+   * 「凭什么说我在改这个」，而不是接受一个无法追溯的结论。
+   *
+   * 结论说不准（`weak`）时**默认展开**：那时候用户最需要看到候选列表，折叠起来
+   * 等于把不确定性藏了。确定时折叠——结论行已经说完了。 */
+  function attribution(r) {
+    const v = r.verdict || {};
+    const rows = v.evidence || [];
+    if (rows.length < 2) return null;
+    const box = el("details.why");
+    if (v.confidence === "weak" || v.confidence === "none") box.open = true;
+    box.appendChild(el("summary", {
+      text: t("gui.attr.head", { count: rows.length }),
+    }));
+    const list = el("ul.list");
+    rows.slice(0, 8).forEach((e) => {
+      const li = el("li", { text: t("gui.attr.row", {
+        level: t("evidence.level." + e.level), hits: e.hits, value: e.repo,
+      }) });
+      // 代表文件让「改过 155 次」变成可核实的东西：看到具体路径就知道是哪个模块。
+      if (e.samples && e.samples.length) {
+        li.appendChild(el("div.dim", { text: e.samples.join("  ·  ") }));
+      }
+      list.appendChild(li);
+    });
+    box.appendChild(list);
+    if (v.truncated) {
+      box.appendChild(el("p.hint", { text: t("gui.attr.partial", { lines: ATTR_BUDGET }) }));
+    }
+    return box;
+  }
+
   /* 上一个会话踩过的坑。
    *
    * 只给个数（「工具错误 10 次」）对下一个会话没有任何行动价值——它会按同样的
@@ -451,7 +494,20 @@
       (r.active_at_text || r.mtime_text) + "  · " +
         t(approx ? "gui.label.time_mtime" : "gui.label.time_record"),
     );
-    row(t("gui.label.cwd"), r.cwd);
+    /* 「在改哪个仓库」放在启动目录**前面**：那是用户真正在问的。
+
+       为什么不能只显示启动目录：`cwd` 是「在哪启动」，不是「在改什么」。实测
+       本机一个会话 614 次工具调用、258 次文件写入全部落在 agent-handoff-project，
+       而 cwd 指向另一个项目——卡片此前显示后者，于是「用这个仓库交接」「复制
+       工作目录」全都指向一个这个会话从没改过一个字节的仓库。
+
+       两者不一致时**都要显示**，不是替换：结论回答「改了什么」，cwd 回答
+       「在哪能 resume」——原生续接必须在启动目录下执行，那个值本身有用。 */
+    const vd = r.verdict || {};
+    if (vd.primary) {
+      row(t("gui.label.work_repo"), vd.primary + "  · " + t("cli.card.conf." + (vd.confidence || "none")));
+    }
+    row(t(vd.conflict ? "gui.label.cwd_conflict" : "gui.label.cwd"), r.cwd);
     row(t("gui.label.client"), [r.version, r.origin].filter(Boolean).join(" "));
     /* 判定依据。卡片上会同时出现「谁写的」与「在谈论谁」——一个 Claude Code
        会话完全可以整篇在分析某个 Codex 会话，开场提问里就带 codex://threads/…。
@@ -481,6 +537,11 @@
 
     // 判定理由与报错原文都排在键值表之后、操作行之前：它们是「要不要处理这个
     // 会话」的依据，而操作行是「怎么处理」。顺序跟着决策顺序走。
+    //
+    // 归属依据排在最前：底下那排动作（用这个仓库交接、复制工作目录、复制续接
+    // 命令）全都依赖「是哪个仓库」这个答案，所以先让用户能核实它。
+    const attr = attribution(r);
+    if (attr) card.appendChild(attr);
     const why = bandWhy(r);
     if (why) card.appendChild(why);
     const errs = errorList(r);
@@ -504,11 +565,27 @@
         : t("gui.sessions.pick") }));
       act.appendChild(box);
     }
-    if (r.repo && !(opts && opts.noAction)) {
+    /* 「用这个仓库交接」走 `work_repo` 而不是 `repo`。
+       前者是「这个会话在改哪个仓库」，后者是「它在哪启动」。交接的目的是接着改
+       代码，所以要跟着前者。没有证据时 `work_repo` 自己会退回 `repo`，行为与
+       改动前一致。
+
+       两者不一致时额外给一个走启动目录的按钮：原生 resume 必须在启动目录下
+       执行，那条路仍然需要。不预选、不隐藏——让用户看到有两个选择。 */
+    if (r.work_repo && !(opts && opts.noAction)) {
       act.appendChild(el("button.link", {
         text: t("gui.find.use"),
-        onclick: () => { $("#repo").value = r.repo; showView("handoff"); $("#repo").focus(); }
+        title: t("gui.tip.use_work", { path: r.work_repo }),
+        onclick: () => { $("#repo").value = r.work_repo; showView("handoff"); $("#repo").focus(); }
       }));
+      const vd = r.verdict || {};
+      if (vd.conflict && r.repo && r.repo !== r.work_repo) {
+        act.appendChild(el("button.link.link-quiet", {
+          text: t("gui.find.use_cwd"),
+          title: t("gui.tip.use_cwd", { path: r.repo }),
+          onclick: () => { $("#repo").value = r.repo; showView("handoff"); $("#repo").focus(); }
+        }));
+      }
     }
     // 原生续接严格优于交接：交接是有损的（工具授权、后台进程、被否决方案的
     // 推理都传不过去）。只要还能原生续接就先给那条路——把命令复制走比在这里
@@ -528,6 +605,21 @@
          · Markdown  —— 把整段对话粘给新会话，交接的主力产出
        Markdown 要现取（会话正文可能几十万字符），所以它是异步的。 */
     if (!(opts && opts.noAction)) {
+      /* 复制续接命令时带上 `pushd`。
+         为什么必需：`claude --resume <id>` 只在**启动目录**下能找到那个会话。
+         而 cmd 的 `cd` 只换目录不换盘符——在 C: 上粘一条 `cd "E:\proj"`，
+         目录看着变了，实际还在 C:，然后 resume 报「找不到会话」。`pushd`
+         两者都换，在 PowerShell 里也是 Push-Location 的别名。
+
+         带换行的路径直接不给命令：多行剪贴板粘进终端会逐行立即执行。 */
+      if (r.resume_cmd_cd) {
+        const b = el("button.link.link-quiet", {
+          text: t("gui.copy.resume_cd"),
+          title: t("gui.tip.resume_cd", { cmd: r.resume_cmd_cd }),
+        });
+        b.onclick = () => copyText(r.resume_cmd_cd, b, t("gui.copy.resume_cd"));
+        act.appendChild(b);
+      }
       if (r.cwd) {
         const b = el("button.link.link-quiet", { text: t("gui.copy.cwd") });
         b.onclick = () => copyText(r.cwd, b, t("gui.copy.cwd"));

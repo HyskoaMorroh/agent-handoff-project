@@ -16,6 +16,7 @@ from .core.disk import TOP_N, by_repo, scan_disk
 from .core.handoff import EXIT_BAD_INPUT, EXIT_OK, Options, run_handoff
 from .core.report import _redact_home, _rule
 from .core.vitals import (
+    ATTRIBUTION_LINE_BUDGET,
     SessionRow,
     find_sessions,
     group_by_agent,
@@ -71,8 +72,21 @@ def print_session_card(r: SessionRow, tr: Translator, index: int | None = None) 
     if r.time_source != "record":
         stamp += "  " + tr.t("cli.card.time_approx")
     print(tr.t("cli.card.mtime", value=stamp))
+    # 「在改哪个仓库」排在启动目录前面：那是用户真正在问的。两者不一致时把
+    # 差异明说出来——不一致是常态（cwd 是启动位置，不是工作对象），而沉默地
+    # 只显示其中一个会让人照着错的那个开新会话。
+    v = r.verdict
+    if v.primary:
+        print(tr.t(
+            "cli.card.work_repo",
+            value=v.primary,
+            note=tr.t("cli.card.conf." + v.confidence),
+        ))
+        if v.basis:
+            print(tr.t("cli.card.work_basis", value=tr.t("evidence.level." + v.basis)))
     if r.cwd:
-        print(tr.t("cli.card.cwd", value=r.cwd))
+        label = "cli.card.cwd_conflict" if v.conflict else "cli.card.cwd"
+        print(tr.t(label, value=r.cwd))
     extra = " ".join(x for x in (r.version, r.origin) if x)
     if extra:
         print(tr.t("cli.card.client", value=extra))
@@ -87,6 +101,21 @@ def print_session_card(r: SessionRow, tr: Translator, index: int | None = None) 
         # 属于遮蔽；改名 `other` 免得以后有人在循环后再读 extra 拿到错值。
         for other in r.repos[1:3]:
             print(f"                {other}")
+    # 归属证据逐条列出。此前判定只给一个结论，用户无从判断可不可信；而这里
+    # 每一行都是「哪种证据、命中几次、哪个仓库」，能自己核实。
+    #
+    # 证据不止一条时才列：只有一条时上面的结论行已经说完了。
+    if len(v.evidence) > 1:
+        print(tr.t("cli.card.evidence"))
+        for e in v.evidence[:5]:
+            print(tr.t(
+                "cli.card.evidence_row",
+                level=tr.t("evidence.level." + e.level),
+                hits=e.hits,
+                value=e.display,
+            ))
+        if v.truncated:
+            print(tr.t("cli.card.evidence_partial", lines=ATTRIBUTION_LINE_BUDGET))
     print(tr.t("cli.card.file", value=str(r.path)))
     # 原生续接严格优于交接：交接是有损的（工具授权、后台进程、被否决方案的
     # 推理都传不过去）。只要还能原生续接，就先把那条路摆出来。

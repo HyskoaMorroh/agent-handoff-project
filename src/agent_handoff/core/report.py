@@ -9,6 +9,7 @@ from typing import Any
 
 from ..i18n import Translator
 from ..platform import local_home_names
+from .attribution import ATTRIBUTION_LINE_BUDGET
 
 # transcript 里的 `_redact` 是**函数内**导入的（延迟），所以这里在模块层导入它
 # 不会成环。反过来写就会。
@@ -696,6 +697,33 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
                 a(tr.t("doc.sessions.foreign"))
             if s.get("cwd"):
                 a(tr.t("doc.sessions.cwd", value=_redact(s["cwd"])))
+            # 「在改哪个仓库」要写进文档，而且要写在启动目录旁边。
+            #
+            # 为什么：这份文档的读者是**下一个会话**，它会照着这里的路径去改
+            # 代码。只给启动目录等于把它送进错的仓库——实测本机三个会话的启动
+            # 目录全部不是它们真正在改的那个。两个都写、并说明依据与冲突，
+            # 让接手方自己判断该在哪工作、该在哪 resume。
+            vd = s.get("verdict") or {}
+            if vd.get("primary"):
+                a(tr.t(
+                    "doc.sessions.work_repo",
+                    value=_redact(vd["primary"]),
+                    note=tr.t("cli.card.conf." + (vd.get("confidence") or "none")),
+                    basis=tr.t("evidence.level." + vd["basis"]) if vd.get("basis") else "-",
+                ))
+                if vd.get("conflict"):
+                    a(tr.t("doc.sessions.work_conflict"))
+                # 证据逐条列出，最多 4 条：让接手方能核实这个结论，而不是接受
+                # 一个无从追溯的路径。超过 4 条时后面的都是弱证据，没有价值。
+                for e in (vd.get("evidence") or [])[:4]:
+                    a(tr.t(
+                        "doc.sessions.evidence",
+                        level=tr.t("evidence.level." + e.get("level", "mention")),
+                        hits=e.get("hits", 0),
+                        value=_redact(e.get("repo", "")),
+                    ))
+                if vd.get("truncated"):
+                    a(tr.t("doc.sessions.evidence_partial", lines=ATTRIBUTION_LINE_BUDGET))
             for rp in (s.get("repos") or [])[:3]:
                 a(tr.t("doc.sessions.repo", value=_redact(rp)))
             a(tr.t("doc.sessions.file", value=_redact(s.get("path", ""))))

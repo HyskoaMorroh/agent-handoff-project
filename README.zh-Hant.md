@@ -3,9 +3,9 @@
 <p align="center"><b>工作階段卡死時，把進度從對話裡搬進儲存庫</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.6.1-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.7.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="測試" src="https://img.shields.io/badge/tests-772%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="測試" src="https://img.shields.io/badge/tests-789%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="執行時依賴" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="授權" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -336,6 +336,72 @@ intent.undo()               // ❌ 呼叫不是定義
 因為勾選會寫進計畫文件且不可逆。
 
 ## 工作階段健檢的判據
+
+### 「在改哪個儲存庫」按證據判，不按啟動目錄
+
+一個工作階段可以在 A 目錄啟動、整場在改 B 儲存庫——把某個專案的路徑貼進來問問題，
+或者啟動目錄本身只是個容器。此前工具只有兩級依據：`cwd` 往上找 `.git`，找不到
+就退回「正文裡提到過的第一個路徑」。**那回答的是「在哪啟動」，不是「在改什麼」。**
+
+本機實測這兩者差多遠：
+
+| 側 | 樣本 | 一致的 |
+|---|---|---|
+| Claude Code | 12 份有檔案寫入證據的記錄 | **1 份** |
+| Codex | 151 份含 `exec_command.workdir` 的 rollout | **16 份** |
+
+一個具體例子：某工作階段 614 次工具呼叫，其中 **258 次檔案寫入全部落在一個
+儲存庫，一次都沒落在 `cwd` 所在的目錄**。卡片上「用這個儲存庫交接」指向的那個
+儲存庫，這個工作階段從頭到尾沒改過一個位元組——複製進新工作階段就在錯的專案裡
+改程式碼。
+
+Codex 側更徹底：它把 `cwd` 設成自己的工作階段沙箱目錄
+（`~/Documents/Codex/<日期>/<名字>`），那裡根本沒有 `.git`，於是儲存庫推斷直接
+落到最弱的「提到過」證據上。
+
+現在按**證據分層**判定：
+
+| 級別 | 證據 | 語義 |
+|---|---|---|
+| 最強 | Codex `turn_context.workspace_roots` | harness 自己宣告的工作區根 |
+| 強 | `Edit` / `Write` / `MultiEdit` / `NotebookEdit` 的 `file_path`、`apply_patch` | **改過這個檔案** |
+| 中 | Codex `exec_command` 的 `workdir` | 命令在這個目錄裡跑過 |
+| 弱 | `Read` / `Grep` / `Glob` 的路徑 | 看過這個檔案 |
+| 更弱 | `cwd` + 往上找 `.git` | 在哪啟動 |
+| 最弱 | 正文提到的路徑 | 提過這個路徑 |
+
+排序先比等級、同級才比命中數。一次真實的檔案寫入比一百次「提到路徑」更能說明
+這個工作階段在改什麼。
+
+**「讀過檔案」要至少 5 次命中才夠資格當結論。** 讀別的儲存庫是常態——對比參考
+實作、查文件、看依賴原始碼。實測一個整場在討論別的專案部署的工作階段，只因為
+順手讀了 2 個本儲存庫的檔案就被判成在改本儲存庫；而真的在某儲存庫工作時讀取
+次數通常是幾十上百（實測 61、95、105）。2 次是雜訊，不是歸屬。
+
+結論帶信心度，**寧可說不準也不給看起來確定的錯答案**：
+
+| 信心度 | 什麼情況 |
+|---|---|
+| 確定 | 唯一的強證據（寫入 / workspace / exec） |
+| 大概是 | 強證據裡第一名領先第二名 3 倍以上 |
+| 說不準 | 勢均力敵，或者只有弱證據（啟動目錄、提到過） |
+| 無證據 | 一條都沒收集到 |
+
+跨儲存庫工作（主庫 + 外掛庫、前後端分離）是真實場景，兩邊命中數接近時**不該**
+假裝知道答案——那時候介面會預設展開候選清單，讓人自己判斷。
+
+依據可以逐條展開核實：哪種證據、命中幾次、哪個儲存庫、代表檔案。卡片、命令列
+卡片、交接文件三處都列，共用同一份判據。
+
+**啟動目錄不會被替換掉，只是不再當結論。** 原生續接（`--resume`）必須在啟動
+目錄下執行——兩個 APP 都按目錄給工作階段建索引。兩者不一致時卡片同時顯示、明確
+說明差異，並給兩個交接按鈕：「用這個儲存庫交接」走判定結論，「用啟動目錄交接」
+走能 resume 的地方。不預選、不隱藏。
+
+收集證據有獨立的行預算（1500 行，比身分卡的 260/400 大得多）：**檔案寫入通常
+發生在工作階段中後段**——先讀程式碼、討論方案，然後才動手改。超預算時結論仍然
+給出，但會標註「只看了前 N 行」，因為「沒有寫入證據」與「沒看到寫入證據」是
+兩回事。
 
 ### 「最後活動」取的是記錄裡最後一條，不是檔案時間
 
@@ -816,6 +882,28 @@ export AGENT_HANDOFF_HOME=/opt/agent-handoff-project   # 或 D:\tools\agent-hand
 ```
 
 ## 儲存庫身分 vs 本機路徑
+
+### 續接命令帶切目錄，因為 resume 認目錄
+
+`claude --resume <id>` / `codex resume <id>` 只在**啟動目錄**下才找得到那個
+工作階段——兩個 APP 都按目錄給工作階段建索引。而卡片上「在改哪個儲存庫」跟啟動
+目錄經常不是一個，複製一條純命令、在當前目錄貼上執行，得到的是「找不到工作階段」。
+
+所以另給一條「複製續接命令（含切目錄）」：
+
+```text
+pushd "e:\output\proj" && claude --resume 809adf54-2839-4eab-9c9f-e17c3841ee22
+```
+
+用 `pushd` 而不是 `cd`：**cmd 的 `cd` 換目錄但不換磁碟機代號**。在 C: 上執行
+`cd "E:\proj"`，提示符看著變了，實際工作目錄還在 C:，緊跟的 resume 於是跑在
+錯的專案裡——那比直接報錯更糟，因為它看起來成功了。`pushd` 兩者都換，在
+PowerShell 裡也是 `Push-Location` 的別名，一條形態覆蓋三種殼。
+
+路徑裡含換行或雙引號時**不給這條命令**：多行內容貼進終端會被逐行立即執行，
+引號包不住換行。原來的純命令保持不變，兩條都給。
+
+### 換機器時靠身分，不靠路徑
 
 提示詞同時給出兩樣東西：
 

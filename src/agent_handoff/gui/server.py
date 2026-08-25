@@ -33,6 +33,7 @@ from ..core.portable import bare_session_id
 from ..core.report import _redact_home
 from ..core.transcript import merge_tool_runs, read_turns, render_markdown
 from ..core.vitals import (
+    ATTRIBUTION_LINE_BUDGET,
     SessionRow,
     find_sessions,
     group_by_agent,
@@ -278,6 +279,9 @@ class Handler(BaseHTTPRequestHandler):
             # 图文说明只在仓库里跑时才有（装好的包不带 docs/）。前端据此决定
             # 显不显示入口——给一个点开是 404 的按钮比没有按钮更糟。
             "guideAvailable": find_guide() is not None,
+            # 归属证据的采集行预算。界面要如实说出「只看了前 N 行」，而 N 是
+            # 后端的判定参数——前端自己写一份必然与后端漂移。
+            "attributionBudget": ATTRIBUTION_LINE_BUDGET,
             "sep": os.sep,
         }
         # </script> 在 JSON 字符串里出现会提前关闭标签；转义掉。

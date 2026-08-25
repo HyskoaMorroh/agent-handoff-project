@@ -456,10 +456,17 @@ def run_handoff(
         # 只提示不拦：同一份工作跨两个仓库（前后端分离、主仓 + 插件仓）是真实
         # 场景，用户可能确实要带过去。但默认假设是「勾错了」，所以要说清楚
         # 哪些会话不属于这个仓库。
+        #
+        # 判定用 `work_repo`（这个会话在改哪个仓库）而不是 `repo`（在哪启动）。
+        # 用后者会大面积误报：实测本机会话的启动目录常常不是它们在改的仓库，
+        # 于是「跨仓库」警告对几乎每个会话都触发一次，而真正跨仓库的那些反而
+        # 淹没在噪声里。`work_repo` 没有证据时自己退回 `repo`，所以这不会让
+        # 判定变松，只是让它对准。
         here = norm_path(str(repo))
         outside = [
             v for v in picked
-            if (v.get("repo") or "").strip() and norm_path(v["repo"]) != here
+            if (v.get("work_repo") or v.get("repo") or "").strip()
+            and norm_path(v.get("work_repo") or v["repo"]) != here
         ]
         if outside:
             say(tr.t("cli.sessions.cross_repo", count=len(outside), repo=repo.name))
@@ -468,7 +475,7 @@ def run_handoff(
                     "cli.sessions.cross_repo_item",
                     agent=v.get("agent", ""),
                     id=(v.get("session_id") or "")[:8] or "?",
-                    repo=v.get("repo", ""),
+                    repo=v.get("work_repo") or v.get("repo", ""),
                 ))
 
     say(tr.t("cli.step.write"))
