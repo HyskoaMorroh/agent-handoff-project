@@ -631,6 +631,13 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
             for rp in (s.get("repos") or [])[:3]:
                 a(tr.t("doc.sessions.repo", value=_redact(rp)))
             a(tr.t("doc.sessions.file", value=_redact(s.get("path", ""))))
+            # 停下来时的模型与策略。这几项是逐轮记录的，不在会话元数据里——
+            # 而新会话要重现上一个会话的结果，得知道它当时在什么配置下跑
+            # （同一份转录里模型换过是常态）。
+            tctx = s.get("turn_context") or {}
+            if tctx:
+                bits = [f"{k}={v}" for k, v in tctx.items()]
+                a(tr.t("doc.sessions.turn_context", value=_redact(", ".join(bits))))
             if s.get("digest_windows", 0) > 1:
                 a(tr.t("doc.sessions.windows", count=s["digest_windows"]))
             asks = s.get("asks") or []
@@ -643,6 +650,16 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
                 a("")
                 a(tr.t("doc.sessions.last_prompt"))
                 _block(a, _redact(s["last_prompt"]))
+            # 报错原文。放在摘要之前：摘要是模型的转述，而这是原始事实，
+            # 而且它回答的是最贵的那个问题——「哪条路已经走不通」。
+            # 只数个数（上面体征表里的 errors 列）等于告诉新会话「出过 10 次事」，
+            # 它据此什么也做不了，于是按同样的方式再错一次。
+            errs = s.get("errors_text") or []
+            if errs:
+                a("")
+                a(tr.t("doc.sessions.errors", count=len(errs)))
+                for one in errs:
+                    _block(a, _redact(one))
             if s.get("digest"):
                 a("")
                 a(tr.t("doc.sessions.digest"))

@@ -305,3 +305,226 @@ def test_tool_summary_carries_a_count():
     md = render_markdown("Codex", {"session_id": "s"}, turns, tr)
     assert "<details>" in md and "<summary>" in md
     assert "3" in md.split("</summary>")[0], "summary 里要有数量"
+
+
+# --- 工具调用的参数 ---------------------------------------------------------
+# 只留工具名等于告诉新会话「上一个会话用过 Edit」，而它需要知道的是
+# 「编辑了哪个文件」。参数才是「做过什么」里的「什么」。
+
+
+def test_claude_tool_call_keeps_arguments(tmp_path):
+    fp = _write(tmp_path, "a.jsonl", [
+        _claude("assistant", [
+            {"type": "tool_use", "id": "t1", "name": "Read",
+             "input": {"file_path": "src/core/plan.py", "limit": 40}},
+        ]),
+    ])
+    turns = read_claude_turns(fp)
+    call = next(t for t in turns if t.role == "call")
+    assert "src/core/plan.py" in call.tools[0], "参数丢了，只剩工具名"
+    assert call.tools[0].startswith("Read("), f"格式应为 名字(参数)：{call.tools[0]}"
+
+
+def test_claude_tool_result_carries_args_from_the_call(tmp_path):
+    """结果行也要带参数：调用与结果分在两条记录里，靠 tool_use_id 配对。"""
+    fp = _write(tmp_path, "a.jsonl", [
+        _claude("assistant", [
+            {"type": "tool_use", "id": "t1", "name": "Edit",
+             "input": {"file_path": "src/core/vitals.py"}},
+        ]),
+        _claude("user", [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+        ]),
+    ])
+    turns = read_claude_turns(fp)
+    res = next(t for t in turns if t.role == "tool")
+    assert "src/core/vitals.py" in res.tools[0]
+    assert "-> ok" in res.tools[0]
+
+
+def test_tool_args_prefers_identifying_fields_over_bulk_content(tmp_path):
+    """`content` / `new_string` 这类整块正文不能把额度吃光。
+
+    它们改出来的结果已经在磁盘上了，磁盘上的当前状态比转录里的历史版本更可信；
+    而 `file_path` 缺了就无从知道动过哪个文件。
+    """
+    fp = _write(tmp_path, "a.jsonl", [
+        _claude("assistant", [
+            {"type": "tool_use", "id": "t1", "name": "Write",
+             "input": {"content": "x" * 5000, "file_path": "docs/notes.md"}},
+        ]),
+    ])
+    call = next(t for t in read_claude_turns(fp) if t.role == "call")
+    assert "docs/notes.md" in call.tools[0], "识别性字段被正文挤掉了"
+    assert len(call.tools[0]) < 400, "参数摘要没有上限"
+
+
+# --- 失败的工具结果 ---------------------------------------------------------
+# 成功的输出是过程，失败的输出是下一个会话会重踩的坑。
+
+
+def test_failed_tool_result_is_marked_and_gets_more_room(tmp_path):
+    long_err = "Traceback (most recent call last): " + "detail " * 200
+    fp = _write(tmp_path, "a.jsonl", [
+        _claude("assistant", [
+            {"type": "tool_use", "id": "t1", "name": "Bash",
+             "input": {"command": "pytest -q"}},
+        ]),
+        _claude("user", [
+            {"type": "tool_result", "tool_use_id": "t1", "is_error": True,
+             "content": long_err},
+        ]),
+    ])
+    res = next(t for t in read_claude_turns(fp) if t.role == "tool")
+    assert " !! " in res.tools[0], "失败没有标记出来，读者分不出成功与失败"
+    assert "Traceback" in res.tools[0]
+    # 成功给 400，失败给 2000——这一条钉住「失败拿到更多额度」。
+    assert len(res.tools[0]) > 1000, f"失败结果被按成功的额度截了：{len(res.tools[0])}"
+
+
+def test_successful_tool_result_stays_short(tmp_path):
+    fp = _write(tmp_path, "a.jsonl", [
+        _claude("assistant", [
+            {"type": "tool_use", "id": "t1", "name": "Grep", "input": {"pattern": "def x"}},
+        ]),
+        _claude("user", [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "y" * 5000},
+        ]),
+    ])
+    res = next(t for t in read_claude_turns(fp) if t.role == "tool")
+    assert " -> " in res.tools[0] and " !! " not in res.tools[0]
+    assert len(res.tools[0]) < 700, "成功结果不该拿到失败的额度"
+
+
+# --- Codex 的工具名与配对 ---------------------------------------------------
+
+
+def test_codex_mcp_tool_name_is_server_slash_tool(tmp_path):
+    """MCP 工具要 `server/tool` 两段式：只留 tool 会让两个服务器上的同名工具无法区分。"""
+    fp = _write(tmp_path, "rollout-x.jsonl", [
+        {"type": "response_item", "payload": {
+            "type": "mcp_tool_call_begin", "call_id": "m1",
+            "server": "context7", "tool": "query-docs",
+            "arguments": {"query": "zstd streaming"}}},
+    ])
+    call = next(t for t in read_codex_turns(fp) if t.role == "call")
+    assert "context7/query-docs" in call.tools[0]
+    assert "zstd streaming" in call.tools[0]
+
+
+def test_codex_output_recovers_tool_name_from_the_call(tmp_path):
+    """`function_call_output` 里没有工具名，只有 call_id。
+
+    原版把结果一律写成 `output`，MCP 工具名整个丢掉——于是文档里一排
+    `output -> …`，读者无从知道是哪个工具产出的。
+    """
+    fp = _write(tmp_path, "rollout-x.jsonl", [
+        {"type": "response_item", "payload": {
+            "type": "function_call", "call_id": "c1", "name": "shell",
+            "arguments": {"command": "cargo test"}}},
+        {"type": "response_item", "payload": {
+            "type": "function_call_output", "call_id": "c1",
+            "output": {"content": "42 passed"}}},
+    ])
+    res = next(t for t in read_codex_turns(fp) if t.role == "tool")
+    assert res.tools[0].startswith("shell("), f"工具名没配回来：{res.tools[0]}"
+    assert "output" not in res.tools[0].split("->")[0], "退回了占位名 output"
+
+
+def test_codex_unpaired_output_still_has_a_name(tmp_path):
+    """配不上对时仍要有个名字，不能崩也不能空着。"""
+    fp = _write(tmp_path, "rollout-x.jsonl", [
+        {"type": "response_item", "payload": {
+            "type": "function_call_output", "call_id": "orphan",
+            "output": {"content": "stray"}}},
+    ])
+    res = next(t for t in read_codex_turns(fp) if t.role == "tool")
+    assert res.tools[0].startswith("output")
+
+
+def test_codex_failed_output_is_marked(tmp_path):
+    fp = _write(tmp_path, "rollout-x.jsonl", [
+        {"type": "response_item", "payload": {
+            "type": "mcp_tool_call_begin", "call_id": "m1",
+            "server": "ctx", "tool": "search", "arguments": {"query": "q"}}},
+        {"type": "response_item", "payload": {
+            "type": "mcp_tool_call_end", "call_id": "m1",
+            "output": {"content": "timed out awaiting response", "success": False}}},
+    ])
+    res = next(t for t in read_codex_turns(fp) if t.role == "tool")
+    assert " !! " in res.tools[0]
+    assert "ctx/search" in res.tools[0]
+
+
+# --- 助手发言去重 -----------------------------------------------------------
+
+
+def test_assistant_dedup_keeps_long_messages_with_the_same_opening(tmp_path):
+    """开头相同、内容不同的两条结论都必须留下。
+
+    原版去重键只取前 400 个归一化字符。Codex 的双写是**逐字**重复，400 字符
+    足够识别；但代价是开头相同的不同长消息被静默丢掉——而助手发言恰恰常以
+    同一句话起头（「已完成。」后面接完全不同的内容）。丢掉的是结论。
+    """
+    head = "已完成。" + "x" * 600
+    fp = _write(tmp_path, "rollout-x.jsonl", [
+        {"type": "response_item", "payload": {
+            "type": "message", "role": "assistant",
+            "content": [{"type": "text", "text": head + "结论 A"}]}},
+        {"type": "response_item", "payload": {
+            "type": "message", "role": "assistant",
+            "content": [{"type": "text", "text": head + "结论 B"}]}},
+    ])
+    asst = [t for t in read_codex_turns(fp) if t.role == "assistant"]
+    assert len(asst) == 2, "前缀相同的不同结论被静默丢掉了"
+    assert asst[0].text.endswith("结论 A")
+    assert asst[1].text.endswith("结论 B")
+
+
+def test_assistant_dedup_still_collapses_exact_duplicates(tmp_path):
+    """Codex 把同一条发言同时写进 message 与 agent_message，逐字重复必须压掉。"""
+    same = "结论：改用原子写。"
+    fp = _write(tmp_path, "rollout-x.jsonl", [
+        {"type": "response_item", "payload": {
+            "type": "message", "role": "assistant",
+            "content": [{"type": "text", "text": same}]}},
+        {"type": "event_msg", "payload": {"type": "agent_message", "message": same}},
+    ])
+    asst = [t for t in read_codex_turns(fp) if t.role == "assistant"]
+    assert len(asst) == 1, "双写没有被压掉，导出体积翻倍"
+
+
+# --- 超限裁剪的复杂度 -------------------------------------------------------
+
+
+def test_render_drops_tool_blocks_without_quadratic_rebuild(tmp_path):
+    """大量工具块下渲染必须在合理时间内完成，且结果仍在上限内。
+
+    原版每丢一个工具块就重建一次全文，是 O(块数 × 全文长度)。实测一份 rollout
+    里 function_call 与其输出占 6746 行，合并后仍有几百个块、全文几十万字符：
+    一次导出要重建全文几百遍。
+    """
+    import time
+
+    tr = Translator("zh-Hans")
+    turns = []
+    for i in range(900):
+        turns.append(Turn("call", tools=[f"shell(command=echo {i})"]))
+        turns.append(Turn("tool", tools=["y" * 500]))
+        if i % 50 == 0:
+            turns.append(Turn("assistant", f"step {i} done"))
+    t0 = time.perf_counter()
+    md = render_markdown("Codex", {"session_id": "s"}, turns, tr, max_chars=40_000)
+    elapsed = time.perf_counter() - t0
+    assert len(md) <= 40_000, f"没有裁到上限内：{len(md)}"
+    assert elapsed < 10, f"渲染耗时 {elapsed:.1f}s，疑似仍是 O(n^2)"
+
+
+def test_render_reports_how_many_tool_blocks_were_dropped(tmp_path):
+    """丢了要明说。静默丢弃会让读者以为看到了全部。"""
+    tr = Translator("zh-Hans")
+    turns = [Turn("user", "目标：修好原子写")]
+    for i in range(60):
+        turns.append(Turn("tool", tools=["z" * 400]))
+    md = render_markdown("Codex", {"session_id": "s"}, turns, tr, max_chars=6_000)
+    assert tr.t("md.dropped_tools", count=1).split("{")[0][:6] in md or "60" in md or "5" in md

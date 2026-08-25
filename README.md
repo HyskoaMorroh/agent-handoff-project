@@ -3,9 +3,9 @@
 <p align="center"><b>会话卡死时，把进度从对话里搬进仓库</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.4.0-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.5.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="测试" src="https://img.shields.io/badge/tests-681%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="测试" src="https://img.shields.io/badge/tests-704%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="运行时依赖" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="许可" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -608,10 +608,22 @@ agent-handoff --import-bundle ~/bundles/myproj-2026-08-23
 | `meta.json` | 同一批信息的机器可读版本 |
 
 `session.md` **分级带**：用户原话与助手结论按原文进，工具调用压成一行
-「名字 -> 结果摘要」，thinking / reasoning 不进。依据是实测的体积分布——
+「名字(参数) -> 结果摘要」，thinking / reasoning 不进。依据是实测的体积分布——
 一份 13452 行的 Codex rollout 里 `function_call` 与其输出占 6746 行（50%），
 而真正的对话消息只有 1614 行。实测压缩比：30 MB 的 Claude 转录 → 95 KB，
 90 MB 的 Codex → 959 KB。超限时先丢最早的工具摘要再截人话，并明说丢了多少。
+
+**参数会带上，因为工具名本身没有信息量。** 只留名字等于告诉新会话「上一个
+会话用过 Edit」，而它需要知道的是「编辑了哪个文件」——实测一份转录里 `Edit`
+出现 43 次，不带参数时这 43 行加起来等于一行。参数按信息价值排序取：
+`file_path` / `command` / `pattern` 这类回答「对什么做的」，优先进；
+`content` / `new_string` 这类整块正文最后进——它们改出来的结果已经在磁盘上了，
+磁盘上的当前状态比转录里的历史版本更可信。
+
+**失败的工具结果拿到 5 倍额度**（2000 字符 vs 成功的 400），并用 `!!` 而不是
+`->` 标记。成功的输出是过程，失败的输出是下一个会话会重踩的坑：报错里有路径、
+有行号、有「为什么不行」。MCP 工具名是 `server/tool` 两段式——两个服务器上的
+同名工具否则无法区分。
 
 harness 注入的样板不会被当成用户原话：斜杠命令回显、后台任务通知、plugin
 清单都以 `user` 身份出现在转录里，实测一份转录里 `<command-name>` 有 28 次而

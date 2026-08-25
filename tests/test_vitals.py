@@ -1360,3 +1360,183 @@ def test_cached_scan_is_thread_safe(tmp_path):
     assert len(v._cache) <= v._CACHE_MAX, "缓存越过了上限"
     assert {r.session_id for r in rows} == {f"s{i}" for i in range(60)}
     clear_cache()
+
+
+# --- 报错原文 ---------------------------------------------------------------
+# 原版只数个数，于是交接文档写着「工具错误 10 次」——这条信息没有行动价值。
+# 新会话不知道错在哪、试过什么，于是按同样的方式再错一遍。
+
+
+def test_claude_error_text_is_captured(tmp_path):
+    fp = tmp_path / "e1.jsonl"
+    _write_jsonl(fp, [
+        {"type": "system", "sessionId": "e1", "cwd": "/p"},
+        {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "is_error": True,
+             "content": "Error: ENOENT: no such file or directory, open 'missing.toml'"},
+        ]}},
+    ])
+    row = scan_one("Claude Code", fp)
+    assert row.errors == 1
+    assert len(row.errors_text) == 1
+    assert "ENOENT" in row.errors_text[0]
+    assert "missing.toml" in row.errors_text[0]
+
+
+def test_codex_mcp_iserror_is_counted_and_quoted(tmp_path):
+    """Codex 的 MCP 工具自己报错：`result.Ok.isError` 为真。
+
+    实测结构取自本机 rollout：正文在 `result.Ok.content[]`，
+    工具名在 `payload.invocation.{server,tool}`。
+    """
+    fp = tmp_path / "rollout-2026-08-25T00-00-00-e2.jsonl"
+    _write_jsonl(fp, [
+        {"type": "session_meta", "payload": {"session_id": "e2", "cwd": "/p"}},
+        {"type": "event_msg", "payload": {
+            "type": "mcp_tool_call_end", "call_id": "m1",
+            "invocation": {"server": "context-mode", "tool": "ctx_execute_file"},
+            "result": {"Ok": {"isError": True, "content": [
+                {"type": "text", "text": "File access blocked: resolves outside the project root"},
+            ]}}}},
+    ])
+    row = scan_one("Codex", fp)
+    assert row.errors == 1, "MCP 工具报错没有被计数"
+    assert len(row.errors_text) == 1
+    got = row.errors_text[0]
+    assert "context-mode/ctx_execute_file" in got, f"工具名没带上：{got}"
+    assert "File access blocked" in got
+
+
+def test_codex_mcp_call_failure_is_counted(tmp_path):
+    """`result.Err` 是调用本身失败（服务器没起来、超时），比工具报错更严重。
+
+    这条曾经一次都不计数：预筛只认 `is_error` / `isError` 两个标记。实测最近
+    10 份 rollout 里按结构判定 64 条错误，`isError` 命中 50 条、`Err` 命中
+    14 条——缺后者等于把「MCP 整个连不上」这类失败全部漏掉。
+    """
+    fp = tmp_path / "rollout-2026-08-25T01-00-00-e3.jsonl"
+    _write_jsonl(fp, [
+        {"type": "session_meta", "payload": {"session_id": "e3", "cwd": "/p"}},
+        {"type": "event_msg", "payload": {
+            "type": "mcp_tool_call_end", "call_id": "m2",
+            "invocation": {"server": "context-mode", "tool": "ctx_search"},
+            "result": {"Err": "tool call failed: timed out awaiting response"}}},
+    ])
+    row = scan_one("Codex", fp)
+    assert row.errors == 1, "result.Err 没有被计数"
+    assert "timed out" in row.errors_text[0]
+    assert "context-mode/ctx_search" in row.errors_text[0]
+
+
+def test_error_text_keeps_only_the_last_few(tmp_path):
+    """只留最后几条：早期错误往往已经被修掉了，最后几条才是还没解决的。"""
+    from agent_handoff.core.vitals import _ERR_KEEP
+
+    rows = [{"type": "system", "sessionId": "e4", "cwd": "/p"}]
+    for i in range(_ERR_KEEP + 5):
+        rows.append({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": f"t{i}", "is_error": True,
+             "content": f"failure number {i}"},
+        ]}})
+    fp = tmp_path / "e4.jsonl"
+    _write_jsonl(fp, rows)
+    row = scan_one("Claude Code", fp)
+    assert row.errors == _ERR_KEEP + 5, "个数要全数"
+    assert len(row.errors_text) == _ERR_KEEP, "原文只留最后几条"
+    assert f"number {_ERR_KEEP + 4}" in row.errors_text[-1], "留下的不是最后几条"
+
+
+def test_error_text_never_falls_back_to_raw_json(tmp_path):
+    """取不到正文就留空，不塞整行 JSON。
+
+    那一行里有 call_id、时间戳、转义后的嵌套引号，读者从里面读不出「哪里错了」，
+    而它会把额度全占掉。
+    """
+    fp = tmp_path / "e5.jsonl"
+    _write_jsonl(fp, [
+        {"type": "system", "sessionId": "e5", "cwd": "/p"},
+        # 有标记但没有任何可取的正文
+        {"type": "event_msg", "payload": {
+            "type": "mcp_tool_call_end", "call_id": "m3",
+            "result": {"Ok": {"isError": True, "content": []}}}},
+    ])
+    row = scan_one("Claude Code", fp)
+    assert row.errors == 1
+    assert row.errors_text == [], "退回了原始 JSON"
+
+
+def test_non_deep_scan_skips_error_text(tmp_path):
+    """非 deep 是「只要个数」的快速模式，不该付解析正文的代价。"""
+    fp = tmp_path / "e6.jsonl"
+    _write_jsonl(fp, [
+        {"type": "system", "sessionId": "e6", "cwd": "/p"},
+        {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "is_error": True,
+             "content": "boom"},
+        ]}},
+    ])
+    row = scan_one("Claude Code", fp, deep=False)
+    assert row.errors == 1, "个数在非 deep 下仍然要有"
+    assert row.errors_text == []
+
+
+# --- 逐轮运行配置 -----------------------------------------------------------
+# model / approval / sandbox / cwd 是**逐轮**的（turn_context），不在
+# session_meta 里。只读 session_meta 的后果是这几项永远为空。
+
+
+def test_codex_turn_context_last_one_wins(tmp_path):
+    """同一份 rollout 里模型换过是常态；交接要交代「停下来时」的配置。"""
+    fp = tmp_path / "rollout-2026-08-25T02-00-00-tc.jsonl"
+    _write_jsonl(fp, [
+        {"type": "session_meta", "payload": {"session_id": "tc", "cwd": "/p"}},
+        {"type": "turn_context", "payload": {
+            "model": "gpt-5-codex", "effort": "medium", "approval_policy": "on-request",
+            "sandbox_policy": {"mode": "workspace-write"}}},
+        {"type": "turn_context", "payload": {
+            "model": "gpt-5-codex-mini", "effort": "high", "approval_policy": "never",
+            "sandbox_policy": {"mode": "read-only"}}},
+    ])
+    row = scan_one("Codex", fp)
+    tc = row.turn_context
+    assert tc.get("model") == "gpt-5-codex-mini", f"取的不是最后一条：{tc}"
+    assert tc.get("approval") == "never"
+    assert tc.get("sandbox") == "read-only", "对象形态的 sandbox_policy 没取出 mode"
+    assert tc.get("effort") == "high"
+
+
+def test_turn_context_partial_records_do_not_erase_earlier_values(tmp_path):
+    """某一轮只写了部分字段时，不能把已有的值抹成空。"""
+    fp = tmp_path / "rollout-2026-08-25T03-00-00-tp.jsonl"
+    _write_jsonl(fp, [
+        {"type": "session_meta", "payload": {"session_id": "tp", "cwd": "/p"}},
+        {"type": "turn_context", "payload": {"model": "gpt-5-codex", "approval_policy": "never"}},
+        {"type": "turn_context", "payload": {"effort": "xhigh"}},
+    ])
+    tc = scan_one("Codex", fp).turn_context
+    assert tc.get("model") == "gpt-5-codex", "被后一条部分记录抹掉了"
+    assert tc.get("effort") == "xhigh"
+
+
+def test_claude_has_no_turn_context(tmp_path):
+    """Claude 不写这种记录，留空而不是编一个。"""
+    fp = tmp_path / "tc2.jsonl"
+    _write_jsonl(fp, [{"type": "system", "sessionId": "tc2", "cwd": "/p"}])
+    assert scan_one("Claude Code", fp).turn_context == {}
+
+
+def test_new_fields_are_json_serialisable(tmp_path):
+    """`to_dict` 要能直接进 JSON——网页界面靠它。"""
+    fp = tmp_path / "rollout-2026-08-25T04-00-00-js.jsonl"
+    _write_jsonl(fp, [
+        {"type": "session_meta", "payload": {"session_id": "js", "cwd": "/p"}},
+        {"type": "turn_context", "payload": {"model": "m1"}},
+        {"type": "event_msg", "payload": {
+            "type": "mcp_tool_call_end", "call_id": "m1",
+            "invocation": {"server": "s", "tool": "t"},
+            "result": {"Err": "nope"}}},
+    ])
+    d = scan_one("Codex", fp).to_dict()
+    json.dumps(d)  # 不抛异常即通过
+    assert d["turn_context"] == {"model": "m1"}
+    assert len(d["errors_text"]) == 1

@@ -20,7 +20,7 @@ import json
 import os
 import re
 import threading
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -152,7 +152,41 @@ _DIGEST_PREAMBLE = re.compile(
 )
 
 # 单遍扫描时用的廉价预筛：先做子串判断，命中了才付正则的代价。
-_ERR_MARKS = ('"is_error":true', '"isError":true')
+#
+# 三个键，因为两家 APP 的失败记录形状完全不同：
+#   · Claude：tool_result 块上的 `is_error`
+#   · Codex MCP 成功调用但工具自己报错：`result.Ok.isError`
+#   · Codex MCP 调用本身失败（服务器没起来、超时）：`result.Err`
+# 实测最近 10 份 rollout：按结构判定 64 条错误，`isError` 命中 50 条、
+# `Err` 命中 14 条——两者相加正好 64，一条不漏也不重。缺 `Err` 那条的后果是
+# 「MCP 服务器整个连不上」这类最严重的失败一次都不计数。
+#
+# 每个键给紧凑与带空格两种写法。**实测本机的转录全是紧凑的**（Claude 与 Codex
+# 都用紧凑分隔符），但只认紧凑形态是在赌序列化细节永远不变——而 `json.dumps`
+# 的默认输出恰恰是带空格的，任何一次上游改写工具链就会让整列错误静默归零。
+# 多几次子串查找的代价可以忽略，漏计一整类失败的代价不行。
+#
+# 不用宽松匹配（只找键名）：`is_error` 在真实转录里出现 155 次，而
+# `"is_error":true` 只有 13 次——多出来的都是人和模型在**讨论**这个字段
+# （代码片段、日志摘录）。宽松匹配等于把 JSON 解析次数放大十倍，
+# 而预筛存在的全部理由就是避免这个。
+_ERR_MARKS = (
+    '"is_error":true', '"is_error": true',
+    '"isError":true', '"isError": true',
+    '"result":{"Err"', '"result": {"Err"',
+)
+
+# 保留几条错误原文，每条多长。
+#
+# 为什么要留原文：原版只数个数（`errors` 计数），于是交接文档里写着「工具错误
+# 10 次」——这条信息没有任何行动价值。新会话不知道错在哪、也不知道试过什么，
+# 于是按同样的方式再错一遍。而报错原文里有路径、有行号、有「为什么不行」，
+# 那正是「已经排除的方案」这类最贵的上下文。
+#
+# 只留最后 3 条：早期的错误往往已经被修掉了（会话继续下去就是在修它），
+# 而**最后几条是还没解决的**——那才是交给下一个会话的东西。
+_ERR_KEEP = 3
+_ERR_CHARS = 600
 
 # 上下文占用与压缩事件的预筛标记。两家的写法完全不同：
 #   · Claude Code：assistant 消息里的 `message.usage`，字段
@@ -169,6 +203,16 @@ _ERR_MARKS = ('"is_error":true', '"isError":true')
 # Codex 是 `type:"compacted"` 记录。
 _USAGE_MARKS = ('"usage"', '"token_count"')
 _COMPACT_MARKS = ('"compact_boundary"', '"compacted"')
+# 逐轮上下文的预筛。
+#
+# 为什么需要它：Codex 的 model / approval_policy / sandbox_policy / cwd **是逐轮
+# 的**（写在 `turn_context` 记录里），不在 `session_meta` 里。只读 session_meta
+# 的后果是这几项永远为空——而「上一个会话用的是哪个模型、在什么沙箱策略下跑」
+# 恰恰决定了新会话能不能重现它的结果。同一份 rollout 里模型换过是常态
+# （/model 切换、供应商降级）。
+#
+# 取**最后一条**而不是第一条：交接要交代的是「停下来时是什么状态」。
+_TURNCTX_MARK = '"turn_context"'
 
 
 def _looks_pathy(raw: str) -> bool:
@@ -360,6 +404,14 @@ class SessionRow:
     digest: str = ""       # Codex 的 compacted 摘要：模型自己写的交接记录
     digest_windows: int = 0  # 摘要由几个压缩窗口拼成；0 表示这份转录没有压缩过
     asks: list[str] = field(default_factory=list)  # 用户原话，逐字保留
+    # 最近几条工具报错的原文。个数（`errors`）回答「出过多少次事」，
+    # 原文回答「错在哪、试过什么不行」——后者才是下一个会话能用上的。
+    errors_text: list[str] = field(default_factory=list)
+    # 会话**停下来时**的模型与策略（Codex 的最后一条 `turn_context`）。
+    # 这几项是逐轮的，不在 session_meta 里——同一份 rollout 里模型换过是常态
+    # （/model 切换、供应商降级）。新会话要重现上一个会话的结果，得知道它
+    # 当时在什么配置下跑。Claude 侧不写这种记录，为空。
+    turn_context: dict[str, str] = field(default_factory=dict)
     is_subagent: bool = False
     repos: list[str] = field(default_factory=list)
     # 这份转录是 Codex 压缩归档的（`.jsonl.zst`，7 天后自动压缩），而本机没有
@@ -516,6 +568,11 @@ class SessionRow:
             "digest": self.digest,
             "digest_windows": self.digest_windows,
             "asks": self.asks,
+            # 报错原文。个数已经在 `errors` 里，这里是「错在哪」——
+            # 交接文档据此告诉新会话哪些路已经走不通。
+            "errors_text": self.errors_text,
+            # 停下来时的模型与策略。逐轮字段，不在 session_meta 里。
+            "turn_context": self.turn_context,
             "label": self.label,
             "resume_cmd": self.resume_cmd,
             "deep_link": self.deep_link,
@@ -918,6 +975,175 @@ def _is_subagent(fp: Path) -> bool:
     return "subagents" in parts or fp.name.lower().startswith("agent-")
 
 
+class _TurnContextCollector:
+    """收集最后一条 `turn_context`——会话停下来时的模型与策略。
+
+    独立于 `_Extractor` 是因为两者的位置相反：身份在文件开头（拿到就能早停），
+    而「停下来时是什么状态」只能在读完之后才知道，所以这个采集器不能早停。
+    照 `_DigestCollector` 的做法先做子串预筛，命中了才付 json.loads 的代价。
+
+    只有 Codex 写这种记录；Claude 侧留空，由界面自己决定不显示。
+    """
+
+    __slots__ = ("model", "approval", "sandbox", "effort", "cwd")
+
+    def __init__(self) -> None:
+        self.model = ""
+        self.approval = ""
+        self.sandbox = ""
+        self.effort = ""
+        self.cwd = ""
+
+    def feed(self, raw: str) -> None:
+        if _TURNCTX_MARK not in raw:
+            return
+        try:
+            d = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return
+        if not isinstance(d, dict) or d.get("type") != "turn_context":
+            return
+        p = d.get("payload")
+        if not isinstance(p, dict):
+            return
+        # 每条都覆盖：循环走完之后留下的就是最后一条。
+        # 空值不覆盖已有值——某一轮可能只写了部分字段。
+        for attr, key in (
+            ("model", "model"),
+            ("approval", "approval_policy"),
+            ("sandbox", "sandbox_policy"),
+            ("effort", "effort"),
+            ("cwd", "cwd"),
+        ):
+            val = p.get(key)
+            if isinstance(val, str) and val.strip():
+                setattr(self, attr, val.strip())
+            elif isinstance(val, dict):
+                # sandbox_policy 有时是个对象（`{"mode": "workspace-write", …}`）。
+                # 取里面最像名字的那个字段，取不到就跳过——不把整个 JSON 塞进去。
+                for k in ("mode", "type", "name", "policy"):
+                    inner = val.get(k)
+                    if isinstance(inner, str) and inner.strip():
+                        setattr(self, attr, inner.strip())
+                        break
+
+    def as_dict(self) -> dict[str, str]:
+        """只给有值的字段。空字段留在 dict 里会让界面显示一排「—」。"""
+        out = {}
+        for key in ("model", "approval", "sandbox", "effort", "cwd"):
+            val = getattr(self, key)
+            if val:
+                out[key] = val
+        return out
+
+
+def _error_text(raw: str) -> str:
+    """从一条失败记录里取出报错正文，并尽量带上是哪个工具失败的。
+
+    三种结构（都是实测的，不是照文档猜）：
+      · Claude：`message.content[]` 里 `is_error` 为真的 tool_result 块，
+        正文在它的 `content`（字符串或块数组）。
+      · Codex MCP：`payload.result.Ok.isError` 为真，正文在 `result.Ok.content[]`；
+        工具名在 `payload.invocation.{server,tool}`。
+      · Codex MCP 调用本身失败：`payload.result.Err`，那是一个字符串或对象——
+        「服务器没起来 / 超时」这类，比工具自己报错更严重。
+
+    取不到就返回空串，**不退回整行原始 JSON**：那一行里有 call_id、时间戳、
+    转义后的嵌套引号，读者从里面读不出「哪里错了」，而它会把额度全占掉。
+
+    带上工具名的理由：报错正文往往只说「File access blocked」，不说是谁被挡了。
+    新会话看到 `context-mode/ctx_execute_file: File access blocked…` 才知道
+    该换哪个工具，只看正文只能知道「有东西被挡了」。
+    """
+    try:
+        d = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return ""
+    if not isinstance(d, dict):
+        return ""
+
+    def take(val: Any) -> str:
+        if isinstance(val, str):
+            return val
+        if isinstance(val, list):
+            out = []
+            for b in val:
+                if isinstance(b, dict):
+                    t = b.get("text") or b.get("content")
+                    if isinstance(t, str):
+                        out.append(t)
+                elif isinstance(b, str):
+                    out.append(b)
+            return "\n".join(out)
+        if isinstance(val, dict):
+            # `result.Err` 有时是个对象。取里面像消息的字段，不 dump 整个对象。
+            for k in ("message", "error", "reason", "text", "detail"):
+                t = val.get(k)
+                if isinstance(t, str) and t.strip():
+                    return t
+        return ""
+
+    def done(text: str, tool: str = "") -> str:
+        flat = " ".join((text or "").split())
+        if not flat:
+            return ""
+        if tool:
+            flat = f"{tool}: {flat}"
+        return flat[:_ERR_CHARS]
+
+    # Claude：message.content[] 里 is_error 为真的那块。
+    msg = d.get("message")
+    if isinstance(msg, dict):
+        content = msg.get("content")
+        if isinstance(content, list):
+            for b in content:
+                if isinstance(b, dict) and (b.get("is_error") or b.get("isError")):
+                    got = done(take(b.get("content")))
+                    if got:
+                        return got
+
+    pl = d.get("payload")
+    if not isinstance(pl, dict):
+        return ""
+
+    # 工具名：MCP 的两段式在 invocation 里，普通函数调用只有 name。
+    inv = pl.get("invocation")
+    tool = ""
+    if isinstance(inv, dict):
+        server = str(inv.get("server") or "").strip()
+        name = str(inv.get("tool") or inv.get("name") or "").strip()
+        tool = f"{server}/{name}" if server and name else name
+    if not tool:
+        tool = str(pl.get("name") or pl.get("tool") or "").strip()
+
+    # Codex MCP：result.Err（调用失败）优先于 result.Ok.isError（工具自己报错），
+    # 因为前者更严重——工具根本没跑起来。
+    res = pl.get("result")
+    if isinstance(res, dict):
+        if "Err" in res:
+            got = done(take(res["Err"]), tool)
+            if got:
+                return got
+        ok = res.get("Ok")
+        if isinstance(ok, dict) and (ok.get("isError") or ok.get("is_error")):
+            got = done(take(ok.get("content")), tool)
+            if got:
+                return got
+
+    # Codex 普通函数调用：payload.output（字符串或 {content}）。
+    out = pl.get("output")
+    if isinstance(out, dict):
+        got = done(take(out.get("content") or out.get("text") or out.get("output")), tool)
+        if got:
+            return got
+    elif isinstance(out, str):
+        got = done(out, tool)
+        if got:
+            return got
+    got = done(take(pl.get("content")), tool)
+    return got
+
+
 def _session_id_from_name(fp: Path) -> str:
     """从文件名兜底取会话标识，正文读不到时用。
 
@@ -949,9 +1175,14 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
     ident: dict[str, str] = {}
     repos: list[str] = []
     unreadable = False
+    # 最近几条错误原文。用定长环形缓冲（deque with maxlen）而不是无界 list：
+    # 一份转录可能有几百条错误，全留下来会让每个 SessionRow 都拖着几十 KB
+    # 走进缓存——那正是 `_CACHE_MAX` 注释里记过的那笔内存账。
+    err_texts: deque[str] = deque(maxlen=_ERR_KEEP)
     ex = _Extractor(agent) if deep else None
     dg = _DigestCollector() if deep else None
     fl = _FullnessCollector() if deep else None
+    tc = _TurnContextCollector() if deep else None
     try:
         with open_transcript(fp) as fh:
             for raw in fh:
@@ -959,12 +1190,19 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
                     fatal += 1
                 if ABORT_SIG.search(raw):
                     aborted += 1
-                if _ERR_MARKS[0] in raw or _ERR_MARKS[1] in raw:
+                if any(m in raw for m in _ERR_MARKS):
                     errors += 1
+                    if deep:
+                        # 只在 deep 时取原文：非 deep 是「只要个数」的快速模式。
+                        text = _error_text(raw)
+                        if text:
+                            err_texts.append(text)
                 if dg is not None:
                     dg.feed(raw)
                 if fl is not None:
                     fl.feed(raw)
+                if tc is not None:
+                    tc.feed(raw)
                 if ex is not None:
                     ex.feed(raw)
                     if ex.done:
@@ -983,6 +1221,7 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
         ex = None
         dg = None
         fl = None
+        tc = None
         ident, repos = {"session_id": _session_id_from_name(fp)}, []
     except OSError:
         return None
@@ -994,6 +1233,7 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
         ex = None
         dg = None
         fl = None
+        tc = None
         ident, repos = {"session_id": _session_id_from_name(fp)}, []
 
     if not deep and not unreadable:
@@ -1031,6 +1271,8 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
         digest=dg.digest if dg else "",
         digest_windows=len(dg.windows) if dg else 0,
         asks=list(dg.asks) if dg else [],
+        errors_text=list(err_texts),
+        turn_context=tc.as_dict() if tc else {},
         is_subagent=_is_subagent(fp),
         repos=repos,
         compressed_unreadable=unreadable,

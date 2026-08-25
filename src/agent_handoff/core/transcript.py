@@ -41,6 +41,25 @@ USER_CHARS = 12_000
 ASSISTANT_CHARS = 8_000
 TOOL_RESULT_CHARS = 400
 
+# 工具调用的**参数**保留长度。
+#
+# 为什么必须留参数：只留名字等于告诉新会话「上一个会话用过 Edit」，而它真正
+# 需要知道的是「上一个会话编辑了哪个文件」。实测一份转录里 `Edit` 出现 43 次，
+# 不带参数时这 43 行的信息量合起来等于一行。参数才是「做过什么」里的「什么」。
+#
+# 给 200 而不是 400：参数里最有价值的是 `file_path`、`pattern`、`command` 这类
+# 短字段，而占体积的是 Write / Edit 的整块正文——那些内容已经在磁盘上了，
+# 磁盘上的当前状态比转录里的历史版本更可信，没有理由再抄一遍。
+TOOL_ARGS_CHARS = 200
+
+# 失败的工具结果保留长度。**故意比成功的宽 5 倍。**
+#
+# 成功的输出是过程（「找到了」），失败的输出是**下一个会话会重踩的坑**：
+# 报错原文里有路径、有行号、有堆栈。原版只数了错误个数从不引用正文，
+# 于是新会话拿到「上一个会话有 10 个工具错误」这条毫无行动价值的信息，
+# 然后按同样的方式再错一次。
+TOOL_ERROR_CHARS = 2_000
+
 # 整份导出的默认上限。超了从**最早的工具摘要**开始丢，保留首尾——
 # 开头有目标与约束，结尾有当前进度，中间的过程最可丢。
 DEFAULT_MAX_CHARS = 400_000
@@ -241,11 +260,91 @@ def _text_from_blocks(content: Any, want: set[str]) -> str:
     return "\n\n".join(parts)
 
 
-def _tool_line(name: str, result: str) -> str:
-    """一次工具调用压成一行：名字 + 结果摘要。"""
+def _tool_line(name: str, result: str, args: str = "", failed: bool = False) -> str:
+    """一次工具调用压成一行：名字 + 参数 + 结果摘要。
+
+    参数为什么在结果前面：读者扫这一行时先要知道「对什么做的」，再看「结果如何」。
+    `Edit -> ok` 什么都没说；`Edit(src/core/plan.py) -> ok` 才是一条事实。
+
+    `failed` 为真时结果给 `TOOL_ERROR_CHARS` 的额度而不是 `TOOL_RESULT_CHARS`：
+    失败的原文是下一个会话会重踩的坑，成功的输出只是过程。
+    """
     name = (name or "?").strip()[:80]
-    brief = " ".join((result or "").split())[:TOOL_RESULT_CHARS]
-    return f"{name} -> {brief}" if brief else name
+    limit = TOOL_ERROR_CHARS if failed else TOOL_RESULT_CHARS
+    brief = " ".join((result or "").split())[:limit]
+    head = f"{name}({args})" if args else name
+    if not brief:
+        return head
+    # 失败要一眼看出来。不靠颜色（Markdown 里没有），靠一个词。
+    return f"{head} !! {brief}" if failed else f"{head} -> {brief}"
+
+
+def _tool_args(raw: Any) -> str:
+    """把工具入参压成一行可读的摘要。
+
+    只取标量字段，且**按信息价值排序**而不是按 dict 顺序：`file_path` 与
+    `command` 是「对什么做的」，而 `content`、`new_string` 这类整块正文占掉
+    全部额度却几乎没有交接价值——它们改出来的结果已经在磁盘上了，磁盘上的
+    当前状态比转录里的历史版本更可信。
+
+    不做 JSON dump：`{"file_path": "a.py", "old_string": "..."}` 里的引号与
+    大括号会占掉三成额度，而读者要的只是那几个值。
+    """
+    if isinstance(raw, str):
+        return " ".join(raw.split())[:TOOL_ARGS_CHARS]
+    if not isinstance(raw, dict):
+        return ""
+    # 前面的先进。命中的键在不同 APP、不同工具里叫法不一，所以列得宽一些。
+    _PREFERRED = (
+        "file_path", "path", "notebook_path", "command", "pattern", "query",
+        "url", "glob", "cmd", "expression", "language", "subagent_type",
+        "skill", "description", "prompt",
+    )
+    parts: list[str] = []
+    used: set[str] = set()
+
+    def push(key: str, val: Any) -> None:
+        if key in used:
+            return
+        if not isinstance(val, (str, int, float, bool)):
+            return
+        text = " ".join(str(val).split())
+        if not text:
+            return
+        used.add(key)
+        # 单个值也要有上限：一条 300 字符的 `command` 会把整行额度吃光，
+        # 后面的 `file_path` 就进不来了。
+        parts.append(f"{key}={text[:120]}")
+
+    for key in _PREFERRED:
+        if key in raw:
+            push(key, raw[key])
+    for key, val in raw.items():
+        if len(", ".join(parts)) >= TOOL_ARGS_CHARS:
+            break
+        push(str(key), val)
+    out = ", ".join(parts)
+    return out[:TOOL_ARGS_CHARS]
+
+
+def _is_error_result(block: dict, text: str) -> bool:
+    """这条工具结果是失败的吗？
+
+    优先信结构化标记（Claude 的 `is_error`），它是 APP 自己下的判断。没有标记时
+    才看正文开头——**只看开头**：正文里出现 "error" 三个字母的成功输出太多了
+    （grep 结果、日志摘录、代码里的错误处理分支），在整段里搜等于把大半成功
+    结果误判成失败，然后给它们 5 倍额度，把文档撑爆。
+    """
+    for key in ("is_error", "isError"):
+        val = block.get(key)
+        if isinstance(val, bool):
+            return val
+    head = " ".join((text or "").split())[:160].lower()
+    return head.startswith((
+        "error", "error:", "traceback", "exception", "fatal",
+        "permission denied", "command failed", "no such file",
+        "einval", "enoent", "eacces",
+    ))
 
 
 def read_claude_turns(fp: Path) -> list[Turn]:
@@ -256,7 +355,10 @@ def read_claude_turns(fp: Path) -> list[Turn]:
     实测一份 27 行的转录里有 thinking 4、tool_use 6、tool_result 6、text 1。
     """
     turns: list[Turn] = []
-    pending: dict[str, str] = {}   # tool_use_id -> 工具名
+    # tool_use_id -> (工具名, 参数摘要)。参数要跟着 id 走：调用与结果分在两条
+    # 记录里（assistant 发 tool_use，下一条 user 带 tool_result），只有靠 id
+    # 才能把「对什么做的」与「结果如何」拼回同一行。
+    pending: dict[str, tuple[str, str]] = {}
     # 已出现过的用户原话。harness 会把同一个目标每轮重新注入一次——实测一份
     # 转录里同一段 `<codex_internal_context source="goal">` 出现 24 次。
     # 逐条留下来会让导出的对话被同一段话刷满，而它只需要说一次。
@@ -280,11 +382,14 @@ def read_claude_turns(fp: Path) -> list[Turn]:
             if isinstance(content, list):
                 for b in content:
                     if isinstance(b, dict) and b.get("type") == "tool_result":
-                        name = pending.pop(str(b.get("tool_use_id") or ""), "tool")
+                        name, args = pending.pop(str(b.get("tool_use_id") or ""), ("tool", ""))
                         raw = b.get("content")
                         if isinstance(raw, list):
                             raw = _text_from_blocks(raw, {"text"})
-                        results.append(_tool_line(name, str(raw or "")))
+                        text = str(raw or "")
+                        results.append(
+                            _tool_line(name, text, args, failed=_is_error_result(b, text))
+                        )
             # 样板轮丢掉：`user` 角色在转录里是个信道而不是一个人，斜杠命令回显、
             # 后台任务通知、plugin 清单都以它的身份出现。实测不挡的话，导出的
             # 第一条「用户原话」会是 `<local-command-caveat>Caveat: ...`。
@@ -303,8 +408,9 @@ def read_claude_turns(fp: Path) -> list[Turn]:
                 for b in content:
                     if isinstance(b, dict) and b.get("type") == "tool_use":
                         nm = str(b.get("name") or "tool")
-                        pending[str(b.get("id") or "")] = nm
-                        calls.append(nm)
+                        args = _tool_args(b.get("input"))
+                        pending[str(b.get("id") or "")] = (nm, args)
+                        calls.append(f"{nm}({args})" if args else nm)
             # Claude 的 thinking 是独立 block（上面已经不取），但正文里也可能
             # 内嵌 `<thinking>` 标签，所以这里同样剥一遍。
             said = strip_thinking(said)
@@ -323,6 +429,9 @@ def read_codex_turns(fp: Path) -> list[Turn]:
     才是对话本体，`reasoning`/`agent_reasoning` 是不可回放的中间态。
     """
     turns: list[Turn] = []
+    # call_id -> (工具名, 参数摘要)。与 Claude 侧同理：`function_call_output`
+    # 记录里没有工具名，只有 call_id。
+    pending: dict[str, tuple[str, str]] = {}
     # 同一段目标被每轮重新注入：实测一份 rollout 里重复 24 次。
     seen_user: set[str] = set()
     # 助手发言的去重。**Codex 把同一条发言同时写进 `message` 与 `agent_message`
@@ -330,14 +439,25 @@ def read_codex_turns(fp: Path) -> list[Turn]:
     # 而导出后 `**助手：**` 出现 737 次、实际内容只有约 368 条，每条整整重复一次。
     # 不去重的后果是导出体积翻倍，而新会话读到同一段叙述两遍，会以为那是两次
     # 独立的判断。
-    seen_asst: set[str] = set()
+    seen_asst: set[tuple[int, int]] = set()
 
     def take_assistant(text: str) -> None:
         """收一条助手发言，重复的丢掉。"""
         body = strip_thinking(text)
         if not body:
             return
-        key = " ".join(body.split())[:400]
+        # 去重键必须覆盖整条正文，不能只取开头。
+        #
+        # 原版取前 400 个归一化字符。Codex 的双写确实是**逐字**重复，400 字符
+        # 足够识别；但代价是**开头相同的不同长消息会被静默丢掉**——而助手发言
+        # 恰恰常以同一句话起头（「好的，我先看一下…」「已完成。」后面接完全
+        # 不同的内容）。丢掉的是结论，而结论是这份文档最不能丢的东西。
+        #
+        # 用长度 + 完整正文的哈希：逐字重复照样命中，开头相同但内容不同的
+        # 一定不命中。哈希而不是存原文，是因为 seen 集合要跟着整份转录走，
+        # 存原文等于把所有助手发言在内存里留两份。
+        norm = " ".join(body.split())
+        key = (len(norm), hash(norm))
         if key in seen_asst:
             return
         seen_asst.add(key)
@@ -379,14 +499,47 @@ def read_codex_turns(fp: Path) -> list[Turn]:
             src = str(pl.get("source") or pl.get("reason") or "").strip()
             turns.append(Turn("compact", text=src))
         elif ptype in ("function_call", "custom_tool_call", "mcp_tool_call_begin"):
-            nm = str(pl.get("name") or pl.get("tool") or "tool")
-            turns.append(Turn("call", tools=[nm]))
+            nm = _codex_tool_name(pl)
+            args = _tool_args(pl.get("arguments") or pl.get("input") or pl.get("args"))
+            # 名字要记住：`function_call_output` 那条记录里**没有**工具名，
+            # 原版因此把结果一律写成 `output`，MCP 工具名整个丢掉。Codex 的
+            # call 与 output 靠 `call_id` 配对，跟 Claude 的 tool_use_id 同理。
+            call_id = str(pl.get("call_id") or pl.get("id") or "")
+            if call_id:
+                pending[call_id] = (nm, args)
+            turns.append(Turn("call", tools=[f"{nm}({args})" if args else nm]))
         elif ptype in ("function_call_output", "mcp_tool_call_end"):
             out = pl.get("output")
             if isinstance(out, dict):
-                out = out.get("content") or out.get("text") or ""
-            turns.append(Turn("tool", tools=[_tool_line("output", str(out or ""))]))
+                # 失败标记也在这一层。取正文之前先记下来，取完就没了。
+                out_err = out.get("success") is False or bool(out.get("is_error"))
+                out = out.get("content") or out.get("text") or out.get("output") or ""
+            else:
+                out_err = False
+            text = str(out or "")
+            call_id = str(pl.get("call_id") or pl.get("id") or "")
+            name, args = pending.pop(call_id, ("", ""))
+            if not name:
+                # 配不上对（call 记录缺失、或者 id 字段换过名字）时仍然要有个
+                # 名字。写 `output` 是原版的做法，至少别把它当成真实工具名。
+                name = "output"
+            failed = out_err or _is_error_result(pl, text)
+            turns.append(Turn("tool", tools=[_tool_line(name, text, args, failed=failed)]))
     return turns
+
+
+def _codex_tool_name(pl: dict) -> str:
+    """从一条 Codex 调用记录里取出工具名。
+
+    四种写法都见过：`name`（function_call）、`tool`（custom_tool_call）、
+    以及 MCP 的 `server` + `tool` 两段式。MCP 那种要拼起来——只留 `tool`
+    会让两个服务器上同名的工具在文档里无法区分。
+    """
+    server = str(pl.get("server") or "").strip()
+    tool = str(pl.get("tool") or pl.get("name") or "").strip()
+    if server and tool:
+        return f"{server}/{tool}"[:80]
+    return (tool or "tool")[:80]
 
 
 def _lines(fp: Path):
@@ -571,16 +724,26 @@ def render_markdown(
         parts = head + [x for x in body if x is not None]
         return nl.join(parts).rstrip() + nl
 
-    out = joined()
-    # 超限：从最早的工具块开始丢（最老的过程最不需要），每丢一个重算。
+    # 超限：从最早的工具块开始丢（最老的过程最不需要）。
+    #
+    # 不能每丢一个就 `joined()` 重算一次全文。那是 O(工具块数 × 全文长度)——
+    # 实测一份 rollout 里 function_call 与其输出占 6746 行，合并后仍有几百个
+    # 工具块，而全文几十万字符：一次导出要重建全文几百遍。这是这个模块最大
+    # 的耗时点，且转录越大越糟。
+    #
+    # 改成按长度记账：先算出总长，再逐个减去要丢的块长度（外加它自己那个
+    # 换行符）。只有确定要丢哪些之后才拼一次。
+    per = [0 if x is None else len(x) for x in body]
+    total = len(nl.join(head)) + sum(per) + len(body) + 1  # 每块后一个 nl，末尾一个
     dropped = 0
     for i in tool_idx:
-        if len(out) <= max_chars:
+        if total <= max_chars:
             break
         if body[i] is not None:
+            total -= per[i] + len(nl)
             body[i] = None
             dropped += 1
-            out = joined()
+    out = joined()
     if dropped:
         out += nl + "> " + tr.t("md.dropped_tools", count=dropped) + nl
 

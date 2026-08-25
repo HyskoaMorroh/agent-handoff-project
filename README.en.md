@@ -3,9 +3,9 @@
 <p align="center"><b>When a session dies, move the progress out of the chat and into the repository</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="version" src="https://img.shields.io/badge/version-2.4.0-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="version" src="https://img.shields.io/badge/version-2.5.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="tests" src="https://img.shields.io/badge/tests-681%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="tests" src="https://img.shields.io/badge/tests-704%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -693,11 +693,26 @@ answering one question:
 
 `session.md` is **tiered**, not everything and not just a digest: user asks and
 assistant conclusions go in verbatim, tool calls collapse to one line each
-(`name -> result summary`), thinking / reasoning is left out. The split follows
+(`name(args) -> result summary`), thinking / reasoning is left out. The split follows
 measured volume — in one 13452-line Codex rollout, `function_call` plus its output
 took 6746 lines (50%) while actual conversation messages were 1614. Measured
 compression: a 30 MB Claude transcript → 95 KB, a 90 MB Codex one → 959 KB.
 Over the limit, the earliest tool summaries go first and the drop is stated.
+
+**Arguments are kept, because a tool name alone carries no information.** Keeping
+only the name tells the next session "the last one used Edit"; what it needs to
+know is *which file was edited* — `Edit` appears 43 times in one measured
+transcript, and without arguments those 43 lines together say as much as one.
+Arguments are picked by information value, not dict order: `file_path`,
+`command` and `pattern` answer "done to what" and go in first; bulk bodies like
+`content` and `new_string` go last — whatever they produced is already on disk,
+and the current file is more trustworthy than a historical copy in a transcript.
+
+**Failed tool results get 5× the room** (2000 chars vs 400 for success) and are
+marked with `!!` instead of `->`. A successful output is process; a failed one is
+the wall the next session is about to walk into — it carries the path, the line
+number, and the reason. MCP tools are named `server/tool`, since two servers can
+otherwise expose indistinguishable tool names.
 
 Harness boilerplate is not mistaken for what the user said: slash-command echoes,
 background task notices and plugin listings all appear under the `user` role — in

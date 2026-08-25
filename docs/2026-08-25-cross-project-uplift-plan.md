@@ -1,8 +1,8 @@
 # 会话接续无损化：六项目对比分析与提升方案
 
 - 文档日期：2026-08-25
-- 状态：**P1 已实施并验证**；P2–P6 待确认
-- 适用版本基线：agent-handoff 2.3.0 → 本次发布 2.4.0
+- 状态：**P1、P3 已实施并验证**；P2、P4–P6 待确认
+- 适用版本基线：agent-handoff 2.3.0 → 2.4.0（P1）→ 2.5.0（P3）
 
 ## 0. 调研方法与证据边界
 
@@ -149,6 +149,8 @@ rel = (rel_root / fn).as_posix().lstrip("./")
 
 ## 4. 保真度落差：handoff 文档里没有对话
 
+> **P3 已实施（2.5.0）**：本节 4.2 表格里标注「已修」的项目已经落地，实测数据见 §8 的 P3 实施记录。仍未修的项目在 §8 末尾单列。
+
 这是与项目定位差距最大的一处。`core/transcript.py` 有完整的对话渲染能力（`read_turns:416`、`render_markdown:490`），但它的输出**只流向导出包 `session.md`（`portable.py:370`）和 GUI 预览（`gui/server.py:464`），从未进入 `build_handoff`（`report.py:458`）**。
 
 ### 4.1 当前 handoff 文档实际包含什么
@@ -175,17 +177,17 @@ rel = (rel_root / fn).as_posix().lstrip("./")
 
 | 丢失内容 | 位置 | 严重度 |
 | --- | --- | --- |
-| 工具调用**参数**（只留名字） | `transcript.py:306` | 高 —— 下一会话无法知道上一会话对哪些文件做了什么 |
-| 工具结果截至 400 字符 | `TOOL_RESULT_CHARS:42` | 高，且**无降级标签** |
-| MCP 工具名丢失，硬编码为 `"output"` | `transcript.py:388` | 中 |
-| 错误/堆栈正文：只计数从不引用 | `vitals.py` fatal/errors/aborted | 高 —— 下一会话会重踩同一错误 |
-| thinking/reasoning 主动丢弃 | `:299`、`strip_thinking:134` | 中 —— **被否决的方案随之消失，下一会话重新论证死路** |
-| 逐轮时间戳从不读取 | 全仓 | 中 —— 只有文件 mtime |
-| 文件 diff、图片、hook 输出、slash 命令上下文 | `_BOILERPLATE_TAGS:72` 过滤 | 中 |
-| Codex `developer` 角色消息跳过 | `:372` | 低 |
-| 连续工具轮次被合并 → 顺序失真 | `merge_tool_runs:432` | 中 |
-| assistant 去重键只取前 400 归一化字符 | `:340` | **高 —— 长消息前缀相同即被静默丢弃** |
-| Claude 无压缩摘要正文提取（只有次数） | `vitals.py` | 高 —— Claude 会话整体丢失摘要 |
+| 工具调用**参数**（只留名字） | `transcript.py:306` | 高 —— **P3 已修**：按信息价值排序取标量字段，200 字符封顶 |
+| 工具结果截至 400 字符 | `TOOL_RESULT_CHARS:42` | 高 —— **P3 部分修**：失败结果提到 2000 字符并加 `!!` 标记；成功仍是 400（那是过程，刻意保留） |
+| MCP 工具名丢失，硬编码为 `"output"` | `transcript.py:388` | 中 —— **P3 已修**：按 `call_id` 配对恢复，MCP 用 `server/tool` 两段式 |
+| 错误/堆栈正文：只计数从不引用 | `vitals.py` fatal/errors/aborted | 高 —— **P3 已修**：保留最后 3 条原文各 600 字符，带工具名；并补上此前完全漏计的 `result.Err` |
+| thinking/reasoning 主动丢弃 | `:299`、`strip_thinking:134` | 中 —— **不修**：无签名不可回放，带过去只占上下文。这是经过论证的取舍 |
+| 逐轮时间戳从不读取 | 全仓 | 中 —— **未修**，留待 P5（只有时间线画布用得上） |
+| 文件 diff、图片、hook 输出、slash 命令上下文 | `_BOILERPLATE_TAGS:72` 过滤 | 中 —— **未修**，diff 属 P6 的内容寻址快照 |
+| Codex `developer` 角色消息跳过 | `:372` | 低 —— **不修**：那是系统注入的指令，不是人说的话 |
+| 连续工具轮次被合并 → 顺序失真 | `merge_tool_runs:432` | 中 —— **不修**：带上参数后单行已有足够信息量，合并反而更易读 |
+| assistant 去重键只取前 400 归一化字符 | `:340` | **高 —— P3 已修**：改为 `(长度, 全文哈希)`，逐字重复照样压掉，前缀相同的不同结论不再丢 |
+| Claude 无压缩摘要正文提取（只有次数） | `vitals.py` | 高 —— **未修**，留待 P6 |
 
 ### 4.3 对照项目的保真取舍
 
@@ -321,7 +323,7 @@ GitHub 调研明确：**无人做"工作树 diff 快照与 transcript 偏移绑�
 | --- | --- | --- | --- |
 | **P1（已完成）** | D1 Codex `total_tokens`、D2 `.jsonl.zst` 发现与解压、D4 点文件前缀、D6 LRU 加锁、D5 原子写、符号链接守卫、`CODEX_SESSIONS_ROOT`、`unknown` 区间 | 低 | 已完成，见下 |
 | P2 | §6.1 评分可解释 + 数字来源标注；§6.3 doctor 命令 | 低 | 新增测试 + i18n 三语补齐 |
-| P3 | §4 保真度：工具调用参数、错误正文、MCP 工具名、逐轮时间戳、显式降级标签、`turn_context` 最新值 | **中** | 保真度专项测试 + 人工核对样本 |
+| **P3（已完成）** | §4 保真度：工具调用参数、错误正文、MCP 工具名、显式降级标签、`turn_context` 最新值、去重键、O(n²) | 中 | 已完成，见下 |
 | P4 | §7.1 设计令牌、§7.2 可访问性 | 低 | `test_i18n.py` 既有门禁 + 新增 a11y 断言 |
 | P5 | §7.3 时间线画布、§7.4 保真分层 | 中 | 新增前端测试（当前完全缺失） |
 | P6 | §6.2 持久化索引、§5.4 内容寻址快照、§5.5 格式版本化 | 中 | 索引损坏/降级路径测试 |
@@ -380,6 +382,57 @@ GitHub 调研明确：**无人做"工作树 diff 快照与 transcript 偏移绑�
 - `evidence.py:270-288` `_python_scan` whole-file 无大小上限。
 - 阈值仍硬编码（只有分母可配）：P2 连同评分可解释一起做。
 - 静默 swallow 五处：逐个需要判断该不该出声，P2 随可观测性一起处理。
+
+### P3 实施记录（2026-08-25，已发布为 2.5.0）
+
+针对 §4 的保真度落差。改动的源文件：
+
+| 文件 | 改动 |
+| --- | --- |
+| `core/transcript.py` | 新增 `TOOL_ARGS_CHARS=200`、`TOOL_ERROR_CHARS=2000`、`_tool_args()`、`_is_error_result()`、`_codex_tool_name()`；`_tool_line()` 增 `args`/`failed` 参数；两侧 `pending` 由 `dict[str,str]` 改为 `dict[str,tuple[str,str]]` 以携带参数；Codex 侧按 `call_id` 配对恢复工具名；`take_assistant` 去重键改为 `(len, hash(全文))`；`render_markdown` 的裁剪循环改为长度记账 |
+| `core/vitals.py` | `_ERR_MARKS` 从 2 键扩到 6 键（补 `result.Err` 与带空格写法）；新增 `_ERR_KEEP=3`/`_ERR_CHARS=600`/`_error_text()`/`_TurnContextCollector`/`_TURNCTX_MARK`；`SessionRow` 增 `errors_text`、`turn_context` 两字段并进 `to_dict()`；`scan_one` 用 `deque(maxlen=3)` 收错误原文 |
+| `core/report.py` | 会话小节新增「报错原文」与「停下来时的运行配置」两块 |
+| `i18n/*.json` | 三语各新增 2 键：`doc.sessions.errors`、`doc.sessions.turn_context` |
+| `tests/test_transcript.py` | 新增 14 例：参数保留 3、失败标记与额度 2、Codex 工具名与配对 4、去重 2、裁剪复杂度 2、丢弃告知 1 |
+| `tests/test_vitals.py` | 新增 9 例：报错原文 6、`turn_context` 3 |
+| `CHANGELOG.md` | 新增 `[2.5.0] - 2026-08-25` |
+| `pyproject.toml`、`__init__.py`、三份 README | 2.4.0 → 2.5.0；测试徽章 681 → 704 |
+| 三份 README | 分级带小节补参数保留、失败额度、MCP 两段式命名 |
+| `docs/guide.html` + 打包副本 | 重新生成（两份哈希一致，`v2.5.0`） |
+
+验证结果：
+
+- `python -m pytest`：**704 passed, 3 skipped**（P1 后是 681；新增 23 例）
+- `python scripts/check_i18n.py`：3 languages, 483 keys each — all aligned
+- 版本/徽章门禁：2.5.0 一致；徽章 704 ≥ def 计数 505
+- `python -m compileall src scripts`：exit 0
+- 指南重新生成，`docs/guide.html` 与打包副本哈希一致
+
+**对本机真实转录的实测**（这是 P3 最有说服力的一项）：
+
+| 转录 | 改动前 | 改动后 |
+| --- | --- | --- |
+| 本会话 Claude（2.7 MB） | `errors=16`，原文 0 条 | `errors=16`，原文 3 条（含 `InputValidationError`、`String to replace not found`、pytest 失败摘要） |
+| `rollout-2026-08-24T14-14-14`（Codex） | `errors=12`，原文 0 条 | `errors=17`，原文 3 条，全部带工具名 |
+| `rollout-2026-08-23T03-19-58`（Codex） | `errors=17` | `errors=22`，原文 3 条 |
+
+Codex 侧计数上升 5 条，正是补上 `result.Err`（MCP 调用本身失败）的结果——此前这类失败一次都没被计数。
+
+`turn_context` 在 6 份真实 rollout 上全部成功提取：`{model: gpt-5.6-sol, approval: never, sandbox: danger-full-access, effort: xhigh, cwd: …}`。改动前这几项永远为空。
+
+脱敏实测：报错原文里的 `C:\Users\<名字>\OneDrive\…` 进文档后为 `~\OneDrive\…`，home 路径残留 0 处。
+
+性能实测：1200 对调用+输出（约 110 万字符）裁到 60000 字符上限，481 毫秒。改动前是 O(块数 × 全文长度)。
+
+未验证项与 P1 相同：`ruff` 本机未安装；wheel 装进干净 venv 的 CI 门禁本机跑不了（该 venv 无 pip）。
+
+### P3 之后剩余的已知缺陷
+
+- `transcript.py:258` 轮次全量物化成 list + 去重集合，无上限。O(n²) 已修，但 70MB transcript 的内存峰值仍在。需要改成流式渲染，属 P6 范围。
+- `evidence.py:270-288` `_python_scan` whole-file 读入无大小上限。
+- 阈值仍硬编码（只有分母可配）：P2 连同评分可解释一起做。
+- 静默 swallow 五处：P2 随可观测性一起处理。
+- 逐轮时间戳仍未读取（Codex 的 `RolloutLine.timestamp` 有，Claude 侧待查）——留在 P5 与时间线画布一起做，因为只有画布才用得上它。
 
 ## 9. 依赖决策
 

@@ -3,9 +3,9 @@
 <p align="center"><b>工作階段卡死時，把進度從對話裡搬進儲存庫</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.4.0-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.5.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="測試" src="https://img.shields.io/badge/tests-681%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="測試" src="https://img.shields.io/badge/tests-704%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="執行時依賴" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="授權" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -616,10 +616,22 @@ agent-handoff --import-bundle ~/bundles/myproj-2026-08-23
 | `meta.json` | 同一批資訊的機器可讀版本 |
 
 `session.md` **分級帶**：使用者原話與助手結論按原文進，工具呼叫壓成一行
-「名字 -> 結果摘要」，thinking / reasoning 不進。依據是實測的體積分布——
+「名字(參數) -> 結果摘要」，thinking / reasoning 不進。依據是實測的體積分布——
 一份 13452 行的 Codex rollout 裡 `function_call` 與其輸出佔 6746 行（50%），
 而真正的對話訊息只有 1614 行。實測壓縮比：30 MB 的 Claude 記錄 → 95 KB，
 90 MB 的 Codex → 959 KB。超限時先丟最早的工具摘要再截人話，並明說丟了多少。
+
+**參數會帶上，因為工具名本身沒有資訊量。** 只留名字等於告訴新會話「上一個
+會話用過 Edit」，而它需要知道的是「編輯了哪個檔案」——實測一份記錄裡 `Edit`
+出現 43 次，不帶參數時這 43 行加起來等於一行。參數按資訊價值排序取：
+`file_path` / `command` / `pattern` 這類回答「對什麼做的」，優先進；
+`content` / `new_string` 這類整塊正文最後進——它們改出來的結果已經在磁碟上了，
+磁碟上的當前狀態比記錄裡的歷史版本更可信。
+
+**失敗的工具結果拿到 5 倍額度**（2000 字元 vs 成功的 400），並用 `!!` 而不是
+`->` 標記。成功的輸出是過程，失敗的輸出是下一個會話會重踩的坑：報錯裡有路徑、
+有行號、有「為什麼不行」。MCP 工具名是 `server/tool` 兩段式——兩個伺服器上的
+同名工具否則無法區分。
 
 harness 注入的樣板不會被當成使用者原話：斜線命令回顯、背景工作通知、plugin
 清單都以 `user` 身分出現在記錄裡，實測一份記錄裡 `<command-name>` 有 28 次而
