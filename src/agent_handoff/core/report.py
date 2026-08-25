@@ -396,7 +396,11 @@ def build_prompt(ctx: dict[str, Any], tr: Translator) -> str:
                 "prompt.sessions.item",
                 agent=s.get("agent", ""),
                 topic=(s.get("label") or "").strip()[:120] or "-",
-                mtime=s.get("mtime_text", ""),
+                # 「最后一次真的在动」优先于文件时间：后者会被子代理写入、
+                # 云同步、备份推后，Codex 侧甚至等于会话创建时刻。取不到时
+                # 才退回 mtime——这份提示词里的时间是新会话判断「上一个会话
+                # 停在多久之前」的唯一依据。
+                mtime=s.get("active_at_text") or s.get("mtime_text", ""),
             ))
             a(tr.t("prompt.sessions.path", path=s.get("path", "")))
             if s.get("session_id"):
@@ -680,7 +684,12 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
             a(tr.t("doc.sessions.id", value=s.get("session_id", "") or "-"))
             if s.get("thread_id"):
                 a(tr.t("doc.sessions.thread", value=s["thread_id"]))
-            a(tr.t("doc.sessions.mtime", value=s.get("mtime_text", "")))
+            # 时间取转录里最后一条记录，回落到文件时间时明确标注：文档会被
+            # 另一个会话当事实读，一个来源不明的时间戳会让它误判「多久之前」。
+            stamp = s.get("active_at_text") or s.get("mtime_text", "")
+            if s.get("time_source") and s["time_source"] != "record":
+                stamp = tr.t("doc.sessions.time_approx", value=stamp)
+            a(tr.t("doc.sessions.mtime", value=stamp))
             # 转录来自别的电脑时，下面这些路径在本机全都无效。明说一句，
             # 免得读者（和接续会话的智能体）照着去找文件，找不到才发现不对。
             if s.get("is_foreign"):

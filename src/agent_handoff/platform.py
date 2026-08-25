@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 IS_WINDOWS = os.name == "nt"
@@ -546,6 +547,124 @@ class TranscriptCompressedError(RuntimeError):
     单独一个类型而不是复用 OSError：调用方要区分「文件读不了」（真的坏了）和
     「文件好着但缺解压能力」（装个包就能读），两者给用户的话完全不同。
     """
+
+
+# 从文件尾部往前读多少字节去找最后一条记录的时间戳。
+#
+# 为什么要尾读而不是整份解析：一份转录可以有 79 MB（本机实测最大值），而
+# 「最后活动是什么时候」只需要最后一行。实测本机 63 份 Claude 转录：8 KB
+# 尾读只有 57 份命中，32 KB 全部命中（63/63）；Codex 的 rollout 同样在这个
+# 窗口内稳定命中。取 32 KB 而不是更小，是因为单条记录可以很长——本机实测
+# 单行最大 3.4 MB（一次大文件读取的结果），窗口太小会整窗都落在一行中间。
+TAIL_PROBE_BYTES = 32768
+# 首窗没命中时加倍重试的上限。超过这个量级还找不到时间戳，那份文件的形状
+# 已经不是「JSONL 每行带时间戳」了，继续加倍只是把整个文件读进来。
+TAIL_PROBE_MAX = 524288
+# 顶层时间戳。Claude 写 `"timestamp":"2026-…"`，Codex 的 RolloutLine 信封
+# 同样是顶层 `timestamp` —— 两边同一套取法。
+#
+# 用正则在文本上找而不是逐行 json.loads：尾读窗口的第一行几乎总是残行，
+# json.loads 会在它上面抛异常；而这里要的只是一个 ISO 时间串，找到最后一个
+# 就够。
+#
+# 刻意**不**限定「只认信封层」：有些记录整条没有信封 timestamp，时间只写在
+# 内层（实测 Claude 的 `isSnapshotUpdate` 快照记录就是这样，最后一行的
+# 信封无 timestamp、内层有）。只认信封会把这类记录当不存在，报出更早的时间。
+# 实测 463 份转录：按信封逐行解析与本函数的结果有 462 份完全一致，
+# 唯一那份差 2.2 秒——差的正是最后那条快照记录，本函数报的那个更接近事实。
+_TS_RX = re.compile(r'"timestamp"\s*:\s*"(\d{4}-\d{2}-\d{2}[T ][^"]{4,32})"')
+
+
+def last_record_time(path: Path) -> tuple[float, str]:
+    """转录里**最后一条记录**的时间。返回 `(unix 秒, 来源)`。
+
+    为什么不能用文件 mtime：mtime 会被任何后续触碰推后或提前，与「最后一条
+    记录什么时候写的」大面积脱钩。本机实测——
+
+      · Claude 侧 63 份转录：22 份偏差超过 60 秒，10 份超过 1 小时，
+        3 份超过 24 小时，最差 241243 秒（约 2.8 天）。子代理边车写入、
+        云同步、备份程序都会把 mtime 推后。
+      · Codex 侧 324 份 rollout 更糟：287 份的 mtime **早于**最后一条记录
+        （中位 −222 秒，最差 −15228 秒），而其中 268 份的 mtime 与文件名里
+        的会话**开始**时间相差不到 2 秒——Codex 的 mtime 实质是创建时刻，
+        跟最后活动无关。
+
+    影响不止显示：mtime 同时是排序键与「最差会话」推荐的输入。实测 492 份
+    会话按两种口径排序，位次相同的只有 122 份，最大偏移 93 位——一个 2.8 天
+    的偏差足以把真正该交接的会话排到看不见的地方。
+
+    来源字符串有三种，界面要如实说出是哪一种：
+      · `record`            —— 从转录正文读到的，可信
+      · `mtime`             —— 尾读没找到时间戳，回落文件时间
+      · `mtime-compressed`  —— 压缩转录不能 seek 尾部，直接回落
+
+    压缩转录刻意不解压：为一个时间戳把整条 zstd 流解一遍，代价与收益完全
+    不成比例（本机压缩转录数为 0，这条路径优先保证不劣化）。
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return 0.0, "mtime"
+
+    if is_compressed_transcript(path):
+        return st.st_mtime, "mtime-compressed"
+
+    size = st.st_size
+    if size <= 0:
+        return st.st_mtime, "mtime"
+
+    window = TAIL_PROBE_BYTES
+    while True:
+        start = max(0, size - window)
+        try:
+            with path.open("rb") as fh:
+                fh.seek(start)
+                chunk = fh.read(size - start)
+        except OSError:
+            return st.st_mtime, "mtime"
+        text = chunk.decode("utf-8", errors="replace")
+        # 窗口不是从文件头开始时，第一行必然是残行——丢掉它。不丢的话，
+        # 一条被切成两半的记录可能刚好露出内部某个更早的时间戳。
+        if start > 0:
+            cut = text.find("\n")
+            text = text[cut + 1:] if cut >= 0 else ""
+        hits = _TS_RX.findall(text)
+        if hits:
+            ts = _parse_iso(hits[-1])
+            if ts is not None:
+                return ts, "record"
+        if start == 0 or window >= TAIL_PROBE_MAX:
+            return st.st_mtime, "mtime"
+        window *= 2
+
+
+def _parse_iso(raw: str) -> float | None:
+    """把 ISO 8601 时间串转成 unix 秒。转不了返回 None。
+
+    转录里的写法不止一种：Claude 写 `2026-08-25T10:32:21.504Z`，Codex 写
+    带偏移的形态，也见过用空格代替 `T` 的。`Z` 要换成 `+00:00`——
+    Python 3.9/3.10 的 `fromisoformat` 不认 `Z`，而本项目最低支持 3.9。
+
+    没有时区信息时按**本地时间**解释：那与 `datetime.fromtimestamp` 的既有
+    行为一致，换成 UTC 会让同一份转录在不同口径下差出几个小时。
+    """
+    txt = raw.strip().replace(" ", "T")
+    if txt.endswith("Z"):
+        txt = txt[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(txt)
+    except ValueError:
+        # 小数秒位数不是 3 或 6 时 3.9/3.10 的 fromisoformat 会拒绝。
+        # 砍掉小数秒再试一次：秒级精度对「最后活动」完全够用。
+        base = re.sub(r"\.\d+", "", txt)
+        try:
+            dt = datetime.fromisoformat(base)
+        except ValueError:
+            return None
+    try:
+        return dt.timestamp()
+    except (OSError, OverflowError, ValueError):
+        return None
 
 
 # 图文说明的文件名。历史上还叫过 `使用说明.html`，留着兼容旧检出。

@@ -133,6 +133,127 @@ def test_find_plan_explicit_absolute_and_relative(repo: Path):
     assert find_plan(repo, "docs/nope.md") is None
 
 
+# --- 说明文档不是计划文档 ---------------------------------------------------
+# 这一组守的是一个实测事故：本仓库三份 README 都带 `### Task 1: …` 加四个
+# `- [ ] **Step N**` 的**格式示例**，于是它们成了 find_plan 的唯一候选，最新
+# 那份胜出，`out_dir = plan_path.parent` 随之从 `docs/` 变成仓库根。磁盘证据
+# 吻合：8-24 那两份交接产物落在仓库根，8-22 / 8-23 的在 docs/ 下，中间只发生了
+# 「README 被改过」这一件事。
+
+
+def test_readme_with_a_plan_shaped_example_is_not_a_plan(repo: Path):
+    """README 里演示计划格式，且比真计划更新——仍然不能胜出。
+
+    这是原始事故的最小复现：不加名字过滤时，mtime 更新的 README 会赢。
+    """
+    import os
+    import time
+
+    demo = (
+        "# 工具说明\n\n计划文档长这样：\n\n"
+        "### Task 1: 建立数据层\n\n**Steps:**\n"
+        "- [ ] **Step 1** 定义表结构\n- [ ] **Step 2** 写迁移脚本\n"
+        "- [ ] **Step 3** 补索引\n" + "说明文字\n" * 200
+    )
+    for name in ("README.md", "README.en.md", "README.zh-Hant.md"):
+        (repo / name).write_text(demo, encoding="utf-8")
+        now = time.time() + 600  # 比 docs/plan.md 新
+        os.utime(repo / name, (now, now))
+    found = find_plan(repo, None)
+    assert found is not None and found.name == "plan.md", found
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["README.md", "README.zh-Hant.md", "CHANGELOG.md", "CONTRIBUTING.md", "LICENSE.md"],
+)
+def test_documentation_names_never_win(repo: Path, name: str):
+    """说明性文档按**名字**排除：它们的性质是说明，内容再像也不是计划。
+
+    语言变体（README.zh-Hant.md）走同一条：比对第一个点之前的主干。
+    """
+    import os
+    import time
+
+    body = "### Task 1: x\n\n**Steps:**\n" + "- [ ] **Step 1** a\n- [ ] **Step 2** b\n- [ ] **Step 3** c\n"
+    (repo / name).write_text(body + "填充\n" * 200, encoding="utf-8")
+    now = time.time() + 600
+    os.utime(repo / name, (now, now))
+    found = find_plan(repo, None)
+    assert found is not None and found.name == "plan.md", f"{name} 胜出了"
+
+
+def test_checkboxes_inside_a_fence_do_not_count(repo: Path):
+    """围栏代码块里的任务与复选框是**展示**，不是声明。
+
+    围栏是作者自己标出的「这是示例」，比再叠一条启发式可靠。文件名不在
+    否决表里（用 GUIDE.md），所以这一条单独验证围栏逻辑本身。
+    """
+    import os
+    import time
+
+    fenced = (
+        "# 指南\n\n照这个格式写：\n\n```markdown\n"
+        "### Task 1: 示例\n- [ ] **Step 1** a\n- [ ] **Step 2** b\n- [ ] **Step 3** c\n"
+        "```\n" + "正文\n" * 200
+    )
+    (repo / "GUIDE.md").write_text(fenced, encoding="utf-8")
+    now = time.time() + 600
+    os.utime(repo / "GUIDE.md", (now, now))
+    found = find_plan(repo, None)
+    assert found is not None and found.name == "plan.md", found
+
+
+def test_a_plan_without_an_intent_section_still_wins(repo: Path):
+    """只有任务与步骤、没写目标段的计划文档是合法的，不能被挡掉。
+
+    刻意不把「必须有意图段落」当作判据：`parse_plan` 对缺失的意图段本来就有
+    兜底，加上去会把真计划挡在外面。挡示例要用围栏这种明确证据。
+    """
+    import os
+    import time
+
+    bare = repo / "docs" / "bare-plan.md"
+    bare.write_text(
+        "### Task 1: 只有任务\n\n**Files:**\n- Create: `x.py`\n\n**Steps:**\n"
+        "- [ ] **Step 1** a\n- [ ] **Step 2** b\n- [ ] **Step 3** c\n" + "尾部\n" * 100,
+        encoding="utf-8",
+    )
+    now = time.time() + 900
+    os.utime(bare, (now, now))
+    assert find_plan(repo, None) == bare
+
+
+def test_no_candidate_returns_none_so_output_lands_in_docs(repo: Path):
+    """一个候选都没有时返回 None——调用方据此把产物写进 `repo/docs`。
+
+    这一条固定的是**回落行为**本身：`handoff.py` 的
+    `out_dir = plan_path.parent if plan_path else (repo / "docs")` 依赖它。
+    """
+    (repo / "docs" / "plan.md").unlink()
+    assert find_plan(repo, None) is None
+
+
+def test_fence_stripping_preserves_line_numbers():
+    """剥围栏时行号必须不变——回填靠行号定位复选框，错一行就打到别处。"""
+    from agent_handoff.core.plan import _outside_fences
+
+    src = "a\n```\n- [ ] inside\n```\n- [ ] outside\n"
+    out = _outside_fences(src)
+    assert out.count("\n") == src.count("\n")
+    assert "inside" not in out
+    assert "outside" in out
+
+
+def test_unclosed_fence_swallows_the_rest():
+    """未闭合的围栏之后也算代码块——markdown 渲染就是这么做的。"""
+    from agent_handoff.core.plan import _outside_fences
+
+    out = _outside_fences("a\n```\n- [ ] tail\n")
+    assert "tail" not in out
+    assert out.count("\n") == 3
+
+
 def test_update_plan_ticks_only_complete_tasks(repo: Path):
     plan = repo / "docs" / "plan.md"
     tasks, _ = parse_plan(plan.read_text(encoding="utf-8"))

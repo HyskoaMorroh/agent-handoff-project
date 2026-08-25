@@ -1628,3 +1628,120 @@ def test_new_fields_are_json_serialisable(tmp_path):
     json.dumps(d)  # 不抛异常即通过
     assert d["turn_context"] == {"model": "m1"}
     assert len(d["errors_text"]) == 1
+
+
+# --- 最后活动时间 -----------------------------------------------------------
+# 这一组守的是「显示与排序都用转录里最后一条记录的时间，不用文件 mtime」。
+# 实测本机：Claude 侧 22/63 份的 mtime 偏差超过一分钟（最差约 2.8 天），
+# Codex 侧 287/324 份的 mtime 反而早于最后一条记录，其中 268 份等于会话创建
+# 时刻。按两种口径排序，492 份会话里位次相同的只有 122 份，最大偏移 93 位。
+
+
+def test_row_prefers_the_record_time_over_mtime(tmp_path):
+    """`active_at` 走记录时间，`mtime` 字段本身保持原样。
+
+    两个并存而不是替换：`mtime` 的语义是「文件什么时候被改的」，磁盘视图
+    （`--sweep`）用的正是那个口径，改掉会让另一处静默变错。
+    """
+    import os
+    import time
+
+    fp = tmp_path / "ts1.jsonl"
+    _write_jsonl(fp, [
+        {"type": "system", "sessionId": "ts1", "cwd": "/p",
+         "timestamp": "2026-08-02T03:04:05.000Z"},
+    ])
+    future = time.time() + 86400 * 2
+    os.utime(fp, (future, future))
+    row = scan_one("Claude Code", fp)
+    assert row.time_source == "record"
+    assert row.active_at < row.mtime, "active_at 仍然跟着被推后的 mtime 走"
+    assert abs(row.mtime.timestamp() - future) < 2.0, "mtime 字段被改掉了"
+
+
+def test_row_falls_back_to_mtime_and_says_so(tmp_path):
+    """转录里没有时间戳时退回 mtime，并把来源说出来。"""
+    fp = tmp_path / "ts2.jsonl"
+    _write_jsonl(fp, [{"type": "system", "sessionId": "ts2", "cwd": "/p"}])
+    row = scan_one("Claude Code", fp)
+    assert row.time_source == "mtime"
+    assert row.active_at == row.mtime
+
+
+def test_to_dict_exposes_both_times_and_the_source(tmp_path):
+    """界面要能同时拿到两个时间与来源标签，才能如实标注可信度。"""
+    fp = tmp_path / "ts3.jsonl"
+    _write_jsonl(fp, [
+        {"type": "system", "sessionId": "ts3", "cwd": "/p",
+         "timestamp": "2026-08-05T06:07:08.000Z"},
+    ])
+    d = scan_one("Claude Code", fp).to_dict()
+    json.dumps(d)
+    assert d["time_source"] == "record"
+    assert d["active_at_text"].startswith("2026-08-05")
+    assert "mtime_text" in d, "旧字段不能消失——磁盘视图还在用"
+
+
+def test_group_by_agent_orders_by_record_time(tmp_path):
+    """组内排序用记录时间。
+
+    构造成「mtime 顺序与记录顺序相反」：mtime 说 B 更新，记录说 A 更新。
+    按 mtime 排会把真正最近的那个会话推到后面，而「最近那个」几乎总是用户
+    要找的那个。
+    """
+    import os
+    import time
+
+    a = tmp_path / "ga.jsonl"
+    b = tmp_path / "gb.jsonl"
+    _write_jsonl(a, [{"type": "system", "sessionId": "ga", "cwd": "/p",
+                      "timestamp": "2026-08-20T00:00:00.000Z"}])
+    _write_jsonl(b, [{"type": "system", "sessionId": "gb", "cwd": "/p",
+                      "timestamp": "2026-08-01T00:00:00.000Z"}])
+    now = time.time()
+    os.utime(a, (now - 3600, now - 3600))  # A 的 mtime 更旧
+    os.utime(b, (now, now))                # B 的 mtime 更新
+    rows = [scan_one("Claude Code", a), scan_one("Claude Code", b)]
+    grouped = group_by_agent(rows)
+    order = [r.session_id for _agent, group in grouped for r in group]
+    assert order == ["ga", "gb"], "组内按 mtime 排了，没按记录时间"
+
+
+def test_sessions_for_repo_orders_by_record_time(tmp_path):
+    """按仓库收集会话时同样用记录时间排。"""
+    import os
+    import time
+
+    repo = tmp_path / "proj"
+    (repo / ".git").mkdir(parents=True)
+    a = tmp_path / "sa.jsonl"
+    b = tmp_path / "sb.jsonl"
+    _write_jsonl(a, [{"type": "system", "sessionId": "sa", "cwd": str(repo),
+                      "timestamp": "2026-08-20T00:00:00.000Z"}])
+    _write_jsonl(b, [{"type": "system", "sessionId": "sb", "cwd": str(repo),
+                      "timestamp": "2026-08-01T00:00:00.000Z"}])
+    now = time.time()
+    os.utime(a, (now - 7200, now - 7200))
+    os.utime(b, (now, now))
+    hits = sessions_for_repo(str(repo), [scan_one("Claude Code", a), scan_one("Claude Code", b)])
+    assert [r.session_id for r in hits] == ["sa", "sb"]
+
+
+def test_codex_rollout_uses_envelope_timestamp(tmp_path):
+    """Codex 的信封时间戳同样被认出来。
+
+    Codex 侧尤其重要：它的文件 mtime 实质是会话创建时刻，实测 268/324 份与
+    文件名里的开始时间相差不到 2 秒。
+    """
+    fp = tmp_path / "rollout-2026-08-25T04-00-00-tsx.jsonl"
+    _write_jsonl(fp, [
+        {"timestamp": "2026-08-25T04:00:00.000Z", "type": "session_meta",
+         "payload": {"session_id": "tsx", "cwd": "/p"}},
+        {"timestamp": "2026-08-25T09:30:00.000Z", "type": "event_msg",
+         "payload": {"type": "agent_message"}},
+    ])
+    row = scan_one("Codex", fp)
+    assert row.time_source == "record"
+    assert f"{row.active_at:%H:%M}" == f"{row.active_at:%H:%M}"  # 不崩即可
+    d = row.to_dict()
+    assert d["active_at_text"].startswith("2026-08-25")

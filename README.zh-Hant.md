@@ -3,9 +3,9 @@
 <p align="center"><b>工作階段卡死時，把進度從對話裡搬進儲存庫</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.6.0-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.6.1-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="測試" src="https://img.shields.io/badge/tests-745%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="測試" src="https://img.shields.io/badge/tests-772%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="執行時依賴" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="授權" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -259,6 +259,24 @@ Task 1 的兩個檔案都存在、兩個符號都真的被定義了，它才會�
 標題 1–6 級且允許縮排、`Task` 與 `Phase`/`階段` 都認、
 `Produces` 之外還認 `Exports`/`Provides`/`提供`/`匯出`。
 
+### 說明文件不算計畫文件
+
+**輸出目錄跟著計畫文件走**（`--out` 未指定時），所以「哪份文件算計畫」直接決定
+交接產物落在哪裡。兩道排除：
+
+- **按名字**：`README*`、`CHANGELOG*`、`CONTRIBUTING*`、`LICENSE*` 一律不算，
+  含 `README.zh-Hant.md` 這類語言變體。它們的性質是說明，內容再像也不是計畫。
+- **按圍欄**：圍欄程式碼區塊（\`\`\` 或 ~~~）裡的 Task 標題與核取方塊不計數。
+  圍欄是作者自己標出的「這是範例」，尊重它比再疊一條啟發式可靠。
+
+為什麼需要這兩道：這份 README 自己就在上面**示範**計畫格式，帶著
+`### Task 1: 建立資料層` 加四個 `- [ ] **Step N**`。實測不加排除時，三份 README
+恰好是唯一的候選，最新那份勝出，輸出目錄隨之變成儲存庫根而不是 `docs/`——觸發
+條件只是「今天改過 README」。
+
+刻意**不**要求「必須有目標段落」：只有任務與步驟、沒寫目標段的計畫文件是合法的，
+加這一條會把真計畫擋在外面。
+
 ### 判定的粒度是 Task，不是 Step
 
 一個 Task 的全部 Step 一起勾或一起不勾。證據只來自 Task 的 `**Files:**` 與
@@ -318,6 +336,36 @@ intent.undo()               // ❌ 呼叫不是定義
 因為勾選會寫進計畫文件且不可逆。
 
 ## 工作階段健檢的判據
+
+### 「最後活動」取的是記錄裡最後一條，不是檔案時間
+
+檔案修改時間與工作階段真正停在哪一刻大面積脫鉤，而它同時是排序鍵——錯了就等於
+把該交接的工作階段排到看不見的地方。本機實測：
+
+| 側 | 樣本 | 偏差 |
+|---|---|---|
+| Claude Code | 63 份記錄 | 22 份超過一分鐘，10 份超過一小時，3 份超過一天，最差 **約 2.8 天** |
+| Codex | 324 份 rollout | **287 份的檔案時間早於**最後一條記錄；其中 **268 份等於工作階段開始時刻** |
+
+Claude 側偏後是因為子代理邊車寫入、雲端同步、備份程式都會推後 mtime；Codex 側
+偏前是因為它的 mtime 實質就是**建立時刻**，拿來當「最後活動」等於顯示「最早活動」。
+
+排序損害是可量化的：492 份工作階段按兩種口徑排，**位次相同的只有 122 份，最大
+偏移 93 位**。
+
+現在從檔案尾部讀 32 KB 找最後一條記錄的時間戳。為什麼是 32 KB——實測 8 KB 只
+命中 57/63，32 KB 全部命中；而單條記錄可以很長（本機單行最大 3.4 MB），視窗
+太小會整窗落在一行中間。首窗沒命中就加倍，上限 512 KB。
+
+尾讀視窗的第一行幾乎總是殘行，會丟掉再解析：不丟的話，一條被切成兩半的記錄
+可能露出內部某個更早的時間戳。對 463 份真實記錄與逐行全量解析比對，**462 份
+完全一致**。
+
+壓縮記錄（`.jsonl.zst`）不尾讀——為一個時間戳解整條 zstd 流不值得，這種情況
+直接回落檔案時間並明確標註。介面、命令列卡片、交接文件三處都會說出這個時間
+是從記錄讀到的還是回落的：一個說不清來源的時間戳會被當成確定事實讀。
+
+### 上下文佔用
 
 **判據是上下文佔用，不是檔案體積。** 佔用數就寫在記錄裡，不需要猜：
 

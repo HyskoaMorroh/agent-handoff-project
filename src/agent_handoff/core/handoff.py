@@ -441,7 +441,10 @@ def run_handoff(
                     picked.append(extra)
                 else:
                     say(tr.t("cli.sessions.not_found", path=key))
-        picked.sort(key=lambda v: v["mtime"], reverse=True)
+        # 按「最后一次真的在动」排，不用文件 mtime：后者与最后一条记录大面积
+        # 脱钩（Codex 侧尤其严重，它的 mtime 实质是创建时刻），而这个顺序决定
+        # 哪个会话被当成「最近那个」写进文档开头。
+        picked.sort(key=lambda v: v.get("active_at") or v["mtime"], reverse=True)
         say(tr.t("cli.sessions.picked", count=len(picked)))
 
         # 勾了分属不同项目的会话就说出来。

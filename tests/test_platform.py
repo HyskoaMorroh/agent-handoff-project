@@ -10,6 +10,7 @@ import pytest
 
 from agent_handoff.platform import (
     IS_WINDOWS,
+    TAIL_PROBE_BYTES,
     TranscriptCompressedError,
     agent_session_roots,
     atomic_write_bytes,
@@ -17,6 +18,7 @@ from agent_handoff.platform import (
     is_foreign_path,
     is_transcript_name,
     iter_path_candidates,
+    last_record_time,
     local_home_names,
     nearest_repo,
     norm_path,
@@ -506,3 +508,138 @@ def test_zstd_opener_returns_none_or_callable():
     """
     got = zstd_opener()
     assert got is None or callable(got)
+
+
+# --- 最后活动时间 -----------------------------------------------------------
+# 这一组的存在理由：用文件 mtime 当「最后活动」在本机实测大面积失真——Claude 侧
+# 22/63 份偏差超过一分钟（最差 2.8 天），Codex 侧 287/324 份的 mtime 反而早于
+# 最后一条记录，其中 268 份等于会话**创建**时刻。排序也跟着错：492 份会话按两种
+# 口径排，位次相同的只有 122 份。
+
+
+def _write(fp: Path, lines: list[str]) -> Path:
+    fp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return fp
+
+
+def test_last_record_time_reads_the_final_timestamp(tmp_path: Path):
+    """取的是最后一条，不是第一条。"""
+    fp = _write(tmp_path / "a.jsonl", [
+        '{"timestamp":"2026-08-01T00:00:00.000Z","type":"user"}',
+        '{"timestamp":"2026-08-02T03:04:05.678Z","type":"assistant"}',
+    ])
+    ts, source = last_record_time(fp)
+    assert source == "record"
+    import datetime as _dt
+    want = _dt.datetime.fromisoformat("2026-08-02T03:04:05.678+00:00").timestamp()
+    assert abs(ts - want) < 1.0
+
+
+def test_last_record_time_beats_a_touched_mtime(tmp_path: Path):
+    """文件被事后触碰过，记录时间不受影响。
+
+    这正是实测里最常见的那种失真：子代理边车写入、云同步、备份程序把 mtime
+    推到几小时甚至几天之后，而转录内容一个字节都没变。
+    """
+    import os
+    import time
+
+    fp = _write(tmp_path / "b.jsonl", ['{"timestamp":"2026-08-02T03:04:05.000Z"}'])
+    future = time.time() + 86400 * 3
+    os.utime(fp, (future, future))
+    ts, source = last_record_time(fp)
+    assert source == "record"
+    assert ts < future - 86000  # 记录时间远早于被推后的 mtime
+
+
+def test_last_record_time_survives_a_truncated_first_line(tmp_path: Path):
+    """尾读窗口的第一行几乎总是残行，不能因此崩，也不能读到窗口外的旧时间。
+
+    构造：一条巨大的记录把窗口开头填满，真实的末条时间戳在它后面。
+    """
+    big = '{"timestamp":"2026-08-01T00:00:00.000Z","pad":"' + "x" * (TAIL_PROBE_BYTES * 2) + '"}'
+    fp = _write(tmp_path / "c.jsonl", [big, '{"timestamp":"2026-08-09T09:09:09.000Z"}'])
+    ts, source = last_record_time(fp)
+    assert source == "record"
+    import datetime as _dt
+    want = _dt.datetime.fromisoformat("2026-08-09T09:09:09+00:00").timestamp()
+    assert abs(ts - want) < 1.0
+
+
+def test_last_record_time_falls_back_when_no_timestamp(tmp_path: Path):
+    """整份转录一个时间戳都没有时退回 mtime，并如实说来源。
+
+    不抛异常也不返回 0：一个不准的时间仍然比没有时间有用，但调用方必须能
+    知道它不准——`time_source` 就是为此存在的。
+    """
+    fp = _write(tmp_path / "d.jsonl", ['{"type":"user","message":"no time here"}'])
+    ts, source = last_record_time(fp)
+    assert source == "mtime"
+    assert abs(ts - fp.stat().st_mtime) < 1.0
+
+
+def test_last_record_time_grows_the_window_to_find_a_timestamp(tmp_path: Path):
+    """时间戳落在首个窗口之外时加倍重试，而不是直接放弃。"""
+    pad = '{"pad":"' + "y" * (TAIL_PROBE_BYTES * 3) + '"}'
+    fp = _write(tmp_path / "e.jsonl", ['{"timestamp":"2026-07-07T07:07:07.000Z"}', pad])
+    ts, source = last_record_time(fp)
+    assert source == "record"
+    import datetime as _dt
+    want = _dt.datetime.fromisoformat("2026-07-07T07:07:07+00:00").timestamp()
+    assert abs(ts - want) < 1.0
+
+
+def test_last_record_time_reports_compressed_fallback(tmp_path: Path):
+    """压缩转录不尾读：为一个时间戳解整条 zstd 流不值得。
+
+    来源字符串必须与普通回落区分开——界面要说清楚是「读不到尾部」还是
+    「这是压缩归档」，两者用户能做的事不一样。
+    """
+    fp = tmp_path / "f.jsonl.zst"
+    fp.write_bytes(b"\x28\xb5\x2f\xfd\x00\x00")
+    ts, source = last_record_time(fp)
+    assert source == "mtime-compressed"
+    assert abs(ts - fp.stat().st_mtime) < 1.0
+
+
+def test_last_record_time_handles_a_missing_file(tmp_path: Path):
+    """文件不在时返回 0 而不是抛异常：扫描过程中文件被删是真实情况。"""
+    ts, source = last_record_time(tmp_path / "gone.jsonl")
+    assert source == "mtime"
+    assert ts == 0.0
+
+
+def test_last_record_time_accepts_offsets_and_space_separator(tmp_path: Path):
+    """时间写法不止一种：带偏移的、用空格代替 T 的都要认。
+
+    Codex 写带偏移的形态，也见过空格分隔。认不出等于静默退回 mtime，
+    而那正是这个函数要修掉的失真。
+    """
+    fp = _write(tmp_path / "g.jsonl", ['{"timestamp":"2026-08-03 11:22:33+08:00"}'])
+    ts, source = last_record_time(fp)
+    assert source == "record"
+    import datetime as _dt
+    want = _dt.datetime.fromisoformat("2026-08-03T11:22:33+08:00").timestamp()
+    assert abs(ts - want) < 1.0
+
+
+def test_last_record_time_tolerates_odd_fractional_digits(tmp_path: Path):
+    """小数秒不是 3 或 6 位时 3.9/3.10 的 fromisoformat 会拒绝，要能兜住。
+
+    本项目最低支持 3.9，砍掉小数秒再试一次——秒级精度对「最后活动」够用。
+    """
+    fp = _write(tmp_path / "h.jsonl", ['{"timestamp":"2026-08-04T05:06:07.12345Z"}'])
+    ts, source = last_record_time(fp)
+    assert source == "record"
+    import datetime as _dt
+    want = _dt.datetime.fromisoformat("2026-08-04T05:06:07+00:00").timestamp()
+    assert abs(ts - want) < 2.0
+
+
+def test_last_record_time_on_empty_file(tmp_path: Path):
+    """空文件退回 mtime，不进死循环。"""
+    fp = tmp_path / "i.jsonl"
+    fp.write_text("", encoding="utf-8")
+    ts, source = last_record_time(fp)
+    assert source == "mtime"
+    assert abs(ts - fp.stat().st_mtime) < 1.0

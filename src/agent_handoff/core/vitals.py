@@ -36,6 +36,7 @@ from ..platform import (
     is_foreign_path,
     is_transcript_name,
     iter_path_candidates,
+    last_record_time,
     nearest_repo,
     norm_path,
     open_transcript,
@@ -518,6 +519,41 @@ class SessionRow:
     # 那里有东西；但所有来自正文的字段（体征、摘要、用户原话）都是空的，
     # 界面必须把这一点说清楚，不能让人误以为「这个会话很干净」。
     compressed_unreadable: bool = False
+    # 转录里**最后一条记录**写下的时间。0 表示没取到（此时 `active_at` 退回
+    # `mtime`）。与 `mtime` 并存而不是替换它：`mtime` 的语义是「文件什么时候
+    # 被改的」，那在磁盘清理（`--sweep`）里仍然是对的口径。
+    last_active_ts: float = 0.0
+    # 上面那个时间从哪来。界面要如实说出是哪一种，因为可信度不同：
+    #   · `record`            —— 转录正文里读到的，可信
+    #   · `mtime`             —— 尾部没找到时间戳，回落文件时间
+    #   · `mtime-compressed`  —— 压缩转录不能 seek 尾部，直接回落
+    time_source: str = "mtime"
+
+    @property
+    def active_at(self) -> datetime:
+        """这个会话**最后一次真的在动**是什么时候。
+
+        为什么不能直接用 `mtime`：文件时间与最后一条记录大面积脱钩，且两个
+        方向都会错。本机实测——
+
+          · Claude 侧 63 份转录：22 份偏差超过 60 秒，最差约 2.8 天。子代理
+            边车写入、云同步、备份程序都会把 mtime 往后推。
+          · Codex 侧 324 份 rollout：287 份的 mtime **早于**最后一条记录，
+            而其中 268 份的 mtime 与文件名里的**开始**时间相差不到 2 秒——
+            Codex 的 mtime 实质是创建时刻，跟最后活动无关。
+
+        排序也受影响：492 份会话按两种口径排，位次相同的只有 122 份，最大
+        偏移 93 位。「最近那个」几乎总是要找的那个，排错了就等于找不到。
+
+        取不到记录时间时退回 `mtime` 而不是留空：一个不准的时间仍然比没有
+        时间有用，但 `time_source` 会说清楚它不准。
+        """
+        if self.last_active_ts > 0:
+            try:
+                return datetime.fromtimestamp(self.last_active_ts)
+            except (OSError, OverflowError, ValueError):
+                return self.mtime
+        return self.mtime
 
     @property
     def repo(self) -> str:
@@ -641,6 +677,12 @@ class SessionRow:
             "file": self.file,
             "mtime": self.mtime.isoformat(timespec="seconds"),
             "mtime_text": f"{self.mtime:%Y-%m-%d %H:%M:%S}",
+            # 「最后一次真的在动」与文件时间分开给：界面显示前者，磁盘视图
+            # 仍然用后者。`time_source` 让界面能标注这个时间可不可信——
+            # 一个说不清来源的时间戳会被当成确定事实读。
+            "active_at": self.active_at.isoformat(timespec="seconds"),
+            "active_at_text": f"{self.active_at:%Y-%m-%d %H:%M:%S}",
+            "time_source": self.time_source,
             "mb": round(self.mb, 2),
             "size": self.size,
             "fatal": self.fatal,
@@ -1375,6 +1417,11 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
     except OSError:
         return None
 
+    # 最后一次真的在动是什么时候。在读正文**之前**取：这一步只 seek 尾部读
+    # 32 KB，与下面的逐行扫描互不影响，而把它放在这里能保证即使正文读失败
+    # （压缩缺 zstd、流坏了）也仍然有一个时间可用。
+    last_ts, time_src = last_record_time(fp)
+
     fatal = 0
     errors = 0
     aborted = 0
@@ -1483,6 +1530,8 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
         is_subagent=_is_subagent(fp),
         repos=repos,
         compressed_unreadable=unreadable,
+        last_active_ts=last_ts,
+        time_source=time_src,
     )
 
 
@@ -1629,7 +1678,7 @@ def sessions_for_repo(repo: Path, rows: Iterable[SessionRow]) -> list[SessionRow
         return False
 
     hits = [r for r in rows if touches(r)]
-    hits.sort(key=lambda r: r.mtime, reverse=True)
+    hits.sort(key=lambda r: r.active_at, reverse=True)
     return hits
 
 
@@ -1720,7 +1769,7 @@ def find_sessions(needle: str, rows: Iterable[SessionRow]) -> list[SessionRow]:
         repos = " ".join(norm_path(x) for x in r.repos)
         prompt = r.first_prompt.lower()
         content = f"{r.title}\n{r.last_prompt}\n{r.digest}".lower()
-        ts = r.mtime.timestamp()
+        ts = r.active_at.timestamp()
         if n in sid or n in fname:
             scored.append((0, -ts, r))
         elif tid and n in tid:
@@ -1741,16 +1790,20 @@ def group_by_agent(rows: Iterable[SessionRow]) -> list[tuple[str, list[SessionRo
     再认时间——按这个顺序排，找上次那段对话就是看第一组第一张卡片。
 
     组的顺序也按"该组最近活动"排：刚用过的 APP 出现在最上面。同一 APP 内部
-    严格按 mtime 倒序，不再让体积介入——体积是风险信号，卡片上的徽章已经
+    严格按最后活动倒序，不再让体积介入——体积是风险信号，卡片上的徽章已经
     在说这件事，用它排序会把一个月前的大转录顶到今天的会话前面。
+
+    排序键用 `active_at`（转录里最后一条记录的时间）而不是文件 mtime：实测
+    492 份会话按两种口径排，位次相同的只有 122 份，最大偏移 93 位。Codex 侧
+    尤其严重——它的 mtime 实质是会话**创建**时刻，用它排序等于按开始时间排。
     """
     buckets: dict[str, list[SessionRow]] = {}
     for r in rows:
         buckets.setdefault(r.agent, []).append(r)
     for group in buckets.values():
-        group.sort(key=lambda r: r.mtime, reverse=True)
+        group.sort(key=lambda r: r.active_at, reverse=True)
     # 组间：先按该组最新一条的时间倒序，时间相同再按名字，保证结果可复现。
     return sorted(
         buckets.items(),
-        key=lambda kv: (-kv[1][0].mtime.timestamp(), kv[0]),
+        key=lambda kv: (-kv[1][0].active_at.timestamp(), kv[0]),
     )

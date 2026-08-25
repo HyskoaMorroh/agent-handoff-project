@@ -92,6 +92,57 @@ PLAN_HEAD_BYTES = 60000
 PLAN_MIN_BYTES = 80
 # 先只读这一块做判定；绝大多数文件在这里就被否掉，不必读满 60 KB。
 PLAN_FIRST_CHUNK = 16000
+# 永不当作计划文档的文件名（不分大小写、允许语言后缀如 README.zh-Hant.md）。
+#
+# 为什么需要这道门：判定条件是「有 Task 标题 + ≥3 个复选框」，而说明性文档
+# 里**演示**计划格式是最常见的写法——本仓库三份 README 都带着
+# `### Task 1: 建立数据层` 加四个 `- [ ] **Step N**` 的示例段。实测在本仓库跑
+# `find_plan`，候选恰好是那三份 README，最新的那份（README.zh-Hant.md）胜出，
+# 于是 `out_dir = plan_path.parent` 变成**仓库根**而不是 `docs/`。磁盘上的证据
+# 与此吻合：8-24 那两份交接产物落在仓库根，而 8-22 / 8-23 的在 docs/ 下——
+# 中间只发生了一件事，README 被改过。
+#
+# 按名字挡而不是按内容猜：这些文件的**性质**是说明，不是计划。内容再像也不是。
+PLAN_NAME_DENY = (
+    "readme", "changelog", "contributing", "license", "licence",
+    "code_of_conduct", "security", "authors", "notice", "history",
+)
+# 围栏行。README 的示例段几乎总在围栏里，而围栏里的东西是**展示**而非声明。
+# 匹配整行（含 ```markdown 这种带语言标注的开栏），因为要按行成对切分。
+_FENCE_LINE_RX = re.compile(r"^[ \t]*(?:```|~~~).*$", re.M)
+
+
+def _outside_fences(text: str) -> str:
+    """把围栏代码块的内容清空，只留下围栏外的正文。
+
+    为什么不能只数复选框总数：一份说明文档在围栏里演示三个复选框，与一份真
+    计划文档在正文里写三个复选框，在「总数」这个口径上完全一样。围栏是作者
+    明确标出的「这是示例」，尊重它比再加一条启发式可靠。
+
+    实现上不解析 markdown：按围栏行成对切开，奇数段（围栏内）替换成等量换行
+    以保持行号不变——`parse_plan` 后续要靠行号定位复选框回填，行号一错，
+    回填就会打到错误的行上。
+
+    未闭合的围栏（最后一个开栏没有对应的闭栏）之后的内容也会被清掉。那是对的：
+    在 markdown 渲染里它同样被当作代码块。
+    """
+    parts = _FENCE_LINE_RX.split(text)
+    if len(parts) < 2:
+        return text
+    out = []
+    for i, seg in enumerate(parts):
+        out.append(seg if i % 2 == 0 else "\n" * seg.count("\n"))
+    return "".join(out)
+
+
+def _is_plan_name(name: str) -> bool:
+    """这个文件名可以是计划文档吗？
+
+    比对的是第一个点之前的主干（`README.zh-Hant.md` → `readme`），
+    这样三份 README 的语言变体一次挡掉，不必逐个列举。
+    """
+    stem = name.split(".", 1)[0].strip().lower()
+    return stem not in PLAN_NAME_DENY
 
 
 @dataclass
@@ -120,6 +171,21 @@ def find_plan(repo: Path, explicit: str | None) -> Path | None:
     文件。这里加两道廉价前置筛：先按体积排除（真计划文档不会小于 ~1 KB），
     再只读头部一块而不是 60 KB——任务标题和复选框如果存在，一定在前 16 KB 里
     出现过至少一次。只有通过初筛的文件才付读全 60 KB 的代价。
+
+    判定还有两道收紧，都是为了不把**说明文档**当成计划：
+
+      · 名字在 `PLAN_NAME_DENY` 里的一律不算（README / CHANGELOG / …）。
+      · 围栏代码块里的 Task 标题与复选框不计数——那是示例，不是声明。
+
+    这两道针对的是一个实测事故：本仓库三份 README 都带 `### Task 1: …` 加四个
+    `- [ ] **Step N**` 的格式示例，于是它们成了唯一的候选，最新那份胜出，
+    `out_dir = plan_path.parent` 随之变成仓库根。交接产物因此从 `docs/` 漂到了
+    仓库根——而触发条件只是「今天改过 README」。
+
+    刻意**不**加「必须有意图段落」这第三道：一份只有任务与步骤、没写目标段的
+    计划文档是完全合法的（`parse_plan` 对缺失的意图段本来就有兜底），加上去会
+    把真计划挡在外面。挡示例要用「作者自己标了这是代码块」这种明确证据，
+    而不是再叠一条启发式。
     """
     if explicit:
         p = Path(explicit) if os.path.isabs(explicit) else (repo / explicit)
@@ -138,6 +204,10 @@ def find_plan(repo: Path, explicit: str | None) -> Path | None:
         for fn in files:
             if not fn.lower().endswith(".md"):
                 continue
+            # 名字先挡：比读文件便宜，而且这一条与内容无关——说明文档的性质
+            # 是说明，内容再像计划也不是计划。
+            if not _is_plan_name(fn):
+                continue
             fp = Path(root) / fn
             try:
                 st = fp.stat()
@@ -152,14 +222,18 @@ def find_plan(repo: Path, explicit: str | None) -> Path | None:
                     # 一次子串查找就排掉绝大多数 README / CHANGELOG。
                     if "- [" not in head:
                         continue
-                    # 头一块没定论时才付读满 60 KB 的代价。
-                    if not TASK_HEAD.search(head) or len(CHECKBOX.findall(head)) < 3:
+                    # 头一块没定论时才付读满 60 KB 的代价。判定一律在剥掉围栏
+                    # 之后的正文上做——围栏里的示例不该让文件通过初筛，否则
+                    # 「没定论」会被误判成「已通过」而跳过补读。
+                    body = _outside_fences(head)
+                    if not TASK_HEAD.search(body) or len(CHECKBOX.findall(body)) < 3:
                         rest = fh.read(max(0, PLAN_HEAD_BYTES - len(head)))
                         if rest:
                             head += rest
-                    if not TASK_HEAD.search(head):
+                            body = _outside_fences(head)
+                    if not TASK_HEAD.search(body):
                         continue
-                    if len(CHECKBOX.findall(head)) < 3:
+                    if len(CHECKBOX.findall(body)) < 3:
                         continue
             except OSError:
                 continue

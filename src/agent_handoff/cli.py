@@ -64,7 +64,13 @@ def print_session_card(r: SessionRow, tr: Translator, index: int | None = None) 
     print(tr.t("cli.card.session_id", value=r.session_id or tr.t("cli.card.unknown")))
     if r.thread_id:
         print(tr.t("cli.card.thread_id", value=r.thread_id))
-    print(tr.t("cli.card.mtime", value=f"{r.mtime:%Y-%m-%d %H:%M:%S}"))
+    # 时间取「转录里最后一条记录」而不是文件 mtime，并在回落到文件时间时
+    # 说出来——一个说不清来源的时间戳会被当成确定事实读，而 Codex 的 mtime
+    # 实质是会话创建时刻，差出几小时是常态。
+    stamp = f"{r.active_at:%Y-%m-%d %H:%M:%S}"
+    if r.time_source != "record":
+        stamp += "  " + tr.t("cli.card.time_approx")
+    print(tr.t("cli.card.mtime", value=stamp))
     if r.cwd:
         print(tr.t("cli.card.cwd", value=r.cwd))
     extra = " ".join(x for x in (r.version, r.origin) if x)
@@ -499,7 +505,10 @@ def cmd_vitals(args: argparse.Namespace, tr: Translator) -> int:
         print("─" * 66)
         print(tr.t("cli.vitals.by_repo") + "\n")
         # 仓库分组按"最近被碰过"排，与上面的会话顺序一致。
-        for cwd, group in sorted(risky_by_repo.items(), key=lambda kv: -max(g.mtime.timestamp() for g in kv[1])):
+        for cwd, group in sorted(
+            risky_by_repo.items(),
+            key=lambda kv: -max(g.active_at.timestamp() for g in kv[1]),
+        ):
             ids = ", ".join(g.session_id[:8] for g in group)
             print(f"  {cwd}")
             print(tr.t("cli.vitals.group", count=len(group), ids=ids))
@@ -566,7 +575,7 @@ def pick_sessions(rows: list[SessionRow], repo: Path, tr: Translator) -> list[st
 
     # 与这个仓库相关的排在前面：它们几乎总是用户要选的，放在需要翻屏的位置
     # 等于没有这个功能。组内按最近活动排。
-    ordered = sorted(rows, key=lambda r: (not related(r), -r.mtime.timestamp()))
+    ordered = sorted(rows, key=lambda r: (not related(r), -r.active_at.timestamp()))
 
     print()
     print(tr.t("cli.pick.head"))

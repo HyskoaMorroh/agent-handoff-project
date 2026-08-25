@@ -3,9 +3,9 @@
 <p align="center"><b>会话卡死时，把进度从对话里搬进仓库</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.6.0-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.6.1-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="测试" src="https://img.shields.io/badge/tests-745%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="测试" src="https://img.shields.io/badge/tests-772%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="运行时依赖" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="许可" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -247,6 +247,24 @@ Task 1 的两个文件都存在、两个符号都真的被定义了，它才会�
 标题 1–6 级且允许缩进、`Task` 与 `Phase`/`阶段` 都认、
 `Produces` 之外还认 `Exports`/`Provides`/`提供`/`导出`。
 
+### 说明文档不算计划文档
+
+**输出目录跟着计划文档走**（`--out` 未指定时），所以"哪份文档算计划"直接决定
+交接产物落在哪里。两道排除：
+
+- **按名字**：`README*`、`CHANGELOG*`、`CONTRIBUTING*`、`LICENSE*` 一律不算，
+  含 `README.zh-Hant.md` 这类语言变体。它们的性质是说明，内容再像也不是计划。
+- **按围栏**：围栏代码块（\`\`\` 或 ~~~）里的 Task 标题与复选框不计数。围栏是
+  作者自己标出的"这是示例"，尊重它比再叠一条启发式可靠。
+
+为什么需要这两道：这份 README 自己就在上面**演示**计划格式，带着
+`### Task 1: 建立数据层` 加四个 `- [ ] **Step N**`。实测不加排除时，三份 README
+恰好是唯一的候选，最新那份胜出，输出目录随之变成仓库根而不是 `docs/`——触发
+条件只是"今天改过 README"。
+
+刻意**不**要求"必须有目标段落"：只有任务与步骤、没写目标段的计划文档是合法的，
+加这一条会把真计划挡在外面。
+
 ### 判定的粒度是 Task，不是 Step
 
 一个 Task 的全部 Step 一起勾或一起不勾。证据只来自 Task 的 `**Files:**` 与
@@ -306,6 +324,36 @@ intent.undo()               // ❌ 调用不是定义
 因为勾选会写进计划文档且不可逆。
 
 ## 会话体检的判据
+
+### 「最后活动」取的是转录里最后一条记录，不是文件时间
+
+文件修改时间与会话真正停在哪一刻大面积脱钩，而它同时是排序键——错了就等于
+把该交接的会话排到看不见的地方。本机实测：
+
+| 侧 | 样本 | 偏差 |
+|---|---|---|
+| Claude Code | 63 份转录 | 22 份超过一分钟，10 份超过一小时，3 份超过一天，最差 **约 2.8 天** |
+| Codex | 324 份 rollout | **287 份的文件时间早于**最后一条记录；其中 **268 份等于会话开始时刻** |
+
+Claude 侧偏后是因为子代理边车写入、云同步、备份程序都会推后 mtime；Codex 侧
+偏前是因为它的 mtime 实质就是**创建时刻**，拿来当"最后活动"等于显示"最早活动"。
+
+排序损害是可量化的：492 份会话按两种口径排，**位次相同的只有 122 份，最大偏移
+93 位**。
+
+现在从文件尾部读 32 KB 找最后一条记录的时间戳。为什么是 32 KB——实测 8 KB 只
+命中 57/63，32 KB 全部命中；而单条记录可以很长（本机单行最大 3.4 MB），窗口
+太小会整窗落在一行中间。首窗没命中就加倍，上限 512 KB。
+
+尾读窗口的第一行几乎总是残行，会丢掉再解析：不丢的话，一条被切成两半的记录
+可能露出内部某个更早的时间戳。对 463 份真实转录与逐行全量解析比对，**462 份
+完全一致**。
+
+压缩转录（`.jsonl.zst`）不尾读——为一个时间戳解整条 zstd 流不值得，这种情况
+直接回落文件时间并明确标注。界面、命令行卡片、交接文档三处都会说出这个时间
+是从转录读到的还是回落的：一个说不清来源的时间戳会被当成确定事实读。
+
+### 上下文占用
 
 **判据是上下文占用，不是文件体积。** 占用数就写在转录里，不需要猜：
 

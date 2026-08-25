@@ -391,7 +391,17 @@
         text: t("gui.label.archived"), title: t("gui.tip.unreadable"),
       }));
     }
-    top.appendChild(el("span.when", { text: ago(r.mtime), title: r.mtime_text }));
+    // 相对时间用「最后一条记录」而不是文件时间：后者会被子代理写入、云同步、
+    // 备份程序推后，Codex 侧甚至等于会话创建时刻——实测 492 份会话按两种口径
+    // 排序，位次相同的只有 122 份。悬停提示里连来源一起说，因为一个说不清
+    // 来源的时间戳会被当成确定事实读。
+    const approx = r.time_source && r.time_source !== "record";
+    top.appendChild(el("span.when", {
+      class: approx ? "approx" : "",
+      text: ago(r.active_at || r.mtime),
+      title: (r.active_at_text || r.mtime_text) + " — " +
+        t(approx ? "gui.tip.time_mtime" : "gui.tip.time_record"),
+    }));
 
     const m = el("div.metrics");
     // 占用排在体积前面：它才是判定的主依据。体积与占用严重脱钩——
@@ -434,7 +444,13 @@
     };
     row(t("gui.label.session"), r.session_id || "—");
     row(t("gui.label.thread"), r.thread_id);
-    row(t("gui.label.mtime"), r.mtime_text);
+    // 每个数字标来源：这个时间是从转录正文读到的，还是回落到了文件时间。
+    // 两者可信度差很远，而界面上看起来完全一样。
+    row(
+      t("gui.label.mtime"),
+      (r.active_at_text || r.mtime_text) + "  · " +
+        t(approx ? "gui.label.time_mtime" : "gui.label.time_record"),
+    );
     row(t("gui.label.cwd"), r.cwd);
     row(t("gui.label.client"), [r.version, r.origin].filter(Boolean).join(" "));
     /* 判定依据。卡片上会同时出现「谁写的」与「在谈论谁」——一个 Claude Code
@@ -884,7 +900,11 @@
     row(t("gui.label.plan"), r.plan_rel);
     row(t("gui.label.commit"), (r.commit_result || "").split("\n")[0]);
     if (r.total_steps) row(t("gui.label.steps"), r.ticked + " / " + r.total_steps);
-    if (!lastDry && r.out_path) row(t("gui.handoff.wrote"), r.out_path);
+    // 输出路径在试运行时也要显示。此前只在真写之后才给，于是"将写到哪里"这件
+    // 事只能在写完之后才知道——而试运行存在的全部意义就是先看后写。输出目录
+    // 会随"找到哪个计划文档"变化（find_plan 挑最近修改的那份），所以它不是
+    // 一个固定值，用户确实需要在落盘前看一眼。
+    if (r.out_path) row(t(lastDry ? "gui.handoff.will_write" : "gui.handoff.wrote"), r.out_path);
 
     out.appendChild(el("div.panel", null,
       el("div.panel-h", null,

@@ -3,9 +3,9 @@
 <p align="center"><b>When a session dies, move the progress out of the chat and into the repository</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="version" src="https://img.shields.io/badge/version-2.6.0-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="version" src="https://img.shields.io/badge/version-2.6.1-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="tests" src="https://img.shields.io/badge/tests-745%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="tests" src="https://img.shields.io/badge/tests-772%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -273,6 +273,29 @@ the verb absent (`- \`x\` — note`), several paths may share a line,
 `-` `*` `+` all count as list markers, headings may be levels 1–6 and indented,
 `Task` and `Phase` both count, and `Exports`/`Provides` join `Produces`.
 
+### Documentation is not a plan document
+
+**The output directory follows the plan document** (when `--out` is not given), so
+"which file counts as the plan" decides directly where the handoff lands. Two
+exclusions:
+
+- **By name**: `README*`, `CHANGELOG*`, `CONTRIBUTING*`, `LICENSE*` never count,
+  language variants such as `README.zh-Hant.md` included. Their nature is
+  documentation; however plan-like the content looks, it is not a plan.
+- **By fence**: Task headings and checkboxes inside a fenced code block (\`\`\` or
+  ~~~) do not count. A fence is the author's own marker for "this is an example",
+  and respecting it beats stacking on another heuristic.
+
+Why both are needed: this very README *demonstrates* the plan format above,
+complete with `### Task 1: Build the data layer` and four `- [ ] **Step N**` lines.
+Measured without the exclusions, the three READMEs were the *only* candidates, the
+most recently edited one won, and the output directory became the repository root
+instead of `docs/` — triggered by nothing more than "the README was edited today".
+
+Deliberately *not* required: "must have a goal section". A plan document with only
+tasks and steps and no goal section is perfectly valid, and that rule would lock
+real plans out.
+
 ### The unit of judgement is the Task, not the Step
 
 All of a Task's steps get ticked together, or none of them do. The evidence comes
@@ -341,6 +364,42 @@ the former is never allowed to mark a task complete, because ticking writes to t
 plan document and is irreversible.
 
 ## Where the vitals thresholds come from
+
+### "Last active" comes from the transcript, not the file time
+
+A file's modification time is widely disconnected from the moment a session
+actually stopped, and it doubles as the sort key — getting it wrong pushes the
+session that needs a handoff out of sight. Measured locally:
+
+| Side | Sample | Drift |
+|---|---|---|
+| Claude Code | 63 transcripts | 22 off by over a minute, 10 by over an hour, 3 by over a day, worst **about 2.8 days** |
+| Codex | 324 rollouts | **287 file times precede** the last record; **268 of those equal the session's start** |
+
+Claude drifts late because subagent sidecar writes, cloud sync and backup software
+all push mtime forward; Codex drifts early because its mtime *is* the creation
+moment — using it as "last active" shows the earliest activity instead.
+
+The damage to ordering is measurable: across 492 sessions the two criteria agree on
+position for **only 122 of them, with a maximum shift of 93 places**.
+
+The last record's timestamp is now read from a 32 KB tail. Why 32 KB — 8 KB hit
+only 57 of 63 locally, 32 KB hit all of them; and a single record can be enormous
+(the largest line on this machine is 3.4 MB), so a smaller window can land entirely
+inside one line. If the first window misses, it doubles, up to 512 KB.
+
+The first line of a tail window is almost always a fragment, so it is dropped
+before parsing: keeping it risks exposing some earlier timestamp from inside a
+record that got cut in half. Compared against a full line-by-line parse over 463
+real transcripts, **462 agreed exactly**.
+
+Compressed transcripts (`.jsonl.zst`) are not tail-read — decompressing an entire
+zstd stream for one timestamp is not worth it; that case falls back to the file
+time and says so explicitly. The web UI, the CLI card and the handoff document all
+state whether the time came from the transcript or from a fallback: a timestamp
+with no stated origin gets read as established fact.
+
+### Context fullness
 
 **The verdict is based on context fullness, not file size.** The token counts are
 written in the transcript itself, so there is nothing to guess:
