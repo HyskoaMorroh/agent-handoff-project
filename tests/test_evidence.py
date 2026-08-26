@@ -14,6 +14,7 @@ from agent_handoff.core.evidence import (
     _git_grep_batch,
     _python_scan,
     _rg_batch,
+    _symbol_pattern_ere,
     resolve_symbols,
     score_tasks,
 )
@@ -251,3 +252,41 @@ def test_score_tasks_marks_untrusted_search(repo: Path, monkeypatch):
     rep = score_tasks(repo, _tasks(repo))
     assert rep[1]["symbols_trusted"] is False
     assert rep[1]["complete"] is False
+
+
+def test_ere_pattern_uses_no_gnu_extensions():
+    r"""给 `git grep -E` 的模式里不许出现 GNU 正则扩展。
+
+    `\b`、`\w`、`\s`、`\<`、`\>` 都不在 POSIX ERE 里。git 用平台的正则实现，
+    所以带扩展的模式在 Linux（glibc）上能用，在 macOS（系统 BSD libc）上匹配
+    不到任何行——而且不报错：`git grep` 以退出码 1「没有匹配」正常返回，
+    `_git_grep_batch` 于是交回空集并声称成功。调用方据此判「符号全缺」，
+    接续会话重做已完成的工作。
+
+    这条测试在所有平台上都跑，因为它检查的是模式字符串本身，而不是
+    某个引擎接不接受它。CI 第一次真正运行时，macOS 上正是 `\b` 让
+    `test_git_grep_batch_matches_python_scan` 与 `test_all_three_backends_agree`
+    双双失败。
+    """
+    pat = _symbol_pattern_ere(["build_thing", "ThingBuilder"])
+    for ext in (r"\b", r"\w", r"\W", r"\s", r"\S", r"\d", r"\D", r"\<", r"\>"):
+        assert ext not in pat, f"ERE 模式里出现了 GNU 扩展 {ext!r}，macOS 上会静默失配"
+    # 反向保证：POSIX 字符类仍在用，说明空白匹配没被顺手删掉。
+    assert "[[:space:]]" in pat
+
+
+def test_ere_pattern_still_catches_definitions_python_side_agrees(repo: Path):
+    r"""放宽 ERE 之后判定不能跟着放宽。
+
+    去掉 `\b` 让 git grep 捞得更宽（`undef build_thing` 之类也会被捞上来）。
+    那是安全的方向——判定权在 Python 侧的 `_symbol_pattern` 复核。这条测试
+    钉住「捞得宽」没有变成「判得松」：调用不算定义，仍然不算。
+    """
+    (repo / "pkg" / "caller.py").write_text(
+        "from .core import build_thing\n\nx = build_thing()\nbuild_thing()\n",
+        encoding="utf-8",
+    )
+    # `render_ui` 只在计划文档里被提到，从未定义过。
+    gg, ok = _git_grep_batch(repo, ["render_ui"])
+    assert ok
+    assert gg == set(), "只被提及的符号不能算定义"

@@ -117,7 +117,8 @@ VSCode 多根工作区里，`cwd` 这个字段**结构上就不携带**「在改
 
 CI 从未运行过。四个版本（2.6.1 / 2.7.0 / 2.7.1 / 2.8.0）的变更记录都写着
 「CI 的 ruff 作业为权威」，而那个工作流一次都没被触发，GitHub 甚至没把它注册进
-Actions 列表。这一版修掉触发条件，并补上那四次本该被挡下的 lint 违规。
+Actions 列表。这一版修掉触发条件，补上那四次本该被挡下的 lint 违规，并修掉
+CI 一跑起来立刻抓到的两个真缺陷——两个都是本机跑不到的平台差异。
 
 ### 修复
 
@@ -140,15 +141,54 @@ Actions 列表。这一版修掉触发条件，并补上那四次本该被挡下
 
 - **三份 README 的测试数徽章从 814 改成 817。** 真实收集数是 817；徽章的门只挡
   「徽章数小于 `def test_` 计数（601）」，所以 814 不会被 CI 拦下，但它是过时的。
+  （加上本版新增的 2 例回归测试后为 819。）
+
+### CI 一跑起来就抓到的两个缺陷
+
+这两个都不是 lint 能看出来的，本机也永远跑不到——正是 CI 存在的理由。
+
+- **`git grep` 的模式里不能用 `\b`（macOS 上静默失配）。** `_symbol_pattern_ere`
+  给 `git grep -E` 的 A 分支带着 `\b`，而那是 GNU 扩展，不在 POSIX ERE 里。
+  git 用平台的正则实现：
+
+  | 平台 | git 的正则来源 | `\b` |
+  | --- | --- | --- |
+  | Linux | glibc | 支持 |
+  | Git for Windows | 自带 glibc 兼容层 | 支持 |
+  | macOS（runner 上是 Homebrew git 2.55.0） | 系统 BSD libc | **不支持** |
+
+  失败方式是最坏的一种：不报错、不警告。`git grep` 以退出码 1（「没有匹配」）
+  正常返回，`_git_grep_batch` 于是交回空集**并声称 `ok=True`**。调用方拿到
+  「这个仓库里一个符号都没定义」，据此判任务未完成，接续会话就会重做已经做完的
+  工作——而这正是这个工具要防的事。没装 ripgrep 的 macOS 用户一直在踩这个坑。
+
+  修法是去掉 `\b`，而不是换成别的边界写法。这一条只负责把候选行**捞出来**，
+  「是不是定义」由 Python 侧用 `_symbol_pattern` 复核。捞宽了会被否掉，
+  捞不到就永远没有第二次机会。新增 `test_ere_pattern_uses_no_gnu_extensions`
+  在所有平台上检查模式字符串本身（`\b` `\w` `\s` `\<` `\>` 等一律不许出现），
+  以及一条钉住「捞得宽没有变成判得松」的用例。
+
+- **`test_local_transcript_still_offers_resume` 硬编码了假的本机用户名。**
+  测试用 `monkeypatch.setenv("USERNAME", "devin")` 宣称本机叫 `devin`，同时把
+  真实的 `tmp_path` 当 cwd 递进去——而 Windows 上 `tmp_path` 就落在
+  `C:\Users\<真实用户名>\AppData\...` 里。CI 的 runner 上那个名字是
+  `runneradmin`，于是 `is_foreign_path` **正确地**判它外来，测试却期望不外来。
+
+  在开发机上不失败纯属巧合：那台机器的用户名恰好就是硬编码的那个假名。
+  产品逻辑没问题，是测试自相矛盾。改成从 `tmp_path` 里取出真实用户名当假的
+  本机名，任何机器上都成立。
 
 ### 验证
 
 - `python -m ruff check src tests scripts`：**All checks passed!**（改前 13 errors）
-- `python -m pytest`：**817 collected, 0 failed, 3 skipped**（跳过项：ripgrep 未装、
+- `python -m pytest`：**819 collected, 0 failed, 3 skipped**（跳过项：ripgrep 未装、
   两项 POSIX 分隔符行为）
+- `python -m compileall` 带 `-W error::SyntaxWarning`：exit 0
 - `python scripts/check_i18n.py`：3 languages, 575 keys each — all aligned
 - `python scripts/build_guide.py` 后 `git diff --exit-code docs/guide.html`：无 diff
-- `python -m compileall src tests scripts`：exit 0
+- `agent-handoff --version`：2.8.1
+- **两个平台缺陷的修复由 CI 验证，不是本机**：本机就是它们原本通过的那个环境，
+  在这里跑绿不能证明什么。
 - `ruff format --check` **未纳入**：CI 的 Lint 步骤只跑 `ruff check`。全库跑
   format 会重排 40 个文件，那是与本次修复无关的巨型 diff。
 

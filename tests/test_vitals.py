@@ -29,7 +29,7 @@ from agent_handoff.core.vitals import (
     scan_session_vitals,
     sessions_for_repo,
 )
-from agent_handoff.platform import iter_path_candidates
+from agent_handoff.platform import FOREIGN_HOME_RX, iter_path_candidates
 
 
 def _write_jsonl(fp: Path, rows: list[dict]) -> None:
@@ -623,7 +623,20 @@ def test_foreign_transcript_offers_no_resume(tmp_path: Path, monkeypatch):
 
 def test_local_transcript_still_offers_resume(tmp_path: Path, monkeypatch):
     """外来判断不能把正常会话也扫进去——那会让 resume 功能整体消失。"""
-    monkeypatch.setenv("USERNAME", "devin")
+    # 假的本机用户名必须取自 `tmp_path` 真实含有的那一个，不能硬编码。
+    #
+    # 为什么：`is_foreign_path` 认的是「路径形如家目录，而其中的用户名不是本机的」。
+    # 而 pytest 的 tmp_path 在 Windows 上就落在 `C:\Users\<真实用户名>\AppData\...`
+    # 里，所以它自己就带着一个用户名。硬编码一个假名等于宣称「本机叫 devin」，
+    # 同时递进去一条写着 `runneradmin` 的路径——两者矛盾，函数正确地判它外来，
+    # 测试却期望不外来。在开发机上恰好不失败，纯粹因为那台机器的用户名与硬编码
+    # 的假名相同；CI 的 Windows runner 上立刻暴露（`runneradmin`）。
+    #
+    # POSIX 上 tmp_path 一般不在家目录下（`/tmp/...`），正则不命中，这里取到
+    # 空值，退回用真实环境的用户名——两种情况都不会自相矛盾。
+    m = FOREIGN_HOME_RX.search(str(tmp_path))
+    if m:
+        monkeypatch.setenv("USERNAME", m.group(1))
     fp = tmp_path / "local.jsonl"
     # cwd 指向一个真实存在的本机目录。
     _write_jsonl(fp, [{"type": "system", "sessionId": "loc1", "cwd": str(tmp_path)}])

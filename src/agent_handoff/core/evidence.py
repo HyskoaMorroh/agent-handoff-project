@@ -124,12 +124,29 @@ def _symbol_pattern_ere(symbols: Iterable[str]) -> str:
     也不保证认 `\\s`。改用捕获组 + `[[:space:]]`。原版对每个符号单独跑一次
     `git grep`，从没触发这个差异；批量化之后必须显式区分两种方言。
 
-    这里只负责把候选行捞出来；「是不是定义」由 Python 侧用 `_symbol_pattern`
-    复核，所以两种方言的宽严差异不会影响最终判定。
+    **也不用 `\\b`。** 那是 GNU 扩展，不在 POSIX ERE 里。git 用平台的正则实现，
+    于是同一条模式在不同系统上结果不同：
+
+      | 平台 | git 的正则来源 | `\\b` |
+      | --- | --- | --- |
+      | Linux | glibc | 支持 |
+      | Git for Windows | 自带 glibc 兼容层 | 支持 |
+      | macOS（Homebrew git 2.55.0） | 系统 BSD libc | **不支持** |
+
+    不支持时的表现是最坏的一种：不报错、不警告，`git grep` 以退出码 1
+    （「没有匹配」）正常返回，于是 `_git_grep_batch` 交回一个空集并声称
+    `ok=True`。调用方拿到「这个仓库里一个符号都没定义」，据此判定任务未完成，
+    接续会话就会重做已经做完的工作。CI 第一次真正运行时，macOS 的两个
+    Python 版本都在这里失败，而 Linux 与 Windows 全绿——分布与上表完全一致。
+
+    去掉 `\\b` 让这一条变宽（`undef build_thing` 之类也会被捞上来），那是**安全的
+    方向**：这个函数只负责把候选行捞出来，「是不是定义」由 Python 侧用
+    `_symbol_pattern` 复核（见 `_names_in_fragment`）。捞多了会被否掉，捞不到
+    就永远没有第二次机会。
     """
     alts = "|".join(re.escape(s) for s in symbols)
     mods = rf"(({DECL_MODIFIERS})[ \t]+)*"
-    a = rf"\b({DEF_KEYWORDS})[[:space:]]+({alts})\b"
+    a = rf"({DEF_KEYWORDS})[[:space:]]+({alts})"
     b = rf"^[ \t]*{mods}({alts})[ \t]*:"
     c = rf"^[ \t]*{mods}({alts})[ \t]*\((\)|[^(\n][^\n]{{0,200}}\))[ \t]*(:[^{{\n]{{0,160}})?[ \t]*\{{[ \t]*$"
     return f"({a})|({b})|({c})"
