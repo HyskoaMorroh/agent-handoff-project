@@ -3,7 +3,7 @@
 <p align="center"><b>会话卡死时，把进度从对话里搬进仓库</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.8.1-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.8.2-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
   <a href="tests/"><img alt="测试" src="https://img.shields.io/badge/tests-819%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="运行时依赖" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
@@ -1043,6 +1043,23 @@ PowerShell 里也是 `Push-Location` 的别名，一条形态覆盖三种壳。
 - 子模块脏了会被报出来——父仓库的提交不带它，接续会话看到不一致的树
 - stderr 也钉到 UTF-8。原版只处理 stdout，GBK 控制台下中文报错会触发 UnicodeEncodeError，错误信息把错误自己吃掉了
 - 超时的命令保留已产出的部分输出，那部分往往正是失败原因
+
+## 仓库里有什么
+
+只有必备文件：`src/`（27 个模块）、`tests/`（18 个测试文件、819 条用例）、
+`scripts/`、`.github/workflows/ci.yml`、三份 README、`CHANGELOG.md`、`LICENSE`、
+`pyproject.toml`、`uv.lock`，以及 `docs/` 里的图文说明源与截图。
+
+**这个工具自己跑自己产生的交接记录不在里面。** 交接文件的内容是「上一段对话的
+现场」——照抄用户原话、引用的外部项目路径、当时正在做的其它项目的需求原文。
+本仓库曾提交过一份 1.6 MB / 53013 行的，里面是另一个项目的完整需求书。
+2.8.2 把它们移出跟踪，并在 `.gitignore` 里挡住 `*-handoff.md`。
+
+这条规则**只作用于本仓库**。你自己的仓库不受影响：跑 `agent-handoff .` 时，
+生成的交接文件照旧会被第 1 步的快照提交带上——那正是这个工具的用途。
+
+留着的是 `docs/2026-08-25-*-plan.md` 两份方案书：CHANGELOG 里「为什么这么做」
+的证据链出自那里，且内容只关于本项目。
 
 ## 开发
 

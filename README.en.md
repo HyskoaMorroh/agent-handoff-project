@@ -3,7 +3,7 @@
 <p align="center"><b>When a session dies, move the progress out of the chat and into the repository</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="version" src="https://img.shields.io/badge/version-2.8.1-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="version" src="https://img.shields.io/badge/version-2.8.2-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
   <a href="tests/"><img alt="tests" src="https://img.shields.io/badge/tests-819%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
@@ -1214,6 +1214,28 @@ Every feature and flag is still here, exit codes are unchanged, and the environm
 - Dirty submodules are reported — the parent commit does not carry them, so the next session sees an inconsistent tree
 - stderr is pinned to UTF-8 too. The original handled only stdout, so a Chinese error message on a GBK console raised UnicodeEncodeError and the error ate itself
 - A timed-out command keeps whatever output it produced, which is usually exactly where the failure is
+
+## What is in this repository
+
+Only what is needed: `src/` (27 modules), `tests/` (18 files, 819 cases),
+`scripts/`, `.github/workflows/ci.yml`, three READMEs, `CHANGELOG.md`, `LICENSE`,
+`pyproject.toml`, `uv.lock`, and the illustrated-guide sources and screenshots
+under `docs/`.
+
+**The handoff records this tool produced on itself are not here.** A handoff file
+holds the previous conversation's working context — the user's own words quoted
+verbatim, paths to external projects, the requirements of whatever *other* project
+was in flight at the time. This repository once committed one that ran to
+1.6 MB / 53,013 lines and contained another project's full requirements document.
+2.8.2 removed them from tracking and added `*-handoff.md` to `.gitignore`.
+
+That rule applies **only to this repository**. Your own repository is unaffected:
+run `agent-handoff .` there and the generated handoff file is still picked up by
+the step-1 snapshot commit — which is the whole point of the tool.
+
+What stayed are the two design documents under `docs/2026-08-25-*-plan.md`. The
+"why" behind the CHANGELOG entries comes from those, and their content concerns
+only this project.
 
 ## Development
 

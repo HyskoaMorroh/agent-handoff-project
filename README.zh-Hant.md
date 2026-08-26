@@ -3,7 +3,7 @@
 <p align="center"><b>工作階段卡死時，把進度從對話裡搬進儲存庫</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.8.1-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.8.2-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
   <a href="tests/"><img alt="測試" src="https://img.shields.io/badge/tests-819%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="執行時依賴" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
@@ -1058,6 +1058,23 @@ PowerShell 裡也是 `Push-Location` 的別名，一條形態覆蓋三種殼。
 - 子模組髒了會被報出來——父儲存庫的提交不帶它，接續工作階段看到不一致的樹
 - stderr 也釘到 UTF-8。原版只處理 stdout，GBK 主控台下中文報錯會觸發 UnicodeEncodeError，錯誤訊息把錯誤自己吃掉了
 - 逾時的命令保留已產出的部分輸出，那部分往往正是失敗原因
+
+## 儲存庫裡有什麼
+
+只有必備檔案：`src/`（27 個模組）、`tests/`（18 個測試檔、819 條用例）、
+`scripts/`、`.github/workflows/ci.yml`、三份 README、`CHANGELOG.md`、`LICENSE`、
+`pyproject.toml`、`uv.lock`，以及 `docs/` 裡的圖文說明來源與截圖。
+
+**這個工具自己跑自己產生的交接記錄不在裡面。** 交接檔案的內容是「上一段對話的
+現場」——照抄使用者原話、引用的外部專案路徑、當時正在做的其它專案的需求原文。
+本儲存庫曾提交過一份 1.6 MB／53013 行的，裡面是另一個專案的完整需求書。
+2.8.2 把它們移出追蹤，並在 `.gitignore` 裡擋住 `*-handoff.md`。
+
+這條規則**只作用於本儲存庫**。你自己的儲存庫不受影響：跑 `agent-handoff .` 時，
+產生的交接檔案照舊會被第 1 步的快照提交帶上——那正是這個工具的用途。
+
+留著的是 `docs/2026-08-25-*-plan.md` 兩份方案書：CHANGELOG 裡「為什麼這麼做」
+的證據鏈出自那裡，且內容只關於本專案。
 
 ## 開發
 

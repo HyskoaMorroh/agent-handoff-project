@@ -113,6 +113,57 @@ VSCode 多根工作区里，`cwd` 这个字段**结构上就不携带**「在改
   查出 13 项违规——全部来自 2.6.1 以来的四次提交。同时那四次里写的「CI 的 ruff
   作业为权威」也是空话：CI 从未运行过（见 2.8.1）。
 
+## [2.8.2] - 2026-08-26
+
+仓库只留必备文件。这个工具**自己跑自己**的产物一直被提交进来，而交接文件的
+内容是「上一段对话的现场」——里面照抄用户原话、外部项目路径、以及当时正在做的
+**其它**项目的需求原文。
+
+### 移除
+
+四份文档移出跟踪，共约 1.8 MB：
+
+| 文件 | 体积 | 为什么不该在这里 |
+| --- | --- | --- |
+| `2026-08-24-handoff.md` | 1.6 MB / 53013 行 | 本工具的输出。内含另一个项目（kirara-ai）的完整需求书、桌面目录结构、私有项目名。且放在仓库根目录而不是 `docs/` |
+| `docs/2026-08-23-handoff.md` | 99 KB | 同上 |
+| `docs/2026-08-22-handoff.md` | 4.7 KB | 同上 |
+| `docs/superpowers/plans/ccs-ui-notes.md` | 24.5 KB | 勘查笔记，含本机桌面路径 |
+
+删除前核对过：这四份没有被任何代码、测试或脚本**依赖**。`handoff.py` 与
+`test_handoff.py` 里出现的 `2026-08-23-handoff.md` 是 docstring 里的举例，
+讲的是「文件名只带日期所以同一天会覆盖」这条规则，不是读文件。
+
+**历史不动。** 文件仍在 git 历史里（`77955e8` 及更早），需要时能翻出来。
+改写历史要 force push，会让已有 clone 全部失效；这些文件不含密钥或凭证，
+仓库也没有 fork，收益不足以抵掉那个风险。
+
+### 保留
+
+两份方案书留着（`docs/2026-08-25-attribution-and-recency-plan.md`、
+`docs/2026-08-25-cross-project-uplift-plan.md`，共 76 KB）。它们是 CHANGELOG 里
+「为什么这么做」的证据链——2.4.0 到 2.7.0 的设计取舍都出自那两份，而且内容
+只关于本项目，不含个人信息。
+
+### 新增
+
+- **`.gitignore` 挡住 `*-handoff.md` 与 `docs/superpowers/`。** 用通配符而不是
+  逐个列文件名：交接文件名只带日期，明天再跑就是一个新名字，逐个列必然漏。
+
+  代价要说清楚：本仓库自己跑 `agent-handoff .` 时，产物不会被第 1 步的
+  `git add -A` 带进快照提交。那正是想要的效果。这条规则**只作用于本仓库**——
+  对用户自己的仓库没有任何影响，那边的交接文件照旧会被提交。
+
+### 验证
+
+- `git ls-files | wc -l`：77 → **73**
+- `python -m pytest`：819 collected, 0 failed, 3 skipped
+- `python -m ruff check src tests scripts`：All checks passed!
+- `python scripts/check_i18n.py`：3 languages, 575 keys each — all aligned
+- `python scripts/build_guide.py` 后 `git diff --exit-code docs/guide.html`：无 diff
+- 三份 README 与 `docs/i18n/*.json`、`guide.template.html` 里都不含指向被删文件的
+  链接，所以删除没留下悬挂引用（逐文件核对过）
+
 ## [2.8.1] - 2026-08-26
 
 CI 从未运行过。四个版本（2.6.1 / 2.7.0 / 2.7.1 / 2.8.0）的变更记录都写着
