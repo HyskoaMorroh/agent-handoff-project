@@ -713,6 +713,10 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
                 ))
                 if vd.get("conflict"):
                     a(tr.t("doc.sessions.work_conflict"))
+                # 会话中途换过目录时单独说一句：接手方看到「工作目录」那一行
+                # 只会以为整场都在那里，而实际上那只是它待过的目录之一。
+                if vd.get("cwd_moved"):
+                    a(tr.t("doc.sessions.cwd_moved"))
                 # 证据逐条列出，最多 4 条：让接手方能核实这个结论，而不是接受
                 # 一个无从追溯的路径。超过 4 条时后面的都是弱证据，没有价值。
                 for e in (vd.get("evidence") or [])[:4]:

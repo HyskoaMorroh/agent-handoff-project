@@ -3,9 +3,9 @@
 <p align="center"><b>工作階段卡死時，把進度從對話裡搬進儲存庫</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.7.0-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.7.1-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="測試" src="https://img.shields.io/badge/tests-789%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="測試" src="https://img.shields.io/badge/tests-794%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="執行時依賴" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="授權" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -402,6 +402,49 @@ Codex 側更徹底：它把 `cwd` 設成自己的工作階段沙箱目錄
 發生在工作階段中後段**——先讀程式碼、討論方案，然後才動手改。超預算時結論仍然
 給出，但會標註「只看了前 N 行」，因為「沒有寫入證據」與「沒看到寫入證據」是
 兩回事。
+
+### `cwd` 是逐行寫的快照，不是工作階段級常量
+
+同一個工作階段裡 `cwd` 可以變，所以工具收集**全部**取值、按出現次數排，不是讀
+第一個就完。本機實測 66 份含 `cwd` 的記錄：
+
+| 情況 | 份數 |
+|---|---|
+| 只有一個取值 | 44 |
+| 多個取值，但只差磁碟機代號大小寫 | 15 |
+| **多個取值，真正不同的目錄** | **7** |
+
+最極端的一份在 `C:\Users\devin` 與 9 個 temp 子目錄之間來回；另一份在兩個專案
+之間切換 **19 次**（1417 行指向啟動目錄、93 行指向真正在改的專案）。只讀第一個
+拿到的是「啟動那一刻」的值 —— 在 VSCode 多根工作區裡那等於 `folders[0]`，與在改
+哪個專案無關。
+
+真正換過儲存庫時卡片會說「待過的目錄（中途換過，這只是其中之一）」，而不是
+「啟動目錄」—— 後者在這種情況下本身就不準確。磁碟機代號大小寫差異不算換過：
+那是兩個寫入來源（VSCode 的 `fsPath` 與 realpath 正規化）造成的。
+
+`cwd` 的收集**不受行預算約束**，與工具證據不同。它只做一次子串查找加一次限長
+正則（只掃行首 32 KB，因為實測 33655 條帶 `cwd` 的行裡 p99 偏移是 16102 位元組），
+6.5 MB 記錄全量掃完 43 毫秒。不全掃不只是答案不完整，而是**答案會錯**：換目錄
+往往發生在後段，預算截斷恰好切掉那部分，於是工具會說「一直在同一個目錄」，
+而事實相反。
+
+### 多根工作區下 cwd 取哪個根
+
+以下是從 Claude Code 的 VSCode 擴充功能程式碼讀出的行為，**官方文件未記載**：
+
+- cwd 取 `workspaceFolders[0]`，即 `.code-workspace` 裡 `folders` 的**第一個**
+  條目。不看作用中編輯器、不彈窗選擇。
+- 其餘根轉成 `--add-dir` 傳給 CLI，所以它們的 `.claude/skills/` 會載入，但
+  `CLAUDE.md` 預設不載入。
+- 切換作用中編輯器**不會**改變 cwd，已開著的工作階段和新開的都不會。
+- 擴充功能的設定項裡沒有任何 cwd / workingDirectory 類的鍵。
+- VSCode 的 workspace 上下文是視窗級單例，架構上無法給不同擴充功能指定不同
+  工作目錄。
+
+所以如果你在一個目錄啟動、在另一個目錄幹活，記錄裡的 `cwd` 會一直指著啟動目錄。
+要讓它對，只能一個專案一個視窗，或者用 `/cd`（需 Claude Code v2.1.169+）在工作
+階段內搬遷。這個工具的證據分層就是為了在這件事沒做對時仍然給出正確答案。
 
 ### 「最後活動」取的是記錄裡最後一條，不是檔案時間
 

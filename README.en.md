@@ -3,9 +3,9 @@
 <p align="center"><b>When a session dies, move the progress out of the chat and into the repository</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="version" src="https://img.shields.io/badge/version-2.7.0-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="version" src="https://img.shields.io/badge/version-2.7.1-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="tests" src="https://img.shields.io/badge/tests-789%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="tests" src="https://img.shields.io/badge/tests-794%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -440,6 +440,57 @@ used for the identity card) because **file writes usually happen in the later pa
 session** — read the code, discuss the approach, then start changing things. Past the
 budget the verdict still stands but is marked "only the first N lines were read",
 because "no write evidence" and "no write evidence seen" are different claims.
+
+### `cwd` is a per-line snapshot, not a session-level constant
+
+`cwd` can change within one session, so the tool collects **every** value and ranks
+them by how often each appears rather than taking the first one. Measured across 66
+transcripts that carry a `cwd`:
+
+| Situation | Count |
+|---|---|
+| One value only | 44 |
+| Several values, differing only in drive-letter case | 15 |
+| **Several values, genuinely different directories** | **7** |
+
+The most extreme one bounces between `C:\Users\devin` and nine temp subdirectories;
+another switches between two projects **19 times** (1417 lines pointing at the launch
+directory, 93 at the project actually being edited). Taking only the first value gives
+you "where it started" — and in a VS Code multi-root workspace that is just
+`folders[0]`, unrelated to which project is being edited.
+
+When a session genuinely moved between repos the card says "directories it sat in
+(changed partway; this is one of several)" instead of "launched in" — the latter is
+simply inaccurate in that case. Drive-letter case differences do not count as a move:
+those come from two writers (VS Code's `fsPath` and realpath normalisation).
+
+Collecting `cwd` is **not** subject to the line budget, unlike tool evidence. It costs
+one substring check plus one length-capped regex (only the first 32 KB of a line, since
+the p99 offset across 33655 `cwd`-bearing lines is 16102 bytes); a 6.5 MB transcript
+scans fully in 43 ms. Not scanning it all does not merely give an incomplete answer, it
+gives a **wrong** one: directory moves tend to happen late in a session, exactly where
+the budget cuts off, so the tool would claim "it stayed in one directory" when the
+opposite is true.
+
+### Which root cwd comes from in a multi-root workspace
+
+The following was read out of the Claude Code VS Code extension's own code and is
+**not documented officially**:
+
+- cwd is `workspaceFolders[0]` — the **first** entry under `folders` in the
+  `.code-workspace` file. Not the active editor, and no prompt to choose.
+- The remaining roots become `--add-dir` arguments to the CLI, so their
+  `.claude/skills/` load but their `CLAUDE.md` does not (by default).
+- Switching the active editor does **not** change cwd, for open or newly created
+  sessions.
+- The extension exposes no cwd / workingDirectory setting of any kind.
+- VS Code's workspace context is a per-window singleton, so there is architecturally no
+  way to give different extensions different working directories.
+
+So if you launch in one directory and work in another, the transcript's `cwd` keeps
+pointing at the launch directory. The only ways to make it correct are one window per
+project, or `/cd` (requires Claude Code v2.1.169+) to relocate mid-session. This tool's
+evidence layering exists to give the right answer when that has not been done.
 
 ### "Last active" comes from the transcript, not the file time
 

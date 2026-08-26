@@ -85,7 +85,14 @@ def print_session_card(r: SessionRow, tr: Translator, index: int | None = None) 
         if v.basis:
             print(tr.t("cli.card.work_basis", value=tr.t("evidence.level." + v.basis)))
     if r.cwd:
-        label = "cli.card.cwd_conflict" if v.conflict else "cli.card.cwd"
+        # 三种文案对应三种事实：会话中途换过目录、启动目录与在改的仓库不同、
+        # 两者一致。「启动目录」这个说法在换过目录时本身就不准确。
+        if v.cwd_moved:
+            label = "cli.card.cwd_moved"
+        elif v.conflict:
+            label = "cli.card.cwd_conflict"
+        else:
+            label = "cli.card.cwd"
         print(tr.t(label, value=r.cwd))
     extra = " ".join(x for x in (r.version, r.origin) if x)
     if extra:

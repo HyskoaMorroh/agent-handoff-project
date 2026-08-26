@@ -3,9 +3,9 @@
 <p align="center"><b>会话卡死时，把进度从对话里搬进仓库</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.7.0-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.7.1-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="测试" src="https://img.shields.io/badge/tests-789%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="测试" src="https://img.shields.io/badge/tests-794%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="运行时依赖" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="许可" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -388,6 +388,48 @@ Codex 侧更彻底：它把 `cwd` 设成自己的会话沙箱目录
 收集证据有独立的行预算（1500 行，比身份卡的 260/400 大得多）：**文件写入通常
 发生在会话中后段**——先读代码、讨论方案，然后才动手改。超预算时结论仍然给出，
 但会标注「只看了前 N 行」，因为「没有写入证据」与「没看到写入证据」是两回事。
+
+### `cwd` 是逐行写的快照，不是会话级常量
+
+同一个会话里 `cwd` 可以变，所以工具收集**全部**取值、按出现次数排，不是读第一个
+就完。本机实测 66 份含 `cwd` 的转录：
+
+| 情况 | 份数 |
+|---|---|
+| 只有一个取值 | 44 |
+| 多个取值，但只差盘符大小写 | 15 |
+| **多个取值，真正不同的目录** | **7** |
+
+最极端的一份在 `C:\Users\devin` 与 9 个 temp 子目录之间来回；另一份在两个项目
+之间切换 **19 次**（1417 行指向启动目录、93 行指向真正在改的项目）。只读第一个
+拿到的是「启动那一刻」的值 —— 在 VSCode 多根工作区里那等于 `folders[0]`，与在改
+哪个项目无关。
+
+真正换过仓库时卡片会说「待过的目录（中途换过，这只是其中之一）」，而不是
+「启动目录」—— 后者在这种情况下本身就不准确。盘符大小写差异不算换过：那是两个
+写入来源（VSCode 的 `fsPath` 与 realpath 归一化）造成的。
+
+`cwd` 的收集**不受行预算约束**，与工具证据不同。它只做一次子串查找加一次限长
+正则（只扫行首 32 KB，因为实测 33655 条带 `cwd` 的行里 p99 偏移是 16102 字节），
+6.5 MB 转录全量扫完 43 毫秒。不全扫不只是答案不完整，而是**答案会错**：换目录
+往往发生在后段，预算截断恰好切掉那部分，于是工具会说「一直在同一个目录」，
+而事实相反。
+
+### 多根工作区下 cwd 取哪个根
+
+以下是从 Claude Code 的 VSCode 扩展代码读出的行为，**官方文档未记载**：
+
+- cwd 取 `workspaceFolders[0]`，即 `.code-workspace` 里 `folders` 的**第一个**
+  条目。不看活动编辑器、不弹窗选择。
+- 其余根转成 `--add-dir` 传给 CLI，所以它们的 `.claude/skills/` 会加载，但
+  `CLAUDE.md` 默认不加载。
+- 切换活动编辑器**不会**改变 cwd，已开着的会话和新开的都不会。
+- 扩展的配置项里没有任何 cwd / workingDirectory 类的键。
+- VSCode 的 workspace 上下文是窗口级单例，架构上无法给不同扩展指定不同工作目录。
+
+所以如果你在一个目录启动、在另一个目录干活，转录里的 `cwd` 会一直指着启动目录。
+要让它对，只能一个项目一个窗口，或者用 `/cd`（需 Claude Code v2.1.169+）在会话
+内搬迁。这个工具的证据分层就是为了在这件事没做对时仍然给出正确答案。
 
 ### 「最后活动」取的是转录里最后一条记录，不是文件时间
 

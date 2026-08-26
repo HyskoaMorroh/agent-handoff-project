@@ -304,4 +304,105 @@ def test_verdict_to_dict_is_json_safe(tmp_path):
 def test_empty_verdict_dict_has_all_keys():
     """空结论也要有完整字段：前端按键取值，缺键会渲染成 undefined。"""
     d = RepoVerdict().to_dict()
-    assert set(d) == {"primary", "confidence", "basis", "conflict", "truncated", "evidence"}
+    assert set(d) == {
+        "primary", "confidence", "basis", "conflict", "truncated",
+        "cwd_moved", "evidence",
+    }
+
+
+def _claude_cwd(cwd: str, extra: str = "") -> str:
+    """一行 Claude Code 转录，信封层带 cwd。"""
+    return json.dumps({"type": "user", "cwd": cwd, "sessionId": "s1", "pad": extra})
+
+
+def test_cwd_is_collected_per_line_not_just_first(tmp_path):
+    """cwd 是逐行写的运行时快照，多个取值都要收，按出现次数排序。
+
+    实测：本机 66 份含 cwd 的转录里 22 份出现过多个取值，7 份是真正不同的目录。
+    某会话在两个目录之间切换 19 次。只取第一个（`_Extractor` 的做法）拿到的是
+    「启动那一刻」的值，多根工作区下等于 VSCode 的 `folders[0]`。
+    """
+    a = tmp_path / "aa"
+    (a / ".git").mkdir(parents=True)
+    b = tmp_path / "bb"
+    (b / ".git").mkdir(parents=True)
+
+    at = AttributionCollector("Claude Code", ATTRIBUTION_LINE_BUDGET)
+    # 先在 a 里一行，然后 b 里三行。first-wins 会选 a，按次数应选 b。
+    at.feed(_claude_cwd(str(a)))
+    for _ in range(3):
+        at.feed(_claude_cwd(str(b)))
+    v = at.verdict()
+
+    cwds = [e for e in v.evidence if e.level == "cwd"]
+    assert len(cwds) == 2
+    assert cwds[0].display == str(b)     # 次数多的排前面
+    assert cwds[0].hits == 3
+    assert v.primary == str(b)
+    # 指向过两个不同仓库，要说出来。
+    assert v.cwd_moved is True
+
+
+def test_cwd_moved_false_for_a_single_directory(tmp_path):
+    """只待过一个目录时不谎报「换过目录」。"""
+    a = tmp_path / "aa"
+    (a / ".git").mkdir(parents=True)
+
+    at = AttributionCollector("Claude Code", ATTRIBUTION_LINE_BUDGET)
+    for _ in range(4):
+        at.feed(_claude_cwd(str(a)))
+    v = at.verdict()
+
+    assert v.cwd_moved is False
+    assert v.primary == str(a)
+
+
+def test_cwd_case_variants_are_one_directory(tmp_path):
+    """`e:\\x` 与 `E:\\x` 是同一个目录，不该被当成「换过目录」。
+
+    实测 22 份多取值的转录里有 15 份只差盘符大小写——那是两个写入来源
+    （VSCode 的 fsPath 与 realpath 归一化）造成的，不是真的换了目录。
+    """
+    a = tmp_path / "aa"
+    (a / ".git").mkdir(parents=True)
+    p = str(a)
+
+    at = AttributionCollector("Claude Code", ATTRIBUTION_LINE_BUDGET)
+    at.feed(_claude_cwd(p))
+    at.feed(_claude_cwd(p.replace("/", "\\") if "/" in p else p.upper()))
+    v = at.verdict()
+
+    assert v.cwd_moved is False
+
+
+def test_cwd_beyond_the_head_window_is_skipped(tmp_path):
+    """超出行首扫描窗口的 cwd 漏掉不算错，但不能崩、也不能误报。
+
+    单行可以长到 3.4 MB（贴了大文件那种）。对整行跑正则等于把这条路径上最贵的
+    一步付满，所以只扫行首 32 KB。cwd 是逐行重复写的，漏一次不影响按次数排序。
+    """
+    a = tmp_path / "aa"
+    (a / ".git").mkdir(parents=True)
+
+    at = AttributionCollector("Claude Code", ATTRIBUTION_LINE_BUDGET)
+    # 把 cwd 推到窗口之外：前面垫足够长的内容。
+    at.feed(json.dumps({"pad": "x" * 40000, "cwd": str(a)}))
+    v = at.verdict()
+
+    assert v.primary == ""      # 一条证据都没收到
+    assert v.cwd_moved is False
+
+
+def test_codex_turn_cwd_counts_toward_cwd_moved(tmp_path):
+    """Codex 的逐轮 `turn_context.cwd` 同样参与「换过目录」判定。"""
+    a = tmp_path / "aa"
+    (a / ".git").mkdir(parents=True)
+    b = tmp_path / "bb"
+    (b / ".git").mkdir(parents=True)
+
+    at = AttributionCollector("Codex", ATTRIBUTION_LINE_BUDGET)
+    at.feed(_codex_turn(str(a)))
+    at.feed(_codex_turn(str(b)))
+    v = at.verdict()
+
+    assert v.cwd_moved is True

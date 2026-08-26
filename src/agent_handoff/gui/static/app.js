@@ -507,7 +507,12 @@
     if (vd.primary) {
       row(t("gui.label.work_repo"), vd.primary + "  · " + t("cli.card.conf." + (vd.confidence || "none")));
     }
-    row(t(vd.conflict ? "gui.label.cwd_conflict" : "gui.label.cwd"), r.cwd);
+    // 「启动目录」这个说法在会话中途换过目录时本身就不准确——那时该说的是
+    // 「待过多个目录」。三种文案对应三种事实，不含糊其辞。
+    row(
+      t(vd.cwd_moved ? "gui.label.cwd_moved" : vd.conflict ? "gui.label.cwd_conflict" : "gui.label.cwd"),
+      r.cwd,
+    );
     row(t("gui.label.client"), [r.version, r.origin].filter(Boolean).join(" "));
     /* 判定依据。卡片上会同时出现「谁写的」与「在谈论谁」——一个 Claude Code
        会话完全可以整篇在分析某个 Codex 会话，开场提问里就带 codex://threads/…。

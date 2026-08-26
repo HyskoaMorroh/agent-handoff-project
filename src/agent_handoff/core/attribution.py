@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -94,6 +95,24 @@ _DOMINANCE = 3
 # 撑成文件列表。
 _SAMPLES = 3
 
+# 顶层 `"cwd": "..."` 的廉价提取。用正则而不是 `json.loads` 整行：Claude 侧
+# 几乎每一行都带 cwd，而这些行大多同时是几十 KB 的消息体，为一个字段解析整个
+# 对象是这条路径上最贵的浪费。
+#
+# 只认转义后的形态（`\\` 与 `\"`），因为原始行就是 JSON 文本。取到之后把
+# `\\` 还原成单个反斜杠——Windows 路径在 JSON 里是双写的。
+_CWD_RX = re.compile(r'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"')
+# 只在行首这一段里找 cwd。
+#
+# Claude 把 cwd 写在信封层（与 `sessionId`、`type` 同级），所以它总在行首附近：
+# 实测 33655 条带 cwd 的行里，中位偏移 1383 字节、p99 是 16102。而单行可以长到
+# 3.4 MB（贴了大文件的那种），对整行跑正则等于把最贵的一步付满。
+#
+# 取 32 KB：覆盖 p99 还有两倍余量，而扫描量对最长的行降低了两个数量级。
+# 超出这一段的 cwd 会被漏掉，但那种行的 cwd 与前后行几乎必然相同——cwd 是
+# 逐行重复写的，漏掉一次不影响按次数排序的结论。
+_CWD_HEAD = 32768
+
 # 会**改动**文件的工具名（Claude Code）。
 _WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 # 会**读取**文件的工具名（Claude Code）。Bash 不在里面：它的参数是命令行，
@@ -136,6 +155,13 @@ class RepoVerdict:
     # 证据采集在预算内没读完整份转录。为真时结论仍然可用，但界面要说明
     # 「只看了前 N 行」——否则「没有写入证据」会被读成「这个会话没改过东西」。
     truncated: bool = False
+    # 这份转录里的 `cwd` 指向过**多个不同仓库**。
+    #
+    # 为什么值得单独说：`cwd` 是逐行写的运行时快照，会话中途可以换目录
+    # （`/cd`、多根工作区、shell 里 `cd` 过去之后的 hook 记录）。实测 66 份
+    # 含 cwd 的转录里 7 份真的横跨多个目录。这一位为真时，「启动目录」这个
+    # 说法本身就不准确——界面该说的是「这个会话待过多个目录」。
+    cwd_moved: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -144,6 +170,7 @@ class RepoVerdict:
             "basis": self.basis,
             "conflict": self.conflict,
             "truncated": self.truncated,
+            "cwd_moved": self.cwd_moved,
             "evidence": [e.to_dict() for e in self.evidence],
         }
 
@@ -201,7 +228,10 @@ class AttributionCollector:
     工具调用也没有工作区声明。
     """
 
-    __slots__ = ("agent", "_bucket", "_lineno", "_budget", "truncated", "_meta_cwd", "_turn_cwd")
+    __slots__ = (
+        "agent", "_bucket", "_lineno", "_budget", "truncated",
+        "_meta_cwd", "_turn_cwd", "_cwds",
+    )
 
     def __init__(self, agent: str, budget: int) -> None:
         self.agent = agent
@@ -211,13 +241,46 @@ class AttributionCollector:
         self.truncated = False
         self._meta_cwd = ""
         self._turn_cwd = ""
+        # 这份转录里出现过的**全部** cwd 取值，按 norm_path 去重后计数。
+        #
+        # 为什么要收集全部而不只取第一个：`cwd` 在 Claude 的转录里是**逐行**
+        # 写的运行时快照，不是会话级常量。实测本机 66 份含 cwd 的转录中，
+        # 22 份出现过多个取值，其中 7 份是**真正不同的目录**（另外 15 份只差
+        # 盘符大小写）。最极端的一份在 `C:\Users\devin` 与 9 个 temp 子目录
+        # 之间来回；本会话的那份在 kirara 与 agent-handoff-project 之间切换
+        # 19 次。
+        #
+        # 只取第一个（`_Extractor` 的做法）拿到的是「会话启动时那一刻」的值，
+        # 那在多根工作区里等于 VSCode 的 `folders[0]`——与用户实际在改哪个
+        # 项目无关。所以这里按出现次数排序：一个会话在哪个目录里待得最久，
+        # 比它启动时在哪更能说明问题。
+        self._cwds: dict[str, tuple[str, int]] = {}
 
     def feed(self, raw: str) -> None:
         self._lineno += 1
-        if self._lineno > self._budget:
-            # 只在第一次越界时记一笔，之后每行零成本返回。
-            if not self.truncated:
-                self.truncated = True
+        over = self._lineno > self._budget
+        if over and not self.truncated:
+            # 只在第一次越界时记一笔。
+            self.truncated = True
+
+        # cwd 单独处理，且**不受行预算约束**。
+        #
+        # 两个理由。一是它便宜：只做一次子串查找加一次限长正则，不解析 JSON。
+        # 实测 6.5 MB / 2086 行的转录，全量扫完 43 毫秒，而只扫前 1500 行是
+        # 33 毫秒——多出来的 10 毫秒买到的是完整答案。
+        #
+        # 二是不全扫会给出**错的结论**而不只是不完整的结论：会话中途换目录发生
+        # 在后段（先在启动目录里干活、后来才 cd 过去），预算截断恰好把那部分
+        # 切掉。实测本会话在 1500 行预算下 `cwd_moved` 判 False，放开后判 True
+        # ——前者等于告诉用户「这个会话一直在同一个目录」，而事实相反。
+        #
+        # 工具证据仍然受预算约束：那些要 json.loads 整行，是另一个量级的成本。
+        if self.agent != "Codex" and '"cwd"' in raw:
+            m = _CWD_RX.search(raw, 0, _CWD_HEAD)
+            if m:
+                self._note_cwd(m.group(1).replace("\\\\", "\\"))
+
+        if over:
             return
 
         # 预筛：这一行有没有可能带证据。三类标记分别对应三种记录形状。
@@ -228,10 +291,15 @@ class AttributionCollector:
             # 证据会全部静默丢掉（实测：151 份含 workdir 的 rollout 一个都没被
             # 采集到）。用裸词匹配，代价是偶尔多解析一行，那比漏掉一整级证据
             # 便宜得多。
+            #
+            # `cwd` 也要在这里放行：Codex 的逐轮目录写在 `turn_context.cwd`，
+            # 而那种记录可以既没有 `workspace_roots` 也没有 `workdir`。漏掉它
+            # 等于让「换过目录」在 Codex 侧永远判不出来。
             if not (
                 "workspace_roots" in raw
                 or "workdir" in raw
                 or "apply_patch" in raw
+                or '"cwd"' in raw
             ):
                 return
         else:
@@ -278,6 +346,23 @@ class AttributionCollector:
             for p in _tool_paths(blk.get("input")):
                 _add(self._bucket, level, p)
 
+    def _note_cwd(self, raw_cwd: str) -> None:
+        """记一次 cwd 出现。按 `norm_path` 归并，保留第一次见到的原始写法。
+
+        为什么要计数而不是只记「见过」：一份转录里的 cwd 取值分布本身就是证据。
+        实测本会话在两个目录之间切换 19 次，其中 1417 行指向启动目录、93 行指向
+        真正在改的项目——但**另一份**转录可能恰好相反。用次数排序让数据自己说话，
+        不预设「第一个就是对的」。
+        """
+        cwd = raw_cwd.strip()
+        if not cwd:
+            return
+        key = norm_path(cwd)
+        if not key:
+            return
+        display, n = self._cwds.get(key, (cwd, 0))
+        self._cwds[key] = (display, n + 1)
+
     def _feed_codex(self, d: dict[str, Any]) -> None:
         """Codex：三处证据，可靠性依次下降。"""
         p = d.get("payload")
@@ -298,6 +383,7 @@ class AttributionCollector:
             cw = p.get("cwd")
             if isinstance(cw, str) and cw.strip():
                 self._turn_cwd = cw.strip()
+                self._note_cwd(cw)
                 _add(self._bucket, "cwd", cw.strip())
         elif d.get("type") == "session_meta" and not self._meta_cwd:
             cw = p.get("cwd")
@@ -334,6 +420,22 @@ class AttributionCollector:
         标为 `weak`，界面据此说明「依据是启动目录，本次会话未改动任何文件」。
         """
         bucket = dict(self._bucket)
+        # 自己收集到的全部 cwd 取值都进候选，按出现次数计入命中数。
+        #
+        # 为什么不只用调用方传进来的那一个：`_Extractor` 取的是**第一个**出现的
+        # cwd，而 cwd 是逐行写的运行时快照。多根工作区下第一个值等于 VSCode 的
+        # `folders[0]`，与用户在改哪个项目无关。实测本会话的 cwd 在两个目录之间
+        # 切换 19 次，只看第一个必然读到启动目录。
+        for key, (display, n) in self._cwds.items():
+            repo = nearest_repo(display)
+            if not repo:
+                continue
+            k = ("cwd", norm_path(repo))
+            ev = bucket.get(k)
+            if ev is None:
+                ev = RepoEvidence(repo=norm_path(repo), display=repo, level="cwd")
+                bucket[k] = ev
+            ev.hits += n
         if cwd:
             _add(bucket, "cwd", cwd)
         for m in mentioned:
@@ -374,6 +476,14 @@ class AttributionCollector:
             confidence = "weak"
 
         cwd_repo = norm_path(nearest_repo(cwd)) if cwd else ""
+        # 多个 cwd 取值指向不同仓库，本身就是一条要说出来的事实：那说明这个
+        # 会话在多个项目之间来回，或者它跑在多根工作区里而启动目录不是主战场。
+        # 界面据此提示，而不是静默挑一个显示。
+        cwd_repos = {
+            norm_path(r)
+            for r in (nearest_repo(d) for d, _ in self._cwds.values())
+            if r
+        }
         return RepoVerdict(
             primary=top.display,
             confidence=confidence,
@@ -381,4 +491,5 @@ class AttributionCollector:
             evidence=evidence,
             conflict=bool(cwd_repo and cwd_repo != top.repo),
             truncated=self.truncated,
+            cwd_moved=len(cwd_repos) > 1,
         )
