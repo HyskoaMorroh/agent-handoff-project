@@ -108,7 +108,49 @@ VSCode 多根工作区里，`cwd` 这个字段**结构上就不携带**「在改
 - `agent-handoff --doctor` 在本机真实环境跑通，正确识别出那一组双根工作区
 - `agent-handoff --vitals` 卡片显示「工作区根 … ← 这是多根工作区里排第一的那个
   文件夹，不代表在改它」
-- `ruff`：本机未安装，未运行；CI 的 ruff 作业为权威
+- `ruff`：当时报告为「本机未安装」，**那个结论是错的**。ruff 0.16.3 一直装在
+  项目自己的 `.venv` 里，之前只试了另一个项目的解释器。这一项在 2.8.1 里补跑，
+  查出 13 项违规——全部来自 2.6.1 以来的四次提交。同时那四次里写的「CI 的 ruff
+  作业为权威」也是空话：CI 从未运行过（见 2.8.1）。
+
+## [2.8.1] - 2026-08-26
+
+CI 从未运行过。四个版本（2.6.1 / 2.7.0 / 2.7.1 / 2.8.0）的变更记录都写着
+「CI 的 ruff 作业为权威」，而那个工作流一次都没被触发，GitHub 甚至没把它注册进
+Actions 列表。这一版修掉触发条件，并补上那四次本该被挡下的 lint 违规。
+
+### 修复
+
+- **`ci.yml` 的推送触发监听 `[main, master]`，不再只监听 `main`。**
+  这个仓库的默认分支是 `master`，而工作流模板写的是 `main`。分支名不匹配时
+  GitHub 不报错、不警告，只是安静地什么都不跑——`/actions/workflows` 里只有
+  dependabot 那一条，本项目的 CI 根本没被注册。两个名字都列出来，将来重命名
+  默认分支也不会再静默失效一次。
+
+- **13 项 ruff 违规。** 全部来自 2.6.1 以来的四次提交，CI 若真跑过，四次全红：
+
+  | 规则 | 位置 | 处理 |
+  | --- | --- | --- |
+  | `UP035` / `UP045` | `core/attribution.py`、`core/workspace.py` | `typing.Iterable` 改从 `collections.abc` 导入 |
+  | `B007` | `core/attribution.py`、`tests/test_transcript.py` | 未使用的循环变量：改 `.values()`、改 `_` |
+  | `F401` | `core/vitals.py` | 删掉未使用的 `is_compressed_transcript` 导入 |
+  | `SIM115` | `platform.py` | 标 `noqa` 并写明原因：句柄必须活到调用方关闭外层 `TextIOWrapper`，用 `with` 会让解压流在第一次读取时就失败 |
+  | `UP012` | `tests/test_platform.py` | 多余的 `.encode("utf-8")` 参数 |
+  | `C408` (6 处) | `tests/test_vitals.py` | 参数化用例里的 `dict()` 改字面量 |
+
+- **三份 README 的测试数徽章从 814 改成 817。** 真实收集数是 817；徽章的门只挡
+  「徽章数小于 `def test_` 计数（601）」，所以 814 不会被 CI 拦下，但它是过时的。
+
+### 验证
+
+- `python -m ruff check src tests scripts`：**All checks passed!**（改前 13 errors）
+- `python -m pytest`：**817 collected, 0 failed, 3 skipped**（跳过项：ripgrep 未装、
+  两项 POSIX 分隔符行为）
+- `python scripts/check_i18n.py`：3 languages, 575 keys each — all aligned
+- `python scripts/build_guide.py` 后 `git diff --exit-code docs/guide.html`：无 diff
+- `python -m compileall src tests scripts`：exit 0
+- `ruff format --check` **未纳入**：CI 的 Lint 步骤只跑 `ruff check`。全库跑
+  format 会重排 40 个文件，那是与本次修复无关的巨型 diff。
 
 ## [2.7.1] - 2026-08-26
 

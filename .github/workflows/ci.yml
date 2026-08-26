@@ -2,7 +2,16 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # 两个名字都监听，而不是只写这个仓库当前用的那个。
+    #
+    # 为什么：这个仓库的默认分支是 `master`，而模板里写的是 `main`，于是
+    # 推送了四个版本、CI 一次都没触发——GitHub 甚至没把这个工作流注册进
+    # Actions 列表（`/actions/workflows` 只返回 dependabot 那条）。而在此期间
+    # 每一份变更记录都写着「CI 的 ruff 作业是权威」，那句话从头到尾是空的。
+    #
+    # 这类错配没有任何报错：不匹配的分支名不会警告，只会安静地什么都不跑。
+    # 两个都列出来，将来重命名默认分支也不会再静默失效一次。
+    branches: [main, master]
   pull_request:
   workflow_dispatch:
 

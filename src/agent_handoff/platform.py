@@ -511,7 +511,9 @@ def zstd_opener():
         import zstandard as _zstd
 
         def _open_zstandard(p):
-            fh = open(p, "rb")
+            # 这里不能用 `with`：句柄要活到调用方关闭外层 TextIOWrapper 为止。
+            # 提前关掉底层文件会让解压流在第一次读取时就失败。
+            fh = open(p, "rb")  # noqa: SIM115
             reader = _zstd.ZstdDecompressor().stream_reader(fh)
             return io.TextIOWrapper(reader, encoding="utf-8", errors="replace")
 

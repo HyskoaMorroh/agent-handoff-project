@@ -41,8 +41,8 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from ..platform import nearest_repo, norm_path
 

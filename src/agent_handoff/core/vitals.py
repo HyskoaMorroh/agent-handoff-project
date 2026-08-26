@@ -32,7 +32,6 @@ from ..platform import (
     TranscriptCompressedError,
     agent_evidence,
     agent_session_roots,
-    is_compressed_transcript,
     is_foreign_path,
     is_transcript_name,
     iter_path_candidates,

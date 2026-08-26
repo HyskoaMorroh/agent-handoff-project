@@ -524,7 +524,7 @@ def test_render_reports_how_many_tool_blocks_were_dropped(tmp_path):
     """丢了要明说。静默丢弃会让读者以为看到了全部。"""
     tr = Translator("zh-Hans")
     turns = [Turn("user", "目标：修好原子写")]
-    for i in range(60):
+    for _ in range(60):
         turns.append(Turn("tool", tools=["z" * 400]))
     md = render_markdown("Codex", {"session_id": "s"}, turns, tr, max_chars=6_000)
     assert tr.t("md.dropped_tools", count=1).split("{")[0][:6] in md or "60" in md or "5" in md

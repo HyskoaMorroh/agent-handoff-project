@@ -30,8 +30,9 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any
 
 from ..platform import nearest_repo, norm_path
 from .workspace import WorkspaceMap
@@ -476,7 +477,7 @@ class AttributionCollector:
         # `folders[0]`，与用户在改哪个项目无关。实测本会话的 cwd 在两个目录之间
         # 切换 19 次，只看第一个必然读到启动目录。
         cwd_counts: dict[str, int] = {}
-        for key, (display, n) in self._cwds.items():
+        for display, n in self._cwds.values():
             repo = nearest_repo(display)
             if not repo:
                 continue

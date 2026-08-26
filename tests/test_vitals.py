@@ -1453,12 +1453,12 @@ def test_error_text_keeps_only_the_last_few(tmp_path):
 
 
 @pytest.mark.parametrize("kw", [
-    dict(size=1_000_000, tokens=118624, window=121600, compactions=1),
-    dict(size=2_000_000, tokens=194183, window=0),
-    dict(size=9_000_000),
-    dict(size=100, unknown=True),
-    dict(size=500, tokens=10, window=200000, fatal=2, aborted=2),
-    dict(size=1_900_000, tokens=60000, window=200000, compactions=10),
+    {"size": 1_000_000, "tokens": 118624, "window": 121600, "compactions": 1},
+    {"size": 2_000_000, "tokens": 194183, "window": 0},
+    {"size": 9_000_000},
+    {"size": 100, "unknown": True},
+    {"size": 500, "tokens": 10, "window": 200000, "fatal": 2, "aborted": 2},
+    {"size": 1_900_000, "tokens": 60000, "window": 200000, "compactions": 10},
 ])
 def test_band_reason_always_agrees_with_band_for(kw):
     """理由与结论必须出自同一套判定。

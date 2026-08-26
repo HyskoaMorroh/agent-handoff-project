@@ -398,7 +398,7 @@ def test_declared_home_is_the_last_resort(tmp_path, monkeypatch):
 
 def test_atomic_write_creates_file_with_exact_bytes(tmp_path):
     target = tmp_path / "out" / "handoff.md"
-    payload = "第一行\n第二行\n".encode("utf-8")
+    payload = "第一行\n第二行\n".encode()
     atomic_write_bytes(target, payload)
     assert target.read_bytes() == payload, "字节必须逐字一致，不能被文本层改写"
 
