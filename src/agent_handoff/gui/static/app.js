@@ -507,12 +507,24 @@
     if (vd.primary) {
       row(t("gui.label.work_repo"), vd.primary + "  · " + t("cli.card.conf." + (vd.confidence || "none")));
     }
-    // 「启动目录」这个说法在会话中途换过目录时本身就不准确——那时该说的是
-    // 「待过多个目录」。三种文案对应三种事实，不含糊其辞。
-    row(
-      t(vd.cwd_moved ? "gui.label.cwd_moved" : vd.conflict ? "gui.label.cwd_conflict" : "gui.label.cwd"),
-      r.cwd,
-    );
+    // cwd 那一行的标签有四种，对应四种不同的事实。不含糊其辞：
+    //   · 工作区的一个根 —— cwd 是 folders[0]，与在改什么无关（最需要说明的一种）
+    //   · 待过多个目录   —— 会话中途换过 cwd
+    //   · 启动目录（冲突）—— 与在改的仓库不同
+    //   · 工作目录       —— 两者一致，正常情况
+    const cwdLabel = vd.cwd_in_workspace
+      ? "gui.label.cwd_workspace"
+      : vd.cwd_moved
+        ? "gui.label.cwd_moved"
+        : vd.conflict
+          ? "gui.label.cwd_conflict"
+          : "gui.label.cwd";
+    row(t(cwdLabel), r.cwd);
+    // 同工作区的其他根：用户真正在改的往往是其中之一。没有行为证据时（纯讨论、
+    // 纯搜索的会话）这份清单是唯一能帮他认出「哦是那个项目」的线索。
+    if (vd.workspace_siblings && vd.workspace_siblings.length) {
+      row(t("gui.label.workspace_siblings"), vd.workspace_siblings.join("  ·  "));
+    }
     row(t("gui.label.client"), [r.version, r.origin].filter(Boolean).join(" "));
     /* 判定依据。卡片上会同时出现「谁写的」与「在谈论谁」——一个 Claude Code
        会话完全可以整篇在分析某个 Codex 会话，开场提问里就带 codex://threads/…。
@@ -779,6 +791,9 @@
     root: "doctor.root.empty",
     "root.unreadable": "doctor.root.unreadable",
     "roots.none": "doctor.roots.none",
+    // 多根工作区不是错误，所以它的「异常态」文案不说「坏了」，说的是
+    // 「这会让 cwd 不可信，以及你能怎么办」。
+    workspace: "doctor.workspace",
   };
 
   function renderDoctor() {

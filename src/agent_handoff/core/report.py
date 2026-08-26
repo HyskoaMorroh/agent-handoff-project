@@ -713,6 +713,12 @@ def build_handoff(ctx: dict[str, Any], tr: Translator) -> str:
                 ))
                 if vd.get("conflict"):
                     a(tr.t("doc.sessions.work_conflict"))
+                # cwd 落在多根工作区的首根上时说清楚：接手方看到「工作目录」
+                # 那一行会以为整场都在那里，而那个值只说明「排第一」。
+                if vd.get("cwd_in_workspace"):
+                    a(tr.t("doc.sessions.cwd_workspace"))
+                for sib in (vd.get("workspace_siblings") or [])[:3]:
+                    a(tr.t("doc.sessions.workspace_sibling", value=_redact(sib)))
                 # 会话中途换过目录时单独说一句：接手方看到「工作目录」那一行
                 # 只会以为整场都在那里，而实际上那只是它待过的目录之一。
                 if vd.get("cwd_moved"):

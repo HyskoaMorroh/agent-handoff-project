@@ -40,6 +40,7 @@ from ..platform import (
     is_transcript_name,
     zstd_opener,
 )
+from .workspace import WorkspaceMap
 
 # 诊断项的严重度。名字与体征分档刻意不同：那边说的是「会话有多满」，
 # 这边说的是「这台机器缺什么」，两套语义混用会让界面上出现两种意思的
@@ -226,6 +227,47 @@ def _check_stdio() -> dict[str, Any]:
     }
 
 
+def _check_workspaces() -> list[dict[str, Any]]:
+    """本机有没有多根工作区，以及它会不会让 `cwd` 变得不可信。
+
+    为什么这值得一条诊断：多根工作区是**沉默的失真源**。Claude Code 的 VSCode
+    扩展在多根工作区里把 `folders` 的第一个条目当作 cwd，其余根转成
+    `--add-dir`；切换活动编辑器不改它，也没有任何配置项能覆盖。于是「在 A 目录
+    启动、整场改 B 仓库」的会话，转录里的 `cwd` 一直指着 A。
+
+    用户看不到这件事发生。他只会发现工具报的仓库不对，而原因藏在一个未文档化的
+    扩展行为里。把它列进自检等于把这条因果关系摆到台面上。
+
+    这一项**永不 FAIL**：多根工作区是合法用法，不是错误配置。发现了就是 WARN
+    加一句解释，没发现就是 OK。
+    """
+    try:
+        wm = WorkspaceMap.discover()
+    except Exception:
+        # 诊断自己崩掉最没道理。发现失败就当作「没有工作区」。
+        return [{"key": "workspace.none", "level": OK, "data": {}}]
+    groups = wm.groups()
+    if not groups:
+        return [{"key": "workspace.none", "level": OK, "data": {}}]
+    out: list[dict[str, Any]] = []
+    for group in groups:
+        # 第一个根是那个窗口的 cwd，其余的是被 `--add-dir` 带进来的。
+        # 分开说，因为用户能做的事不一样：想让 cwd 对准某个项目，就把它挪到
+        # `folders` 第一位。
+        out.append({
+            "key": "workspace",
+            "level": WARN,
+            "data": {
+                "lead": group[0],
+                "others": ", ".join(group[1:]),
+                # 其余根的个数，不含首根。文案里说的是「另外 N 个根」，
+                # 给 `len(group)` 会把首根也数进去，读者对不上手里的清单。
+                "count": len(group) - 1,
+            },
+        })
+    return out
+
+
 def run_doctor() -> dict[str, Any]:
     """把所有检查跑一遍，返回结构化结果。
 
@@ -242,6 +284,7 @@ def run_doctor() -> dict[str, Any]:
     ]
     checks.extend(_check_roots())
     checks.extend(_check_env())
+    checks.extend(_check_workspaces())
 
     level = OK
     if any(c["level"] == FAIL for c in checks):

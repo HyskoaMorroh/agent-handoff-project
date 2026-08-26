@@ -3,9 +3,9 @@
 <p align="center"><b>会话卡死时，把进度从对话里搬进仓库</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.7.1-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.8.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="测试" src="https://img.shields.io/badge/tests-794%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="测试" src="https://img.shields.io/badge/tests-814%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="运行时依赖" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="许可" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -428,8 +428,44 @@ Codex 侧更彻底：它把 `cwd` 设成自己的会话沙箱目录
 - VSCode 的 workspace 上下文是窗口级单例，架构上无法给不同扩展指定不同工作目录。
 
 所以如果你在一个目录启动、在另一个目录干活，转录里的 `cwd` 会一直指着启动目录。
-要让它对，只能一个项目一个窗口，或者用 `/cd`（需 Claude Code v2.1.169+）在会话
-内搬迁。这个工具的证据分层就是为了在这件事没做对时仍然给出正确答案。
+
+**工具会自己发现这件事，不需要你配置。** 它从两个只读来源找出「哪些仓库其实是
+同一个窗口里并列打开的」：
+
+| 来源 | 是什么 |
+|---|---|
+| `~/.claude/ide/*.lock` | 扩展给每个 VSCode 窗口写的锁文件，内含该窗口的 `workspaceFolders` 全量数组。**上游自己写下的事实**，不是推断。 |
+| `*.code-workspace` | 你手写的工作区定义。比锁文件持久，且在工具从未与那个窗口共存过时也能读到。 |
+
+锁文件在 VSCode 退出后常常留着，那反而有用：它记录了一个曾经存在的分组，而历史
+会话正是在那种分组下跑的。
+
+认出来之后，落在工作区**首根**上的 `cwd` 被降到 `workspace_cwd` 这一级——排在
+普通 `cwd` 之后。于是两个仓库都只有 cwd 证据时，来自单根窗口的那个胜出：它携带
+真实信息，而工作区首根只说明「排第一」。
+
+**只降首根，不降靠后的根。** 扩展只会把 `folders[0]` 设成 cwd，所以靠后的根出现
+在 cwd 位置意味着这个会话根本不是从那个多根窗口开的，此时 cwd 可信。无条件降权
+会把单根窗口下**正确**的 cwd 也误标。
+
+卡片、CLI 卡片、交接文档三处的说法也跟着变：不再说「启动目录」，而是「工作区根
+（多根工作区里排第一的那个，不代表在改它）」，并列出同工作区的其他根——没有行为
+证据时（纯讨论、纯搜索的会话）那份清单是唯一能帮你认出「哦是那个项目」的线索。
+
+`agent-handoff --doctor` 也会报出来：cwd 会固定落在哪个根、另外几个根只以
+`--add-dir` 身份进来、以及你能怎么办。这一项永不判「阻断」——多根工作区是合法
+用法，不是错误配置；它值得列进自检是因为它是**沉默的失真源**。
+
+想让 `cwd` 本身就对（那比靠证据反推更彻底），三条路：
+
+1. **把目标项目挪到 `folders` 第一位**——最省事，改一行 JSON。代价是另一个扩展
+   如果也取第一个根，就被反向坑了；而且这依赖未文档化的实现细节。
+2. **会话内跑 `/cd <路径>`**（需 Claude Code v2.1.169+）——有官方文档背书，会
+   重载新目录的 `CLAUDE.md`，`--resume` 也能从那边找到会话。每个新会话要执行一次。
+3. **一个项目一个窗口**——最笨也最可靠，`cwd` 从根上就是对的。
+
+发现工作区实测耗时 **0.12 秒**（5 份锁文件 + 从家目录深度 3 搜 `.code-workspace`），
+且每轮扫描只做一次、供全部转录复用。
 
 ### 「最后活动」取的是转录里最后一条记录，不是文件时间
 
@@ -603,6 +639,7 @@ agent-handoff --doctor
 | 各 agent 数据根 | 存在性、转录计数、其中压缩数；目录在但 0 份转录会单独提示 |
 | `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `CODEX_SESSIONS_ROOT` | 设了但指向不存在的目录，比没设更难发现 |
 | `AGENT_HANDOFF_CONTEXT_WINDOW` | 非正整数时占用率会静默退回绝对阈值 |
+| 多根工作区 | cwd 会固定落在 `folders` 第一个根上，与在改哪个项目无关（永不判阻断，只解释） |
 
 整体档位取最坏项。**「留意」不会让退出码非零**——缺 zstd 只是读不到压缩归档，
 不该挡住整次运行；只有真正阻塞的项才是 blocking。

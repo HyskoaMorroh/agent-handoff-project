@@ -3,9 +3,9 @@
 <p align="center"><b>工作階段卡死時，把進度從對話裡搬進儲存庫</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.7.1-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="版本" src="https://img.shields.io/badge/version-2.8.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="測試" src="https://img.shields.io/badge/tests-794%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="測試" src="https://img.shields.io/badge/tests-814%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="執行時依賴" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="授權" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -443,8 +443,45 @@ Codex 側更徹底：它把 `cwd` 設成自己的工作階段沙箱目錄
   工作目錄。
 
 所以如果你在一個目錄啟動、在另一個目錄幹活，記錄裡的 `cwd` 會一直指著啟動目錄。
-要讓它對，只能一個專案一個視窗，或者用 `/cd`（需 Claude Code v2.1.169+）在工作
-階段內搬遷。這個工具的證據分層就是為了在這件事沒做對時仍然給出正確答案。
+
+**工具會自己發現這件事，不需要你設定。** 它從兩個唯讀來源找出「哪些儲存庫其實是
+同一個視窗裡並列打開的」：
+
+| 來源 | 是什麼 |
+|---|---|
+| `~/.claude/ide/*.lock` | 擴充功能給每個 VSCode 視窗寫的鎖檔，內含該視窗的 `workspaceFolders` 全量陣列。**上游自己寫下的事實**，不是推斷。 |
+| `*.code-workspace` | 你手寫的工作區定義。比鎖檔持久，且在工具從未與那個視窗共存過時也能讀到。 |
+
+鎖檔在 VSCode 結束後常常留著，那反而有用：它記錄了一個曾經存在的分組，而歷史
+工作階段正是在那種分組下跑的。
+
+認出來之後，落在工作區**首根**上的 `cwd` 被降到 `workspace_cwd` 這一級——排在
+普通 `cwd` 之後。於是兩個儲存庫都只有 cwd 證據時，來自單根視窗的那個勝出：它攜帶
+真實資訊，而工作區首根只說明「排第一」。
+
+**只降首根，不降靠後的根。** 擴充功能只會把 `folders[0]` 設成 cwd，所以靠後的根
+出現在 cwd 位置意味著這個工作階段根本不是從那個多根視窗開的，此時 cwd 可信。
+無條件降權會把單根視窗下**正確**的 cwd 也誤標。
+
+卡片、命令列卡片、交接文件三處的說法也跟著變：不再說「啟動目錄」，而是「工作區根
+（多根工作區裡排第一的那個，不代表在改它）」，並列出同工作區的其他根——沒有行為
+證據時（純討論、純搜尋的工作階段）那份清單是唯一能幫你認出「哦是那個專案」的線索。
+
+`agent-handoff --doctor` 也會報出來：cwd 會固定落在哪個根、另外幾個根只以
+`--add-dir` 身分進來、以及你能怎麼辦。這一項永不判「阻斷」——多根工作區是合法
+用法，不是錯誤設定；它值得列進自檢是因為它是**沉默的失真源**。
+
+想讓 `cwd` 本身就對（那比靠證據反推更徹底），三條路：
+
+1. **把目標專案挪到 `folders` 第一位**——最省事，改一行 JSON。代價是另一個擴充
+   功能如果也取第一個根，就被反向坑了；而且這依賴未文件化的實作細節。
+2. **工作階段內跑 `/cd <路徑>`**（需 Claude Code v2.1.169+）——有官方文件背書，會
+   重載新目錄的 `CLAUDE.md`，`--resume` 也能從那邊找到工作階段。每個新工作階段
+   要執行一次。
+3. **一個專案一個視窗**——最笨也最可靠，`cwd` 從根上就是對的。
+
+發現工作區實測耗時 **0.12 秒**（5 份鎖檔 + 從家目錄深度 3 搜 `.code-workspace`），
+且每輪掃描只做一次、供全部記錄複用。
 
 ### 「最後活動」取的是記錄裡最後一條，不是檔案時間
 
@@ -619,6 +656,7 @@ agent-handoff --doctor
 | 各 agent 資料根 | 存在性、記錄計數、其中壓縮數；目錄在但 0 份記錄會單獨提示 |
 | `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `CODEX_SESSIONS_ROOT` | 設了但指向不存在的目錄，比沒設更難發現 |
 | `AGENT_HANDOFF_CONTEXT_WINDOW` | 非正整數時佔用率會靜默退回絕對閾值 |
+| 多根工作區 | cwd 會固定落在 `folders` 第一個根上，與在改哪個專案無關（永不判阻斷，只解釋） |
 
 整體檔位取最壞項。**「留意」不會讓結束碼非零**——缺 zstd 只是讀不到壓縮歸檔，
 不該擋住整次執行；只有真正阻塞的項才是 blocking。

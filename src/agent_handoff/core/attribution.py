@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from ..platform import nearest_repo, norm_path
+from .workspace import WorkspaceMap
 
 # 归属证据的行预算。放在这个模块而不是 `vitals`：它是收集器自己的参数，
 # 而报告、CLI、网页三处都要引用同一个值来说明「只看了前 N 行」。
@@ -69,8 +70,16 @@ LEVEL_RANK: dict[str, int] = {
     "read": 3,
     # 启动目录（`cwd` + `nearest_repo`）。现状唯一的依据。
     "cwd": 4,
+    # 多根工作区里的 cwd。比普通 cwd 更弱，因为它几乎不携带信息：
+    # Claude Code 的 VSCode 扩展在多根工作区下把 `folders` 的**第一个**条目
+    # 当作 cwd，其余根转成 `--add-dir`；切换活动编辑器不改它，也没有配置项能
+    # 覆盖。所以那个值只说明「哪个文件夹排在第一位」。
+    #
+    # 排在 `mention` **之前**而不是之后：正文提到的路径可以被一次粘贴污染，
+    # 而工作区的根至少是用户自己挑进同一个窗口的。两者都弱，但弱得不一样。
+    "workspace_cwd": 5,
     # 正文里提到过的路径。粘一次日志就能污染，最弱。
-    "mention": 5,
+    "mention": 6,
 }
 # 结论可以被判为「确定」的等级：行为证据或 harness 声明。
 _STRONG_LEVELS = frozenset({"workspace", "edit", "exec"})
@@ -162,6 +171,19 @@ class RepoVerdict:
     # 含 cwd 的转录里 7 份真的横跨多个目录。这一位为真时，「启动目录」这个
     # 说法本身就不准确——界面该说的是「这个会话待过多个目录」。
     cwd_moved: bool = False
+    # `cwd` 落在某个**多根工作区**的一个根上。
+    #
+    # 为真时 `cwd` 几乎不携带「在改哪个仓库」的信息：Claude Code 的 VSCode
+    # 扩展在多根工作区里把 `workspaceFolders[0]`（`.code-workspace` 里
+    # `folders` 的第一个条目）当作 cwd，其余根转成 `--add-dir`。切换活动编辑器
+    # 不改它，也没有任何配置项能覆盖。所以那个值只说明「哪个文件夹排在第一位」，
+    # 与用户在改什么无关。
+    #
+    # 这一位不改变结论，只改变**说法**：界面把 cwd 那一行标成「工作区的一个根」
+    # 而不是「启动目录」，并把同工作区的其他根列出来当候选。
+    cwd_in_workspace: bool = False
+    # 与 cwd 同处一个工作区的其他仓库。用户可能实际在改的地方。
+    workspace_siblings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -171,6 +193,8 @@ class RepoVerdict:
             "conflict": self.conflict,
             "truncated": self.truncated,
             "cwd_moved": self.cwd_moved,
+            "cwd_in_workspace": self.cwd_in_workspace,
+            "workspace_siblings": list(self.workspace_siblings),
             "evidence": [e.to_dict() for e in self.evidence],
         }
 
@@ -198,6 +222,22 @@ def _add(bucket: dict[tuple[str, str], RepoEvidence], level: str, raw_path: str)
     ev.hits += 1
     if len(ev.samples) < _SAMPLES and raw_path not in ev.samples:
         ev.samples.append(raw_path)
+
+
+def _cwd_level(repo: str, workspaces: WorkspaceMap | None) -> str:
+    """这个 cwd 该算哪一级证据。
+
+    只有多根工作区的**第一个**根才降到 `workspace_cwd`：扩展固定取
+    `workspaceFolders[0]` 作 cwd，切换活动编辑器不改、也没有配置项能覆盖，
+    所以那种值只说明「哪个文件夹排在 `folders` 第一位」。
+
+    排在后面的根不降权。它们属于同一个工作区，但那个窗口的 cwd 不会是它们——
+    所以当 cwd 恰好等于某个靠后的根时，这个会话一定来自别的（单根）窗口，
+    那里的 cwd 是正常可信的。
+    """
+    if workspaces is not None and workspaces.is_workspace_cwd(repo):
+        return "workspace_cwd"
+    return "cwd"
 
 
 def _tool_paths(inp: Any) -> list[str]:
@@ -412,12 +452,21 @@ class AttributionCollector:
         if isinstance(wd, str) and wd.strip():
             _add(self._bucket, "exec", wd.strip())
 
-    def verdict(self, cwd: str = "", mentioned: Iterable[str] = ()) -> RepoVerdict:
+    def verdict(
+        self,
+        cwd: str = "",
+        mentioned: Iterable[str] = (),
+        workspaces: WorkspaceMap | None = None,
+    ) -> RepoVerdict:
         """把收集到的证据结算成结论。
 
         `cwd` 与 `mentioned` 由调用方补进来（它们由 `_Extractor` 收集，不重复
         解析）。这两层参与**展示**，也在没有任何强证据时充当结论——那时结论
         标为 `weak`，界面据此说明「依据是启动目录，本次会话未改动任何文件」。
+
+        `workspaces` 是本机的工作区分组。传进来时，落在多根工作区里的 cwd 会被
+        降到 `workspace_cwd` 那一级——那种 cwd 只说明「哪个文件夹排在 `folders`
+        第一位」，与用户在改什么无关。
         """
         bucket = dict(self._bucket)
         # 自己收集到的全部 cwd 取值都进候选，按出现次数计入命中数。
@@ -426,18 +475,26 @@ class AttributionCollector:
         # cwd，而 cwd 是逐行写的运行时快照。多根工作区下第一个值等于 VSCode 的
         # `folders[0]`，与用户在改哪个项目无关。实测本会话的 cwd 在两个目录之间
         # 切换 19 次，只看第一个必然读到启动目录。
+        cwd_counts: dict[str, int] = {}
         for key, (display, n) in self._cwds.items():
             repo = nearest_repo(display)
             if not repo:
                 continue
-            k = ("cwd", norm_path(repo))
+            rk = norm_path(repo)
+            cwd_counts[rk] = cwd_counts.get(rk, 0) + n
+            level = _cwd_level(repo, workspaces)
+            k = (level, rk)
             ev = bucket.get(k)
             if ev is None:
-                ev = RepoEvidence(repo=norm_path(repo), display=repo, level="cwd")
+                ev = RepoEvidence(repo=rk, display=repo, level=level)
                 bucket[k] = ev
             ev.hits += n
         if cwd:
-            _add(bucket, "cwd", cwd)
+            repo = nearest_repo(cwd)
+            if repo and norm_path(repo) not in cwd_counts:
+                # 调用方给的 cwd 我们自己没收到过（预算之外、或 Codex 的
+                # `session_meta` 路径）。补一条，等级同样按工作区归属决定。
+                _add(bucket, _cwd_level(repo, workspaces), cwd)
         for m in mentioned:
             _add(bucket, "mention", m)
 
@@ -476,6 +533,34 @@ class AttributionCollector:
             confidence = "weak"
 
         cwd_repo = norm_path(nearest_repo(cwd)) if cwd else ""
+        # cwd 落在多根工作区里时，把同工作区的其他根摆出来当候选。
+        #
+        # 为什么有用：那种 cwd 只说明「哪个文件夹排在 folders 第一位」，而用户
+        # 真正在改的往往是另一个根。没有行为证据时（纯讨论、纯搜索的会话）这份
+        # 兄弟清单是唯一能帮用户认出「哦是那个项目」的线索。
+        #
+        # 探测对象取**证据里那条 `workspace_cwd`**，而不是只看调用方传进来的
+        # `cwd`：后者是 `_Extractor` 抓到的第一个值，预算之外或压缩转录里可能
+        # 为空，而那时我们自己收集的 cwd 证据仍然在。用前者才不会漏。
+        in_ws = False
+        siblings: list[str] = []
+        if workspaces is not None:
+            probe = ""
+            for e in evidence:
+                if e.level == "workspace_cwd":
+                    probe = e.repo
+                    break
+            if not probe:
+                probe = cwd_repo or (top.repo if top.level == "cwd" else "")
+            if probe and workspaces.is_multi_root(probe):
+                in_ws = True
+                siblings = [
+                    s for s in workspaces.siblings(probe)
+                    # 已经在证据里的就不用再列一遍：那条证据本身信息更全
+                    # （带等级与命中数）。
+                    if s not in {e.repo for e in evidence}
+                ]
+
         # 多个 cwd 取值指向不同仓库，本身就是一条要说出来的事实：那说明这个
         # 会话在多个项目之间来回，或者它跑在多根工作区里而启动目录不是主战场。
         # 界面据此提示，而不是静默挑一个显示。
@@ -492,4 +577,6 @@ class AttributionCollector:
             conflict=bool(cwd_repo and cwd_repo != top.repo),
             truncated=self.truncated,
             cwd_moved=len(cwd_repos) > 1,
+            cwd_in_workspace=in_ws,
+            workspace_siblings=siblings,
         )

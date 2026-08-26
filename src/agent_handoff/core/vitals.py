@@ -42,6 +42,7 @@ from ..platform import (
     open_transcript,
 )
 from .attribution import ATTRIBUTION_LINE_BUDGET, AttributionCollector, RepoVerdict
+from .workspace import WorkspaceMap
 
 # --- 判据 -----------------------------------------------------------------
 # 真正杀死过会话的签名，不是只让人烦躁的那些。
@@ -1475,11 +1476,21 @@ def _session_id_from_name(fp: Path) -> str:
     return fp.stem
 
 
-def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
+def scan_one(
+    agent: str,
+    fp: Path,
+    deep: bool = True,
+    workspaces: WorkspaceMap | None = None,
+) -> SessionRow | None:
     """单遍读完一个转录，同时得到风险计数、身份卡与涉及仓库。
 
     原版要读三遍；这里一遍。深度信息拿全之后剩下的行只做两次子串查找和
     一次正则，不再解析 JSON——那是整个流程里最贵的一步。
+
+    `workspaces` 是本机的工作区分组（多根工作区里哪些仓库并列打开过）。传进来
+    时，落在多根工作区里的 `cwd` 会被降权——那种值只说明「哪个文件夹排在
+    `folders` 第一位」。默认 `None` 是「不知道有没有工作区」，此时 `cwd` 按
+    原有权重处理，行为与改动前完全一致。
     """
     try:
         st = fp.stat()
@@ -1575,7 +1586,7 @@ def scan_one(agent: str, fp: Path, deep: bool = True) -> SessionRow | None:
     # 归属结论。`cwd` 与 `repos` 由 `_Extractor` 收集，直接传进来参与分层，
     # 不重复解析——它们分别是「在哪启动」与「提到过」，是分层里最弱的两级。
     verdict = (
-        at.verdict(cwd=ident.get("cwd", ""), mentioned=repos)
+        at.verdict(cwd=ident.get("cwd", ""), mentioned=repos, workspaces=workspaces)
         if at is not None
         else RepoVerdict()
     )
@@ -1648,11 +1659,19 @@ def clear_cache() -> None:
         _cache.clear()
 
 
-def _cached_scan(agent: str, fp: Path, deep: bool) -> SessionRow | None:
+def _cached_scan(
+    agent: str,
+    fp: Path,
+    deep: bool,
+    workspaces: WorkspaceMap | None = None,
+) -> SessionRow | None:
     try:
         st = fp.stat()
     except OSError:
         return None
+    # 缓存键不含 `workspaces`：工作区分组在一轮扫描内是不变的，而它是按引用
+    # 传下来的同一个对象。把它编进键里会让每次重新发现工作区都整体作废缓存，
+    # 收益为零。真正会让结果变化的是转录本身（路径、大小、mtime）。
     key = (str(fp), st.st_size, int(st.st_mtime), deep)
     with _cache_lock:
         hit = _cache.get(key)
@@ -1663,7 +1682,7 @@ def _cached_scan(agent: str, fp: Path, deep: bool) -> SessionRow | None:
     # 读文件放在锁外：一份转录可能上百 MB，持锁读会把并发扫描退化成串行。
     # 代价是两个线程可能同时扫同一份文件（重复工作，但结果相同），
     # 而收益是 N 份不同转录仍然真并发——后者是常态，前者是巧合。
-    row = scan_one(agent, fp, deep)
+    row = scan_one(agent, fp, deep, workspaces)
     if row is not None:
         with _cache_lock:
             _cache[key] = row
@@ -1706,12 +1725,21 @@ def _newest_files(root: Path, limit: int, include_subagents: bool = False) -> li
 
 
 def scan_session_vitals(
-    limit: int = 12, deep: bool = True, jobs: int = 0, include_subagents: bool = False
+    limit: int = 12,
+    deep: bool = True,
+    jobs: int = 0,
+    include_subagents: bool = False,
+    workspaces: WorkspaceMap | None = None,
 ) -> list[SessionRow]:
     """按风险排序最新的转录。流式读取，只保留计数器与身份卡。
 
     jobs=0 时按转录数量与 CPU 核数自动决定并行度。这些任务全是磁盘等待，
     GIL 不构成瓶颈；实测 40 个多 MB 转录从串行的十几秒降到两三秒。
+
+    `workspaces` 省略时**自动发现**一次：多根工作区里的 `cwd` 只说明「哪个
+    文件夹排在第一位」，而这个判断对整轮扫描是同一个答案，发现一次复用给所有
+    转录。实测发现耗时 0.12 秒（读锁文件加找 `.code-workspace`），相对整轮
+    扫描可以忽略。传 `False` 之外的显式值可以跳过发现——测试要的正是那个。
     """
     tasks: list[tuple[str, Path]] = []
     for agent, root in agent_session_roots():
@@ -1720,6 +1748,10 @@ def scan_session_vitals(
     if not tasks:
         return []
 
+    if workspaces is None:
+        # 发现放在这里而不是每个 `scan_one` 里：那会对每份转录重复扫一遍磁盘。
+        workspaces = WorkspaceMap.discover()
+
     if jobs <= 0:
         jobs = min(len(tasks), max(4, (os.cpu_count() or 4) * 2))
     jobs = max(1, min(jobs, 32))
@@ -1727,12 +1759,12 @@ def scan_session_vitals(
     rows: list[SessionRow] = []
     if jobs == 1:
         for agent, fp in tasks:
-            row = _cached_scan(agent, fp, deep)
+            row = _cached_scan(agent, fp, deep, workspaces)
             if row is not None:
                 rows.append(row)
     else:
         with ThreadPoolExecutor(max_workers=jobs) as pool:
-            for row in pool.map(lambda t: _cached_scan(t[0], t[1], deep), tasks):
+            for row in pool.map(lambda t: _cached_scan(t[0], t[1], deep, workspaces), tasks):
                 if row is not None:
                     rows.append(row)
 
@@ -1771,7 +1803,11 @@ def sessions_for_repo(repo: Path, rows: Iterable[SessionRow]) -> list[SessionRow
     return hits
 
 
-def locate_by_id(needles: Iterable[str], deep: bool = True) -> list[SessionRow]:
+def locate_by_id(
+    needles: Iterable[str],
+    deep: bool = True,
+    workspaces: WorkspaceMap | None = None,
+) -> list[SessionRow]:
     """按会话 ID 片段在**全部**转录里定位，不受 `--limit` 约束。
 
     为什么必须绕开 limit：`--find` 的语义是「我知道 ID，帮我找到它」。而按
@@ -1789,6 +1825,10 @@ def locate_by_id(needles: Iterable[str], deep: bool = True) -> list[SessionRow]:
     wanted = [n.strip().lower() for n in needles if n and n.strip()]
     if not wanted:
         return []
+
+    if workspaces is None:
+        # 与 `scan_session_vitals` 同一个理由：发现一次，供本轮全部命中复用。
+        workspaces = WorkspaceMap.discover()
 
     # 先把全部候选文件的名字与路径收齐。子代理转录也纳入：用户拿着一个具体的
     # ID 来找，那份转录是不是子代理的不该影响「能不能找到」。
@@ -1830,7 +1870,7 @@ def locate_by_id(needles: Iterable[str], deep: bool = True) -> list[SessionRow]:
             key = norm_path(fp)
             if key in seen:
                 continue
-            row = _cached_scan(agent, fp, deep)
+            row = _cached_scan(agent, fp, deep, workspaces)
             if row is not None:
                 seen.add(key)
                 out.append(row)

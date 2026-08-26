@@ -85,15 +85,20 @@ def print_session_card(r: SessionRow, tr: Translator, index: int | None = None) 
         if v.basis:
             print(tr.t("cli.card.work_basis", value=tr.t("evidence.level." + v.basis)))
     if r.cwd:
-        # 三种文案对应三种事实：会话中途换过目录、启动目录与在改的仓库不同、
-        # 两者一致。「启动目录」这个说法在换过目录时本身就不准确。
-        if v.cwd_moved:
+        # 四种文案对应四种事实。「启动目录」这个说法在多根工作区或换过目录时
+        # 本身就不准确，所以分开说而不是含糊其辞。
+        if v.cwd_in_workspace:
+            label = "cli.card.cwd_workspace"
+        elif v.cwd_moved:
             label = "cli.card.cwd_moved"
         elif v.conflict:
             label = "cli.card.cwd_conflict"
         else:
             label = "cli.card.cwd"
         print(tr.t(label, value=r.cwd))
+        # 同工作区的其他根。没有行为证据时它们是唯一的候选线索。
+        for sib in v.workspace_siblings[:3]:
+            print(tr.t("cli.card.workspace_sibling", value=sib))
     extra = " ".join(x for x in (r.version, r.origin) if x)
     if extra:
         print(tr.t("cli.card.client", value=extra))
@@ -265,6 +270,9 @@ def cmd_doctor(args: argparse.Namespace, tr: Translator) -> int:
         "root": "doctor.root.empty",
         "root.unreadable": "doctor.root.unreadable",
         "roots.none": "doctor.roots.none",
+        # 多根工作区不是错误，所以它的「异常态」文案不说「坏了」，说的是
+        # 「这会让 cwd 不可信，以及你能怎么办」。
+        "workspace": "doctor.workspace",
     }
     mark = {OK: "+", WARN: "!", FAIL: "x"}
     tally = {OK: 0, WARN: 0, FAIL: 0}

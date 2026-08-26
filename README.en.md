@@ -3,9 +3,9 @@
 <p align="center"><b>When a session dies, move the progress out of the chat and into the repository</b></p>
 
 <p align="center">
-  <a href="CHANGELOG.md"><img alt="version" src="https://img.shields.io/badge/version-2.7.1-1F6B4F?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="version" src="https://img.shields.io/badge/version-2.8.0-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="Python" src="https://img.shields.io/badge/python-3.9%20%E2%80%93%203.13-2F5473?style=flat-square"></a>
-  <a href="tests/"><img alt="tests" src="https://img.shields.io/badge/tests-794%20passed-1F6B4F?style=flat-square"></a>
+  <a href="tests/"><img alt="tests" src="https://img.shields.io/badge/tests-814%20passed-1F6B4F?style=flat-square"></a>
   <a href="pyproject.toml"><img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-0-7C6210?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-6B7B7E?style=flat-square"></a>
 </p>
@@ -488,9 +488,53 @@ The following was read out of the Claude Code VS Code extension's own code and i
   way to give different extensions different working directories.
 
 So if you launch in one directory and work in another, the transcript's `cwd` keeps
-pointing at the launch directory. The only ways to make it correct are one window per
-project, or `/cd` (requires Claude Code v2.1.169+) to relocate mid-session. This tool's
-evidence layering exists to give the right answer when that has not been done.
+pointing at the launch directory.
+
+**The tool discovers this by itself; there is nothing to configure.** It finds which
+repos are actually open side by side in one window from two read-only sources:
+
+| Source | What it is |
+|---|---|
+| `~/.claude/ide/*.lock` | A lock file the extension writes per VS Code window, carrying that window's full `workspaceFolders` array. **A fact the upstream wrote down**, not an inference. |
+| `*.code-workspace` | Your hand-written workspace definition. Outlives lock files, and readable even when the tool never coexisted with that window. |
+
+Lock files often survive after VS Code exits, and that helps: they record a grouping
+that once existed, and historical sessions ran under exactly that grouping.
+
+Once recognised, a `cwd` that lands on a workspace's **first** root drops to a
+`workspace_cwd` rank — below plain `cwd`. So when two repos both have only cwd
+evidence, the one from a single-root window wins: it carries real information, whereas
+a workspace's first root only says "listed first".
+
+**Only the first root is demoted, never the later ones.** The extension only ever sets
+`folders[0]` as cwd, so a later root appearing in the cwd position means the session was
+not opened from that multi-root window at all — there, cwd is trustworthy. Demoting
+unconditionally would mislabel a **correct** cwd from a single-root window.
+
+The wording changes in all three surfaces too — card, CLI card, handoff document. Not
+"launched in" but "workspace root (listed first in a multi-root workspace; not evidence
+it was edited)", plus the other roots in that workspace. That sibling list matters most
+when there is no behavioural evidence at all (a pure discussion or search session): it is
+the only thing that lets you recognise "oh, that project".
+
+`agent-handoff --doctor` reports it as well: which root cwd is pinned to, that the other
+roots come in only via `--add-dir`, and what you can do about it. This check never
+reports "blocking" — a multi-root workspace is a legitimate setup, not a misconfiguration;
+it earns a place in the checklist because it is a **silent** source of distortion.
+
+To make `cwd` itself correct (more thorough than inferring from evidence), three routes:
+
+1. **Move the target project to the top of `folders`** — cheapest, one JSON line. The
+   cost: another extension that also takes the first root gets the mirror-image problem,
+   and this relies on an undocumented implementation detail.
+2. **Run `/cd <path>` in-session** (needs Claude Code v2.1.169+) — documented behaviour,
+   reloads the new directory's `CLAUDE.md`, and `--resume` finds the session from there.
+   Has to be done once per new session.
+3. **One window per project** — clumsiest and most reliable; `cwd` is right from the start.
+
+Workspace discovery measured at **0.12 s** (5 lock files plus a depth-3 search for
+`.code-workspace` from the home directory), done once per scan and reused for every
+transcript.
 
 ### "Last active" comes from the transcript, not the file time
 
@@ -702,6 +746,7 @@ any transcript:
 | Each agent data root | Existence, transcript count, how many are compressed; a directory that exists but holds nothing is called out separately |
 | `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `CODEX_SESSIONS_ROOT` | Set but pointing at a missing directory is harder to spot than not set at all |
 | `AGENT_HANDOFF_CONTEXT_WINDOW` | A non-positive integer silently drops fullness back to absolute thresholds |
+| Multi-root workspace | cwd is pinned to the first root under `folders`, regardless of which project is being edited (never reported as blocking, only explained) |
 
 The overall level is the worst item. **"To watch" never makes the exit code
 non-zero** — a missing zstd only means compressed archives are unreadable, which

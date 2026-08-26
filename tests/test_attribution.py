@@ -306,7 +306,7 @@ def test_empty_verdict_dict_has_all_keys():
     d = RepoVerdict().to_dict()
     assert set(d) == {
         "primary", "confidence", "basis", "conflict", "truncated",
-        "cwd_moved", "evidence",
+        "cwd_moved", "cwd_in_workspace", "workspace_siblings", "evidence",
     }
 
 
